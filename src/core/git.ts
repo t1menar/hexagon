@@ -109,3 +109,19 @@ export async function resetHard(cwd: string, ref: string): Promise<void> {
   await must(cwd, ["reset", "--hard", ref]);
   await must(cwd, ["clean", "-fd"]);
 }
+
+/** Make `cwd` a git repository with at least one commit (agents work in worktrees). Returns what was done. */
+export async function ensureRepo(cwd: string): Promise<string | null> {
+  const did: string[] = [];
+  if (!(await isRepo(cwd))) {
+    await must(cwd, ["init", "-q", "-b", "main"]);
+    did.push("initialized a git repository");
+  }
+  if (!(await hasCommits(cwd))) {
+    await must(cwd, ["add", "-A"]);
+    const ident = (await git(cwd, ["config", "user.email"])).ok ? [] : ["-c", "user.name=Hexagon", "-c", "user.email=hexagon@localhost"];
+    await must(cwd, [...ident, "commit", "-q", "--allow-empty", "-m", "Initial commit"]);
+    did.push("made the initial commit");
+  }
+  return did.length ? did.join(" and ") : null;
+}

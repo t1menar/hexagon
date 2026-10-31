@@ -1,3 +1,4 @@
+import { isStaleRolePrompt } from "../agents/prompts.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -66,8 +67,9 @@ export function scaffold(root: string): string[] {
     if (fs.existsSync(to)) {
       // Refresh role prompts from v0.1 that still reference the removed API tools.
       const cur = fs.readFileSync(to, "utf8");
-      if (!/\/roles\//.test(to) || !/\b(submit_result|submit_review|submit_plan|report_status|ask_user)\b/.test(cur)) return;
-      fs.writeFileSync(to, readResource(resource));
+      const fresh = readResource(resource);
+      if (!/\/roles\//.test(to) || cur.trim() === fresh.trim() || !isStaleRolePrompt(cur)) return;
+      fs.writeFileSync(to, fresh);
       created.push(`${path.relative(root, to)} (updated)`);
       return;
     }

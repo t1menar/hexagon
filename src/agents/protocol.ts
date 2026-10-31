@@ -42,7 +42,7 @@ Don't run \`hexagon done\`, \`report\` or \`ask\`: just reply in the chat.`;
     case "init":
       return `${head}
 ${report}
-${ask}
+- Don't ask the user anything: infer from the repository, or say in HEXAGON.md what isn't decided yet.
 - \`hexagon done --summary "<one line>" [--allow "<command prefix agents may run, e.g. mvn>" ...]\`
   exactly once, as your last action, after HEXAGON.md is written.`;
     default:

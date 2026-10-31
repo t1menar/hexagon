@@ -625,7 +625,8 @@ export class App {
           return this.exit("daemon stopped");
         case "/sdd": case "/new": case "/goal": return await this.newGoal(args.join(" "));
         case "/init": {
-          await c.call("init.start", { description: args.join(" ") || null });
+          const r = await c.call<{ skipped?: boolean }>("init.start", { description: args.join(" ") || null });
+          if (r.skipped) return;
           this.sessions.set("init", blankSession("init", "init"));
           this.select("init");
           return;
@@ -634,12 +635,13 @@ export class App {
           const j = flag(args, "-j");
           const agent = flag(args, "--agent");
           if (!this.snap.draft) {
+            if (args[0] && !/\.json$/.test(args[0])) return await this.newGoal(args.join(" ")); // `/run build a todo API`
             if (args[0]) {
               const r = await c.call<{ run_id: string }>("run.start", { plan_path: args[0], agent: agent || null, max_parallel: j ? Number(j) : undefined });
               this.log(`run ${r.run_id} started`, S.cyan);
               return;
             }
-            throw new Error("no plan to run — describe a goal first");
+            throw new Error("no plan to run — /sdd <goal> first (or just ask Claude in the chat)");
           }
           await c.call<{ run_id: string }>("draft.approve", { agent: agent || null, max_parallel: j ? Number(j) : undefined });
           this.select(this.snap.draft?.plan.tasks[0]?.id ?? HEX);

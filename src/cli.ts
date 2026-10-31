@@ -5,7 +5,7 @@ import readline from "node:readline/promises";
 import { HexClient, daemonRunning } from "./client/client.js";
 import type { Reply } from "./agents/types.js";
 import type { AgentStatus, Phase, RunStatus } from "./contracts/types.js";
-import { isRepo } from "./core/git.js";
+import { ensureRepo, isRepo } from "./core/git.js";
 import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
 import type { SessionStatus } from "./core/solo.js";
@@ -201,6 +201,11 @@ async function main(argv: string[]): Promise<void> {
         const only = one(rest, "--only")?.split(",").map(normTask);
         const snap = await client.call<{ draft: Draft | null }>("ui.snapshot");
         if (follow) await followRun(client);
+        if (rest[0] && !(fs.existsSync(rest[0]) && rest[0].endsWith(".json"))) {
+          // `hexagon run "build a todo API"`: a goal, not a plan file.
+          client.close();
+          return await newGoal(rest);
+        }
         const res = rest[0]
           ? await client.call<{ run_id: string }>("run.start", { plan_path: rest[0], agent, only, max_parallel: j ? Number(j) : undefined, budget_tokens: budget ? parseTokens(budget) : undefined })
           : snap.draft
@@ -274,7 +279,8 @@ async function init(args: string[]): Promise<void> {
   const dir = process.cwd();
   const created = scaffold(dir);
   console.log(created.length ? `${c.blue("✔")} created ${created.join(", ")}` : "Hexagon is already set up here");
-  if (!(await isRepo(dir))) console.log(c.orange("! not a git repository yet — runs need git: `git init && git add -A && git commit -m init`"));
+  const setup = await ensureRepo(dir);
+  if (setup) console.log(`${c.blue("✔")} ${setup} (agents work in git worktrees)`);
   if (bare) return;
   if (agent) {
     const cfgFile = path.join(dir, ".hexagon", "config.toml");
@@ -282,13 +288,19 @@ async function init(args: string[]): Promise<void> {
   }
   const client = await HexClient.connect(dir);
   await client.subscribe();
+  const started = await client.call<{ skipped?: boolean }>("init.start", { description: args.join(" ") || null });
+  if (started.skipped) {
+    client.close();
+    console.log(`${c.blue("✔")} empty repository: wrote a stub HEXAGON.md (filled in as code lands)`);
+    console.log(`Next: run ${c.cyan("hexagon")} and tell Claude what to build, or ${c.cyan('hexagon sdd "<goal>"')} for the spec-driven flow.`);
+    return;
+  }
   console.log(`${c.cyan("◆")} the init agent is studying the repository and writing HEXAGON.md ${c.dim("(Ctrl-C to stop)")}`);
-  await client.call("init.start", { description: args.join(" ") || null });
   const st = await followSession(client, "init");
   client.close();
   if (st.state !== "done") { process.exitCode = 1; return; }
   console.log(`\n${c.blue("✔")} HEXAGON.md written${st.summary ? ` — ${st.summary}` : ""} · ${st.tokens.input + st.tokens.cache_read + st.tokens.output} tokens`);
-  console.log(`Next: run ${c.cyan("hexagon")} and describe what you want built.`);
+  console.log(`Next: run ${c.cyan("hexagon")} and tell Claude what to build, or ${c.cyan('hexagon sdd "<goal>"')} for the spec-driven flow.`);
 }
 
 async function newGoal(args: string[]): Promise<void> {

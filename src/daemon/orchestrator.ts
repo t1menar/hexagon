@@ -17,7 +17,7 @@ import { ProjectPaths, type RunPaths } from "../core/project.js";
 import { ApiRegistry, type ApiOp } from "../core/registry.js";
 import { MessageRouter } from "../core/router.js";
 import { Scheduler } from "../core/scheduler.js";
-import { lintSpec, parseSpec, type Spec } from "../core/spec.js";
+import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
 import { SoloSession, type SessionStatus } from "../core/solo.js";
 import { StatusStore } from "../core/status.js";
 import type { RunContext } from "../core/supervisor.js";
@@ -200,8 +200,14 @@ export class Orchestrator extends EventEmitter {
   }
 
   /** Run the init agent: it studies the repository (or asks what you're building) and writes HEXAGON.md. */
-  startInit(description: string | null): { id: string } {
+  startInit(description: string | null): { id: string; skipped?: boolean } {
     this.reloadConfig();
+    // Nothing to study in an empty repository, and nothing to ask: write a stub the first code fills in.
+    if (!description?.trim() && isEmptyProject(this.root)) {
+      if (!contextFile(this.root)) fs.writeFileSync(path.join(this.root, "HEXAGON.md"), stubContext(this.root));
+      this.notice("info", "Empty repository: wrote a stub HEXAGON.md. Tell Claude what to build in the chat (or /sdd <goal>); the stack gets filled in as code lands.");
+      return { id: "init", skipped: true };
+    }
     const s = this.solo("init", "init", {
       system: systemPrompt(this.paths, "init", "init", loadSkills(this.paths), [], projectContext(this.root)),
       env: this.agentEnv("init"),
@@ -360,9 +366,9 @@ export class Orchestrator extends EventEmitter {
     if (check.errors.length) throw new Error(`invalid plan: ${check.errors.join("; ")}`);
     if (opts.agent) this.adapter(opts.agent);
 
-    if (!(await g.isRepo(this.root)) || !(await g.hasCommits(this.root))) {
-      throw new Error("Hexagon needs a git repository with at least one commit (agents work in git worktrees).");
-    }
+    // Agents work in git worktrees: a new project gets a repository and an initial commit.
+    const setup = await g.ensureRepo(this.root);
+    if (setup) this.notice("info", `This folder wasn't ready for agents yet: Hexagon ${setup}.`);
     const base = this.cfg.run.base_branch ?? (await g.currentBranch(this.root));
     const runId = `r-${stamp()}`;
     const run = this.paths.run(runId);
@@ -658,3 +664,30 @@ function stamp(): string {
 }
 
 export { nowIso };
+
+/** Only Hexagon's own files so far. */
+function isEmptyProject(root: string): boolean {
+  const own = /^(\.hexagon\/|specs\/|\.gitignore$|HEXAGON\.md$|README(\.md)?$|LICENSE)/i;
+  return listProjectFiles(root, 50).every((f) => own.test(f));
+}
+
+function stubContext(root: string): string {
+  return `# ${path.basename(root)}
+New repository: no code yet, so the stack isn't chosen. Whoever adds the first code (you,
+Claude in the chat, or an /sdd run) fills in the sections below.
+
+## Stack
+(not chosen yet)
+
+## Commands
+- build: (none yet)
+- test: (none yet)
+- run: (none yet)
+
+## Layout
+- \`specs/\`: specs written by Hexagon's planner
+
+## Conventions
+(none yet)
+`;
+}

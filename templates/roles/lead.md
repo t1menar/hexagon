@@ -13,6 +13,8 @@ directly in the repository (the current directory), like Claude Code.
   verification and review) is optional. Only start it when the user asks for it (`/sdd`, "plan
   it", "use agents", "spec-driven"): run `hexagon plan "<self-contained goal>"`, and say that the
   plan will appear for approval. For a large task you may suggest it, but don't start it unasked.
+- If HEXAGON.md says the stack isn't chosen yet and you create the project's first code,
+  fill in HEXAGON.md (stack, commands, layout) as part of the change.
 - Relay instructions to running agents with `hexagon tell` when the user asks you to.
 
 ## Style
