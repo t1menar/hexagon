@@ -52,11 +52,14 @@ export class MockAdapter implements AgentAdapter {
     try {
       if (ctx.role === "planner") return await this.plan(ctx, step);
       if (ctx.role === "lead") {
-        host.emit({ type: "chat", from: "agent", text: `(mock) You said: ${ctx.prompt.replace(/<hexagon_state>[\s\S]*?<\/hexagon_state>\s*/g, "").replace(/<\/?user_message>/g, "").trim()}` });
+        if (ctx.resume && ctx.followUp) host.emit({ type: "chat", from: "agent", text: `(mock) ${ctx.followUp.includes("approved") ? "Approved, running it now." : ctx.followUp}` });
+        else host.emit({ type: "chat", from: "agent", text: `(mock) You said: ${ctx.prompt.replace(/<hexagon_state>[\s\S]*?<\/hexagon_state>\s*/g, "").replace(/<\/?user_message>/g, "").trim()}` });
         host.emit({ type: "progress", text: "ready" });
         while (!ctx.signal.aborted) {
           await sleep(50);
           for (const m of host.drainInbox()) {
+            const needs = /@needs:\s*(.+)$/m.exec(m.body);
+            if (needs) host.emit({ type: "permission_denied", tool: "Bash", command: needs[1]!.trim() });
             host.emit({ type: "usage", input: 200, output: 20, cache_read: 0, cache_write: 0, cost_usd: 0, step: true });
             host.emit({ type: "chat", from: "agent", text: `(mock) You said: ${m.body.replace(/<hexagon_state>[\s\S]*?<\/hexagon_state>\s*/g, "").trim()}` });
             host.emit({ type: "progress", text: "ready" });
@@ -84,6 +87,15 @@ export class MockAdapter implements AgentAdapter {
       drain();
       await step("Exploring the workspace");
 
+      // `@needs: brew install go`: the command is denied until the user approves it.
+      const needs = /@needs:\s*(.+)$/m.exec(task.description ?? "");
+      if (needs && !(ctx.followUp ?? "").includes("approved")) {
+        host.emit({ type: "tool_call", name: "Bash", summary: `$ ${needs[1]!.trim()}` });
+        host.emit({ type: "tool_result", name: "Bash", ok: false, summary: "This command requires approval" });
+        host.emit({ type: "permission_denied", tool: "Bash", command: needs[1]!.trim() });
+        api.done({ status: "blocked", summary: `needs \`${needs[1]!.trim()}\``, blockers: [`\`${needs[1]!.trim()}\` was denied`] });
+        return { kind: "finished" };
+      }
       const block = /@block:\s*(.+)$/m.exec(task.description ?? "");
       if (block && !ctx.resume) {
         host.emit({ type: "chat", from: "agent", text: `I can't finish: ${block[1]!.trim()}` });

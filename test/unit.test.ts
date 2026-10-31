@@ -17,6 +17,7 @@ import { tokenize } from "../src/tui/app.js";
 import { renderDag } from "../src/tui/dag.js";
 import { chatLines, itemsFromEvents } from "../src/tui/chat.js";
 import { allowCommands } from "../src/core/config.js";
+import { commandPrefix } from "../src/daemon/orchestrator.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "hex-test-"));
 
@@ -225,5 +226,15 @@ describe("chat", () => {
     ] as never);
     expect(items[0]!.tokens).toEqual({ input: 12300, output: 310 });
     expect(chatLines(items, 80, "T-1").map((l) => l.text).join("\n")).toContain("12k in · 310 out");
+  });
+});
+
+describe("permissions", () => {
+  it("derives the allow rule for a denied command", () => {
+    expect(commandPrefix("brew install go")).toBe("brew");
+    expect(commandPrefix("go test ./...")).toBe("go test");
+    expect(commandPrefix("git push origin main")).toBe("git push");
+    expect(commandPrefix("cd x && go test")).toBeNull();
+    expect(commandPrefix("GOFLAGS=-v go build")).toBeNull();
   });
 });

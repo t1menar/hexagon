@@ -74,6 +74,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       let lastError: AdapterOutcome["error"];
       // Usage arrives on every assistant event of a model call; report each call once.
       let step: { id: string; usage: Record<string, number> } | null = null;
+      const toolUses = new Map<string, { name: string; input: Record<string, unknown> }>();
       const flushStep = () => {
         if (!step) return;
         const u = step.usage;
@@ -140,7 +141,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             }
             for (const c of asArray(e.message?.content)) {
               if (c.type === "tool_result" && c.is_error) {
-                host.emit({ type: "tool_result", name: "tool", ok: false, summary: firstLine(contentText(c.content), 160) });
+                const text = contentText(c.content);
+                host.emit({ type: "tool_result", name: "tool", ok: false, summary: firstLine(text, 160) });
+                const use = toolUses.get(String(c.tool_use_id ?? ""));
+                if (use && /requires approval|permission to use|haven't granted|not allowed/i.test(text)) {
+                  const command = use.name === "Bash" ? String(use.input.command ?? "") : use.name;
+                  host.emit({ type: "permission_denied", tool: use.name, command });
+                }
               }
             }
             break;
@@ -151,6 +158,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             if (e.message?.usage) step = { id, usage: e.message.usage };
             for (const c of asArray(e.message?.content)) {
               if (c.type === "tool_use") {
+                toolUses.set(String(c.id ?? ""), { name: String(c.name), input: c.input ?? {} });
                 const summary = toolSummary(c.name, c.input ?? {});
                 if (summary) host.emit({ type: "tool_call", name: c.name, summary });
               } else if (c.type === "text" && c.text?.trim()) {

@@ -6,7 +6,7 @@ import type { HexClient } from "../client/client.js";
 import type { AgentState, AgentStatus, Message, Plan, RunStatus, StampedEvent } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
 import type { SessionStatus } from "../core/solo.js";
-import type { Draft, Push, Snapshot } from "../daemon/orchestrator.js";
+import type { Draft, PermissionRequest, Push, Snapshot } from "../daemon/orchestrator.js";
 import { hexagonCommand, openTerminal } from "../shell/open.js";
 import { Canvas, clip, padTo, S, st, wrap } from "./canvas.js";
 import { ACTIVE, bar, glyph, progressOf, renderDag, spinner, STATE_COLOR, type DagNode } from "./dag.js";
@@ -235,6 +235,7 @@ export class App {
       case "message": this.onMessage(p.data); break;
       case "notice": this.log(p.data.text, p.data.level === "info" ? S.cyan : S.orange); this.flash(p.data.text, p.data.level); break;
       case "session": this.sessions.set(p.data.id, p.data); break;
+      case "permissions": this.snap.permissions = p.data; break;
       case "draft":
         this.snap.draft = p.data;
         if (p.data) {
@@ -328,14 +329,29 @@ export class App {
     this.select(e[(i + d + e.length) % e.length]!);
   }
 
+  private permFor(agent: string): PermissionRequest | undefined {
+    return (this.snap.permissions ?? []).find((p) => p.agent === agent);
+  }
+
+  private permissionQuestion(p: PermissionRequest) {
+    return {
+      id: p.id, from: p.agent, prompt: `${p.agent} wants to run \`${p.command}\`. Allow it?`,
+      options: [{ id: "1", label: p.prefix ? `allow \`${p.prefix}\` commands` : "allow it (all commands)" }, { id: "2", label: "allow all commands" }, { id: "3", label: "deny" }],
+    };
+  }
+
   private openQuestion(): { id: string; from: string; prompt: string; options: { id: string; label: string }[] } | null {
     const sel = this.selected;
+    const perms = this.snap.permissions ?? [];
+    const mine = perms.find((p) => p.agent === sel);
+    if (mine) return this.permissionQuestion(mine);
     const s = this.sessions.get(sel);
     if (s?.question) return { id: s.question.question_id, from: s.id, prompt: s.question.prompt, options: s.question.options ?? [] };
     const a = this.full.get(sel);
     if (a?.needs_input && !TERMINAL_STATES.has(a.state)) return { id: a.needs_input.question_id, from: sel, prompt: a.needs_input.prompt, options: a.needs_input.options ?? [] };
     for (const ss of this.sessions.values()) if (ss.question) return { id: ss.question.question_id, from: ss.id, prompt: ss.question.prompt, options: ss.question.options ?? [] };
     for (const x of this.full.values()) if (x.needs_input && !TERMINAL_STATES.has(x.state)) return { id: x.needs_input.question_id, from: x.task_id, prompt: x.needs_input.prompt, options: x.needs_input.options ?? [] };
+    if (perms[0]) return this.permissionQuestion(perms[0]);
     return null;
   }
 
@@ -852,14 +868,14 @@ export class App {
       if (id === HEX) {
         const cs = this.sessions.get(HEX);
         const busy = cs?.state === "running";
-        rows.push({ id, l1: [[busy ? spinner(this.frame) : "◆", S.cyan], [" claude", S.bold], ["  chat", S.gray], [cs ? `  ${tok(sessTok(cs))}` : "", S.gray]], l2: busy ? cs?.activity ?? "thinking…" : this.notice?.text ?? "talk to Claude · run notices", l2s: S.gray });
+        rows.push({ id, l1: [[busy ? spinner(this.frame) : "◆", S.cyan], [" claude", S.bold], ["  chat", S.gray], [cs ? `  ${tok(sessTok(cs))}` : "", S.gray]], l2: this.permFor(HEX) ? `⚠ approve: ${this.permFor(HEX)!.command}` : busy ? cs?.activity ?? "thinking…" : this.notice?.text ?? "talk to Claude · run notices", l2s: this.permFor(HEX) ? S.orange : S.gray });
         continue;
       }
       const s = this.sessions.get(id);
       if (s) {
         const g = s.state === "running" ? spinner(this.frame) : s.state === "waiting_input" ? "?" : s.state === "done" ? "✔" : s.state === "failed" ? "✖" : "−";
         const col = s.state === "running" ? S.blue : s.state === "waiting_input" ? S.orange : s.state === "done" ? S.green : S.red;
-        rows.push({ id, l1: [[g, col], [` ${id}`, S.bold], [`  ${s.agent}`, S.gray], [`  ${tok(sessTok(s))}`, S.gray]], l2: s.question ? `asks: ${s.question.prompt}` : s.error ?? s.activity ?? "", l2s: s.question ? S.orange : S.gray });
+        rows.push({ id, l1: [[g, col], [` ${id}`, S.bold], [`  ${s.agent}`, S.gray], [`  ${tok(sessTok(s))}`, S.gray]], l2: this.permFor(id) ? `⚠ approve: ${this.permFor(id)!.command}` : s.question ? `asks: ${s.question.prompt}` : s.error ?? s.activity ?? "", l2s: s.question || this.permFor(id) ? S.orange : S.gray });
         continue;
       }
       const a = this.full.get(id);
@@ -867,6 +883,7 @@ export class App {
       const state = (a?.state ?? b?.state ?? "queued") as AgentState;
       const extra: [string, string][] = [];
       if (a?.needs_input) extra.push([" ?", st(S.orange, S.bold)]);
+      if ((this.snap.permissions ?? []).some((p) => p.agent === id)) extra.push([" ⚠ approve", st(S.orange, S.bold)]);
       if (a?.inbox.pending) extra.push([` ✉${a.inbox.pending}`, S.cyan]);
       if (a?.controller === "user") extra.push([" you", S.magenta]);
       const prog = a?.progress && a.progress.total ? ` ${a.progress.done}/${a.progress.total}` : "";
@@ -940,6 +957,11 @@ export class App {
         title = `${t.id} · ${t.role}`;
         head.push([t.title, st(S.white, S.bold)], [`writes ${t.files.write.join(", ")}`, S.gray], [`verify: ${t.verify.join(" && ") || "—"}`, S.gray]);
       }
+    }
+    const perm = (this.snap.permissions ?? []).find((p) => p.agent === sel);
+    if (perm) {
+      const q = this.permissionQuestion(perm);
+      head.push([`⚠ ${perm.id} ${q.prompt}`, st(S.orange, S.bold)], [`   ${q.options.map((o) => `${o.id}) ${o.label}`).join("   ")}`, S.orange]);
     }
     cv.box(x, y, w, h, S.gray, clip(title, w - 6), st(S.bold, S.white));
     let yy = y + 1;

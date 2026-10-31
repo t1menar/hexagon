@@ -160,6 +160,8 @@ export interface ReviewVerdict {
 export type AgentEvent =
   | { type: "state"; state: AgentState; reason?: string | null }
   | { type: "progress"; text: string }
+  /** The agent CLI refused a tool call that needs approval (e.g. a command outside allow_commands). */
+  | { type: "permission_denied"; tool: string; command: string }
   /** Conversation: what the agent said, what you sent it, what Hexagon told it. */
   | { type: "chat"; from: "agent" | "user" | "hexagon"; text: string; message_id?: string }
   | { type: "status_report"; phase?: Phase; activity?: string; checklist?: { id: string; label?: string; status: ChecklistStatus }[] }

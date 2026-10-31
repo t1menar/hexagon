@@ -78,6 +78,11 @@ describe("end to end with the mock agent", () => {
     expect(s1.tokens.steps).toBeGreaterThan(0);
     await client.call("chat.send", { text: "second message" });
     await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.feed.some((f) => f.kind === "agent" && f.text.includes("second message"))));
+    // A denied command becomes an approval request; approving restarts the session with the new rule.
+    await client.call("chat.send", { text: "check go\n@needs: go version" });
+    const perm = await until(async () => (await client.call<{ permissions: { id: string; agent: string }[] }>("ui.snapshot")).permissions.find((p) => p.agent === "claude"));
+    await client.call("question.answer", { question_id: perm.id, answer: "1" });
+    await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.state === "idle" && s.feed.some((f) => f.text.includes("Approved, running it now"))));
   });
 
   it("rejects protocol calls from unknown agents", async () => {
@@ -176,5 +181,19 @@ describe("end to end with the mock agent", () => {
     expect(done.attempt).toBe(1); // same attempt, same session
     const rs = await until(async () => { const r = await client.call<RunStatus>("run.status"); return r.state === "done" ? r : null; });
     expect(rs.agents[0]!.state).toBe("done");
+  });
+  it("asks the user to approve a denied command, then the agent continues", async () => {
+    const planFile = path.join(root, ".hexagon/perm-plan.json");
+    fs.writeFileSync(planFile, JSON.stringify({
+      tasks: [{ id: "T-1", title: "Use go", role: "implementer", description: "@needs: brew install go", acceptance: ["AC-1"], files: { write: ["hexagon-mock/go.md"] }, verify: ["test -f hexagon-mock/go.md"] }],
+    }));
+    await client.call("run.start", { plan_path: planFile });
+    const perm = await until(async () => (await client.call<{ permissions: { id: string; agent: string; prefix: string }[] }>("ui.snapshot")).permissions[0]);
+    expect(perm).toMatchObject({ agent: "T-1", prefix: "brew" });
+    await until(async () => (await client.call<AgentStatus>("agent.status", { task: "T-1" })).state === "blocked");
+    await client.call("question.answer", { question_id: perm.id, answer: "1" });
+    expect(fs.readFileSync(path.join(root, ".hexagon/config.toml"), "utf8")).toMatch(/allow_commands = \["brew"/);
+    await until(async () => (await client.call<AgentStatus>("agent.status", { task: "T-1" })).state === "done");
+    expect((await client.call<{ permissions: unknown[] }>("ui.snapshot")).permissions).toEqual([]);
   });
 });
