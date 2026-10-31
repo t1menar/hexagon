@@ -73,3 +73,33 @@ export function planTree(plan: Plan): string {
   roots.forEach((r) => walk(r, "", true, 0));
   return lines.join("\n");
 }
+
+/** Fill optional task fields so a hand- or agent-written plan only needs the essentials. */
+export function normalizePlan(raw: unknown, meta: { id: string; specs: string[] }): Plan {
+  const r = (raw ?? {}) as Partial<Plan> & { tasks?: Partial<Task>[] };
+  const tasks = (r.tasks ?? []).map((t, i) => {
+    const files = (t.files ?? {}) as Partial<Task["files"]>;
+    const acceptance = t.acceptance ?? [];
+    return {
+      ...t,
+      id: t.id ?? `T-${i + 1}`,
+      title: t.title ?? `Task ${i + 1}`,
+      role: t.role ?? "implementer",
+      requirements: t.requirements ?? [],
+      acceptance,
+      depends_on: t.depends_on ?? [],
+      files: { write: files.write ?? [], read: files.read ?? [] },
+      skills: t.skills ?? [],
+      definition_of_done: t.definition_of_done?.length ? t.definition_of_done : acceptance.length ? acceptance.map((a) => `${a} holds`) : ["Implemented as described"],
+      verify: t.verify ?? [],
+    } as Task;
+  });
+  return {
+    schema: "hexagon.plan/v1",
+    id: meta.id,
+    created_at: r.created_at ?? new Date().toISOString(),
+    specs: meta.specs,
+    tasks,
+    spec_issues: r.spec_issues ?? [],
+  };
+}

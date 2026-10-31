@@ -130,6 +130,9 @@ export class StatusStore extends EventEmitter {
       case "progress":
         s.activity = event.text.slice(0, 200);
         break;
+      case "chat":
+        if (event.from === "agent") s.activity = (event.text.trim().split("\n").find((l) => l.trim()) ?? "").slice(0, 200);
+        break;
       case "status_report":
         if (event.phase) s.phase = event.phase;
         if (event.activity) s.activity = event.activity.slice(0, 200);

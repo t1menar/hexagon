@@ -7,6 +7,8 @@ import { ProjectPaths } from "../core/project.js";
 import type { Push } from "../daemon/orchestrator.js";
 import { selfCommand } from "../util/resources.js";
 
+export const PROTOCOL = 2;
+
 /** Client for the per-project daemon. Emits "push" for subscribed events and "close". */
 export class HexClient extends EventEmitter {
   private sock: net.Socket | undefined;
@@ -26,6 +28,19 @@ export class HexClient extends EventEmitter {
       if (opts.autostart === false) throw new Error("Hexagon daemon is not running (start it with `hexagon up`).");
       await startDaemon(c.paths);
       await c.open();
+      return c;
+    }
+    // A daemon from an older Hexagon build speaks another protocol: replace it.
+    const info = await c.call<{ protocol: number }>("ping").catch(() => ({ protocol: -1 }));
+    if (info.protocol !== PROTOCOL && opts.autostart !== false) {
+      await c.call("shutdown").catch(() => undefined);
+      c.close();
+      for (let i = 0; i < 30 && fs.existsSync(c.paths.socket); i++) await sleep(100);
+      fs.rmSync(c.paths.socket, { force: true });
+      const fresh = new HexClient(c.paths);
+      await startDaemon(fresh.paths);
+      await fresh.open();
+      return fresh;
     }
     return c;
   }

@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import net from "node:net";
 import type { Effort } from "../contracts/types.js";
+import type { ApiOp } from "../core/registry.js";
 import { atomicWriteJson, nowIso } from "../util/fsx.js";
 import { Orchestrator, type Push } from "./orchestrator.js";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 interface Request { id: number; method: string; params?: Record<string, unknown> }
 
@@ -39,7 +40,16 @@ export class DaemonServer {
     this.handlers = {
       ping: () => ({ pid: process.pid, protocol: PROTOCOL_VERSION, root, run_id: o.current?.runId ?? null }),
       subscribe: (_p, conn) => { conn.subscribed = true; return { ok: true }; },
-      "plan.create": async (p) => o.plan((p.specs as string[]) ?? [], (p.agent as string) ?? null),
+      "ui.snapshot": () => o.snapshot(),
+      "agent.api": (p) => o.agentApi((p.agent as string) || null, (p.cwd as string) || null, str(p.op, "op") as ApiOp, (p.args as Record<string, unknown>) ?? {}),
+      "init.start": (p) => o.startInit((p.description as string) || null),
+      "goal.new": (p) => o.newGoal(str(p.goal, "goal")),
+      "draft.revise": (p) => { o.revise(str(p.feedback, "feedback")); return { ok: true }; },
+      "draft.reload": () => o.reloadDraft(),
+      "draft.approve": async (p) => ({ run_id: await o.approve({ max_parallel: p.max_parallel as number | undefined, agent: (p.agent as string) ?? null }) }),
+      "draft.discard": () => { o.discardDraft(); return { ok: true }; },
+      "session.say": (p) => { o.session(str(p.id, "id")).say(str(p.text, "text")); return { ok: true }; },
+      "session.cancel": (p) => { o.session(str(p.id, "id")).cancel(); return { ok: true }; },
       "run.start": async (p) => ({
         run_id: await o.startRun({
           plan_path: str(p.plan_path, "plan_path"), only: p.only as string[] | undefined, agent: (p.agent as string) ?? null,

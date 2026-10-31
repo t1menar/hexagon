@@ -1,17 +1,7 @@
-import type { AgentEvent, Effort, ErrorKind, Role, Task } from "../contracts/types.js";
+import type { AgentEvent, Effort, ErrorKind, Phase, ResultEnvelope, ReviewVerdict, Role, Task } from "../contracts/types.js";
+import type { Spec } from "../core/spec.js";
 
-export interface ToolSpec {
-  name: string;
-  description: string;
-  input_schema: Record<string, unknown>;
-}
-
-export interface ToolOutcome {
-  content: string;
-  is_error?: boolean;
-}
-
-/** A user/orchestrator message to inject into an agent's context at a safe point. */
+/** A message to inject into an agent's conversation. */
 export interface Injected {
   id: string;
   from: string;
@@ -20,43 +10,61 @@ export interface Injected {
 }
 
 /**
- * Everything an adapter may do to the outside world goes through the host:
- * tools, inbox draining, and status events. The supervisor implements it.
+ * What an agent can tell Hexagon. CLI agents reach it by running `hexagon report|ask|note|done|review`
+ * (the daemon routes the call here); the mock adapter calls it directly.
  */
-export interface ToolHost {
-  readonly tools: ToolSpec[];
-  execute(name: string, input: unknown): Promise<ToolOutcome>;
-  /** Called at safe points (between turns). Returns queued messages, now marked delivered. */
-  drainInbox(): Injected[];
-  /** True once the role's submit_* tool succeeded. */
-  isFinished(): boolean;
+export interface AgentApi {
+  report(r: { activity?: string; phase?: Phase; done?: string[] }): Reply;
+  ask(q: { prompt: string; options?: string[]; default?: string; blocking: boolean }): Reply;
+  note(body: string): Reply;
+  done(r: Partial<ResultEnvelope> & { allow?: string[] }): Reply;
+  review(v: ReviewVerdict): Reply;
+}
+
+export interface Reply { ok: boolean; message: string }
+
+/** Supervisor side of a running adapter. */
+export interface AgentHost {
   emit(event: AgentEvent): void;
+  /** Take queued messages (marks them delivered). */
+  drainInbox(): Injected[];
+  /** Called when new messages are queued; returns an unsubscribe function. */
+  onInbox(cb: () => void): () => void;
+  /** The agent confirmed it received a message (replayed by the CLI). */
+  received(messageId: string): void;
+  isFinished(): boolean;
+  hasBlockingQuestion(): boolean;
 }
 
 export interface AgentRunContext {
+  agentRunId: string;
   role: Role;
   task?: Task;
   effort: Effort;
   cwd: string;
-  /** Stable system layers (role prompt, skills, project context) — cache-friendly order. */
-  system: string[];
-  /** First user message (task card) — used when there is no session yet. */
-  firstMessage: string;
-  /** Extra user message when continuing a session (fix loop, hand-back). */
+  /** Role prompt + skills + protocol + project context, appended to the CLI's own system prompt. */
+  system: string;
+  /** First user message (task card) for a new session. */
+  prompt: string;
+  /** User message when resuming an existing session (fix loop, hand-back, resume after pause). */
   followUp?: string;
-  host: ToolHost;
+  /** Stable conversation id; `resume` continues it. */
+  sessionId: string;
+  resume: boolean;
+  env: Record<string, string>;
+  /** Shell commands the agent may run (prefixes). "*" = anything. */
+  allowCommands: string[];
+  readOnly: boolean;
+  host: AgentHost;
+  api: AgentApi;
+  /** Aborting ends the process; the outcome is "interrupted". */
   signal: AbortSignal;
-  /** Adapter-owned conversation state from an earlier run of the same attempt. */
-  session?: unknown;
-  maxTurns: number;
-  /** Parsed specs (planner input; also used by the offline mock adapter). */
-  specs?: import("../core/spec.js").Spec[];
+  specs?: Spec[];
 }
 
 export interface AdapterOutcome {
-  kind: "finished" | "error";
+  kind: "finished" | "interrupted" | "error";
   error?: { kind: ErrorKind; message: string; retryable: boolean };
-  session?: unknown;
 }
 
 export interface AgentAdapter {
@@ -65,6 +73,8 @@ export interface AgentAdapter {
   readonly model: string | null;
   readonly supportsLiveInput: boolean;
   run(ctx: AgentRunContext): Promise<AdapterOutcome>;
+  /** Command that opens the agent's session interactively (takeover), if the CLI supports it. */
+  takeoverCommand(sessionId: string): string[] | null;
 }
 
 export function formatInjected(msgs: Injected[]): string {
@@ -72,7 +82,9 @@ export function formatInjected(msgs: Injected[]): string {
     .map((m) =>
       m.from === "user"
         ? `<user_message id="${m.id}" type="${m.type}">\n${m.body}\n</user_message>`
-        : `<agent_note id="${m.id}" from="${m.from}" type="${m.type}">\n${m.body}\n</agent_note>`,
+        : `<hexagon_message id="${m.id}" from="${m.from}" type="${m.type}">\n${m.body}\n</hexagon_message>`,
     )
     .join("\n");
 }
+
+export const MESSAGE_ID_RE = /<(?:user|hexagon)_message id="(M-\d+)"/g;

@@ -72,9 +72,19 @@ export async function changedFiles(cwd: string, base: string): Promise<string[]>
   return out ? out.split("\n") : [];
 }
 
+/** Changed and untracked files. NUL-separated porcelain: immune to trimming and odd file names. */
 export async function uncommittedFiles(cwd: string): Promise<string[]> {
-  const out = await must(cwd, ["status", "--porcelain", "-uall"]);
-  return out ? out.split("\n").map((l) => l.slice(3).replace(/^.* -> /, "")) : [];
+  const r = await new Promise<string>((resolve, reject) =>
+    execFile("git", ["status", "--porcelain", "-z", "-uall"], { cwd, maxBuffer: 64 * 1024 * 1024 }, (e, out) => (e ? reject(e) : resolve(out))));
+  const parts = r.split("\0");
+  const files: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i]!;
+    if (entry.length < 4) continue;
+    files.push(entry.slice(3));
+    if (entry[0] === "R" || entry[0] === "C") i++; // next part is the rename source
+  }
+  return files;
 }
 
 export async function diff(cwd: string, base: string, stat = false): Promise<string> {
