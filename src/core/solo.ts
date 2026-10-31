@@ -86,7 +86,7 @@ export class SoloSession extends EventEmitter {
         break;
       case "tool_call": this.status.activity = e.summary; this.log("tool", e.summary); break;
       case "tool_result": if (!e.ok) this.log("error", e.summary); break;
-      case "permission_denied": this.emit("permission", e.command); return;
+      case "permission_denied": this.emit("permission", e.command, e.tool); return;
       case "tool_missing": this.emit("missing", e.command); return;
       case "status_report": if (e.activity) { this.status.activity = e.activity; this.log("status", e.activity); } break;
       case "usage": {

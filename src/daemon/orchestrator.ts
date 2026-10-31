@@ -268,7 +268,7 @@ export class Orchestrator extends EventEmitter {
       cwd: this.root, effort: this.cfg.roles[role].effort, ...opts, nextQuestionId: () => `Q-S${this.nextSoloQuestion++}`,
     });
     s.on("status", (st: SessionStatus) => this.push({ event: "session", data: st }));
-    s.on("permission", (command: string) => this.requestPermission(id, "session", command));
+    s.on("permission", (command: string, tool: string) => this.requestPermission(id, "session", command, tool));
     s.on("missing", (command: string) => this.toolMissing(command));
     this.sessions.set(id, s);
     this.registry.register(id, s.api());
@@ -321,7 +321,7 @@ export class Orchestrator extends EventEmitter {
     const s = this.solo("planner", "planner", {
       system: systemPrompt(this.paths, "planner", "planner", loadSkills(this.paths), [], projectContext(this.root)),
       env: this.agentEnv("planner", { HEXAGON_OUT: out }),
-      allowCommands: PLANNER_COMMANDS,
+      allowCommands: [...new Set([...PLANNER_COMMANDS, ...this.cfg.sandbox.allow_commands])],
       validate: () => draftCheck(this.root, out).reply,
     });
     const existingSpecs = fs.existsSync(path.join(this.root, "specs")) ? fs.readdirSync(path.join(this.root, "specs")).filter((f) => f.endsWith(".md")) : [];
@@ -481,7 +481,7 @@ export class Orchestrator extends EventEmitter {
     store.on("status", (s: AgentStatus) => this.push({ event: "status", data: s }));
     store.on("event", (e: StampedEvent) => {
       this.push({ event: "agent_event", data: e });
-      if (e.event.type === "permission_denied") this.requestPermission(e.task_id, "task", e.event.command);
+      if (e.event.type === "permission_denied") this.requestPermission(e.task_id, "task", e.event.command, e.event.tool);
       if (e.event.type === "tool_missing") this.toolMissing(e.event.command);
     });
     const counted = new Set<string>();
@@ -648,10 +648,11 @@ export class Orchestrator extends EventEmitter {
     this.push({ event: "permissions", data: [...this.permissions.values()] });
   }
 
-  private requestPermission(agent: string, kind: PermissionRequest["kind"], command: string): void {
+  private requestPermission(agent: string, kind: PermissionRequest["kind"], command: string, tool = "Bash"): void {
     const allowed = this.cfg.sandbox.allow_commands;
     if (allowed.includes("*")) return;
-    const prefix = commandPrefix(command);
+    // Outside-the-project paths can only be lifted by "allow all".
+    const prefix = tool === "path" ? null : commandPrefix(command);
     if (prefix && allowed.includes(prefix)) return; // already allowed: the agent's next process has it
     for (const p of this.permissions.values()) if (p.agent === agent && (p.prefix ?? p.command) === (prefix ?? command)) return;
     const req: PermissionRequest = { id: `P-${this.nextPermission++}`, agent, kind, command, prefix, asked_at: nowIso() };
@@ -660,6 +661,27 @@ export class Orchestrator extends EventEmitter {
     const text = `${agent} needs approval to run \`${command}\` (${req.id}). Select ${agent} and answer: 1 allow ${prefix ? `\`${prefix}\` commands` : "it"} · 2 allow all commands · 3 deny`;
     if (kind === "task") this.current?.store.apply(this.current.store.byTask(agent)!.agent_run_id, { type: "chat", from: "hexagon", text: `Needs your approval: \`${command}\`` });
     this.notice("attention", text);
+  }
+
+  /**
+   * `/allow <prefix>…` or `/allow all`: let agents run these commands from now on. Live sessions and
+   * working agents restart in their own sessions so the new rules apply right away.
+   */
+  allow(rules: string[]): string {
+    const list = rules.map((r) => (/^(all|everything|\*)$/i.test(r.trim()) ? "*" : r.trim())).filter(Boolean);
+    if (!list.length) throw new Error("usage: /allow <command prefix> … | /allow all");
+    allowCommands(this.paths.config, list);
+    this.reloadConfig();
+    if (this.current) this.current.rc.cfg.sandbox.allow_commands = this.cfg.sandbox.allow_commands;
+    const what = list.includes("*") ? "every command" : list.map((l) => `\`${l}\``).join(", ");
+    const note = `The user now allows ${what}. Retry anything that was refused and continue.`;
+    for (const s of this.sessions.values()) if (s.alive) s.restart(note, [...new Set([...s.allowCommands, ...list])]);
+    for (const run of this.current?.scheduler.activeRuns() ?? []) run.restart(note);
+    for (const p of [...this.permissions.values()]) if (list.includes("*") || (p.prefix && list.includes(p.prefix))) this.permissions.delete(p.id);
+    this.pushPermissions();
+    const msg = `Agents may now run ${what} (saved in .hexagon/config.toml).`;
+    this.notice("info", msg);
+    return msg;
   }
 
   /** "1"/"allow" → the command's prefix · "2"/"all" → every command · "3"/"deny". */

@@ -39,6 +39,7 @@ const COMMANDS: [string, string][] = [
   ["/clean", "remove worktrees of finished runs (and close the run)"],
   ["/close", "hide the finished run from the dashboard (without merging)"],
   ["/model [role] [model]", "show or set the model per role, e.g. /model planner opus · /model implementer sonnet"],
+  ["/allow <cmd…> | all", "let agents run these commands (e.g. /allow brew curl), or everything"],
   ["/install <tool>", "install go, node, java or maven for agents (official release, no Homebrew)"],
   ["/stop", "stop the daemon and every agent, then quit"],
   ["/quit", "leave — agents keep running in the background"],
@@ -696,6 +697,11 @@ export class App {
           this.log(list.map((m) => `${padTo(m.role, 12)} ${padTo(m.model, 10)} effort ${m.effort}${m.agent !== "claude" ? `  (agent ${m.agent})` : ""}`).join("\n"), S.white);
           if (args.length < 2) this.log("Change with /model <role> <opus|sonnet|haiku|full model id|default>", S.gray);
           this.select(HEX);
+          return;
+        }
+        case "/allow": {
+          const r = await c.call<{ text: string }>("allow", { rules: args.length ? args : [] });
+          this.flash(r.text);
           return;
         }
         case "/install": {

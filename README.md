@@ -233,6 +233,11 @@ goal ─▶ planner agent ─▶ specs/<name>.spec.md + task graph ─▶ you ap
   allow that command prefix for this project, `2` to allow all commands, or `3` to deny.
   The agent restarts in the same session with the new rule and runs it again. A blocked
   agent continues too. CLI: `hexagon answer P-1 1`.
+- **Allow ahead of time:** `/allow brew curl` (or `/allow "git push"`) lets agents run
+  those commands from now on. `/allow all` lets them run anything, including outside the
+  project folder. Read-only probes (`which`, `command -v`, `go version`, `ls`, `cat`,
+  `git status`…) are always allowed. When a compound command is refused, the approval
+  covers just the refused part.
 - Agents use the tools installed on your machine (`go`, `mvn`, `node`…). They don't
   install toolchains behind your back. Install a missing one yourself, or approve the
   agent's install command.
