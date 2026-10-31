@@ -1,0 +1,36 @@
+{
+  "name": "hexagon",
+  "version": "0.1.0",
+  "description": "Terminal orchestrator for spec-driven development with multiple AI agents",
+  "type": "module",
+  "bin": {
+    "hexagon": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "templates"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "smol-toml": "^1.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

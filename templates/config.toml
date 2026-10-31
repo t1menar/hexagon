@@ -1,0 +1,50 @@
+# Hexagon project configuration. Values shown are the defaults.
+
+[run]
+max_parallel = 4        # agents running at once
+max_attempts = 2        # attempts per task (a retry escalates effort one level)
+fix_loops = 2           # verify/review fix rounds within an attempt
+budget_usd = 20         # pause the run when spend reaches this (0 = no limit)
+# base_branch = "main"  # default: the branch checked out when the run starts
+
+# Which agent and effort each role uses. Agents are defined below.
+[roles.planner]
+agent = "claude"
+effort = "high"
+[roles.implementer]
+agent = "claude"
+effort = "medium"
+[roles.tester]
+agent = "claude"
+effort = "medium"
+[roles.reviewer]
+agent = "claude"
+effort = "high"
+[roles.lead]
+agent = "claude"
+effort = "low"
+
+[agents.claude]
+adapter = "claude"
+model = "claude-sonnet-5-5"
+
+# Scripted offline agent, useful to try the workflow without API calls:
+#   hexagon run --plan plan.json --agent mock
+[agents.mock]
+adapter = "mock"
+step_ms = 600
+
+[review]
+mode = "agent"          # "agent" | "off"
+
+[messaging]
+max_outbound_per_run = 10
+max_blocking_questions = 2
+
+[sandbox]
+# Commands agents may run via run_cmd (prefix match). Use ["*"] to allow anything.
+allow_commands = ["npm", "npx", "pnpm", "yarn", "node", "tsc", "vitest", "jest", "pytest", "python", "python3", "go", "cargo", "make", "ls", "cat", "grep", "rg", "find", "git status", "git diff", "git log"]
+command_timeout_s = 600
+
+[ui]
+open_with = "auto"      # "auto" | "tmux" | "iterm" | "terminal" | "print"

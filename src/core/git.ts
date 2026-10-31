@@ -1,0 +1,101 @@
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import { promisify } from "node:util";
+
+const exec = promisify(execFile);
+
+export interface GitResult { ok: boolean; stdout: string; stderr: string; code: number }
+
+export async function git(cwd: string, args: string[]): Promise<GitResult> {
+  try {
+    const { stdout, stderr } = await exec("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
+    return { ok: true, stdout: stdout.trim(), stderr: stderr.trim(), code: 0 };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; code?: number };
+    return { ok: false, stdout: (err.stdout ?? "").trim(), stderr: (err.stderr ?? String(e)).trim(), code: typeof err.code === "number" ? err.code : 1 };
+  }
+}
+
+async function must(cwd: string, args: string[]): Promise<string> {
+  const r = await git(cwd, args);
+  if (!r.ok) throw new Error(`git ${args.join(" ")} failed: ${r.stderr || r.stdout}`);
+  return r.stdout;
+}
+
+export async function isRepo(cwd: string): Promise<boolean> {
+  return (await git(cwd, ["rev-parse", "--is-inside-work-tree"])).ok;
+}
+
+export async function hasCommits(cwd: string): Promise<boolean> {
+  return (await git(cwd, ["rev-parse", "--verify", "HEAD"])).ok;
+}
+
+export async function currentBranch(cwd: string): Promise<string> {
+  return must(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+}
+
+export async function branchExists(cwd: string, branch: string): Promise<boolean> {
+  return (await git(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).ok;
+}
+
+export async function revParse(cwd: string, ref: string): Promise<string> {
+  return must(cwd, ["rev-parse", ref]);
+}
+
+export async function createBranch(cwd: string, branch: string, from: string): Promise<void> {
+  if (!(await branchExists(cwd, branch))) await must(cwd, ["branch", branch, from]);
+}
+
+/** Add a worktree at `dir` on a new branch `branch` starting at `from`. Reuses an existing one. */
+export async function addWorktree(repo: string, dir: string, branch: string, from: string): Promise<void> {
+  if (fs.existsSync(dir)) return;
+  if (await branchExists(repo, branch)) await must(repo, ["worktree", "add", dir, branch]);
+  else await must(repo, ["worktree", "add", "-b", branch, dir, from]);
+}
+
+export async function removeWorktree(repo: string, dir: string): Promise<void> {
+  if (fs.existsSync(dir)) await git(repo, ["worktree", "remove", "--force", dir]);
+  await git(repo, ["worktree", "prune"]);
+}
+
+/** Stage everything and commit; returns false if there was nothing to commit. */
+export async function commitAll(cwd: string, message: string): Promise<boolean> {
+  await must(cwd, ["add", "-A"]);
+  const st = await git(cwd, ["diff", "--cached", "--quiet"]);
+  if (st.ok) return false;
+  await must(cwd, ["-c", "user.name=Hexagon", "-c", "user.email=hexagon@localhost", "commit", "-q", "-m", message]);
+  return true;
+}
+
+export async function changedFiles(cwd: string, base: string): Promise<string[]> {
+  const out = await must(cwd, ["diff", "--name-only", `${base}...HEAD`]);
+  return out ? out.split("\n") : [];
+}
+
+export async function uncommittedFiles(cwd: string): Promise<string[]> {
+  const out = await must(cwd, ["status", "--porcelain", "-uall"]);
+  return out ? out.split("\n").map((l) => l.slice(3).replace(/^.* -> /, "")) : [];
+}
+
+export async function diff(cwd: string, base: string, stat = false): Promise<string> {
+  return must(cwd, ["diff", ...(stat ? ["--stat"] : []), `${base}...HEAD`]);
+}
+
+/** No staged/unstaged changes to tracked files (untracked files don't block a merge). */
+export async function isClean(cwd: string): Promise<boolean> {
+  const out = await must(cwd, ["status", "--porcelain", "--untracked-files=no"]);
+  return out.length === 0;
+}
+
+export async function merge(cwd: string, branch: string, message: string): Promise<{ ok: boolean; conflict: boolean; output: string }> {
+  const r = await git(cwd, ["-c", "user.name=Hexagon", "-c", "user.email=hexagon@localhost", "merge", "--no-ff", "-m", message, branch]);
+  if (r.ok) return { ok: true, conflict: false, output: r.stdout };
+  const conflict = /CONFLICT|Automatic merge failed/.test(r.stdout + r.stderr);
+  if (conflict) await git(cwd, ["merge", "--abort"]);
+  return { ok: false, conflict, output: (r.stdout + "\n" + r.stderr).trim() };
+}
+
+export async function resetHard(cwd: string, ref: string): Promise<void> {
+  await must(cwd, ["reset", "--hard", ref]);
+  await must(cwd, ["clean", "-fd"]);
+}
