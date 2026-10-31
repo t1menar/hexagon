@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { SHIPPED_ROLE_HASHES } from "./known-roles.js";
 import path from "node:path";
 import type { Role, Task } from "../contracts/types.js";
 import type { ProjectPaths } from "../core/project.js";
@@ -9,7 +11,11 @@ import { protocolInstructions } from "./protocol.js";
 export interface Skill { name: string; version: string; appliesTo: string[]; body: string }
 
 /** Role prompts written for the v0.1 API tools (submit_result etc.) don't work with CLI agents. */
-export const isStaleRolePrompt = (text: string) => /\b(submit_result|submit_review|submit_plan|report_status|ask_user)\b/.test(text);
+export const isStaleRolePrompt = (text: string) =>
+  /\b(submit_result|submit_review|submit_plan|report_status|ask_user)\b/.test(text) || SHIPPED_ROLE_HASHES.has(roleHash(text));
+
+/** Same hash as scripts/role-hashes.mjs. A project copy is "stale" if it is an unedited, shipped version. */
+export const roleHash = (text: string) => createHash("sha256").update(text.trim()).digest("hex").slice(0, 16);
 
 export function loadRolePrompt(paths: ProjectPaths, role: Role): string {
   const f = path.join(paths.roles, `${role}.md`);

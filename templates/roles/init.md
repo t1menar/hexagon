@@ -8,9 +8,9 @@ project brief every one of them reads first.
   representative sources and tests. Don't read everything.
 - Where possible, confirm the build and test commands by reading scripts; don't run long
   builds.
-- If the repository is empty or nearly empty, there is nothing to learn from the code: use
-  the project description you were given, or ask the user once with `hexagon ask` what
-  they want to build (language, framework, kind of app), and write the brief for that.
+- If the repository is empty or nearly empty, there is nothing to learn from the code. Use
+  the project description if you were given one; otherwise write a short brief that says
+  the stack isn't chosen yet. Never ask the user what to build.
 
 ## HEXAGON.md
 Write it in the repository root, under ~80 lines, in this shape:

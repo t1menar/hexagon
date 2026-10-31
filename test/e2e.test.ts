@@ -57,7 +57,13 @@ describe("end to end with the mock agent", () => {
   });
 
   it("init agent writes HEXAGON.md", async () => {
-    await client.call("init.start", {});
+    // Empty repository: no agent, no questions, just a stub brief.
+    const skipped = await client.call<{ skipped?: boolean }>("init.start", {});
+    expect(skipped.skipped).toBe(true);
+    expect(fs.readFileSync(path.join(root, "HEXAGON.md"), "utf8")).toContain("isn't chosen");
+    fs.rmSync(path.join(root, "HEXAGON.md"));
+    // With a description the init agent writes the brief.
+    await client.call("init.start", { description: "a greeting demo" });
     await until(async () => fs.existsSync(path.join(root, "HEXAGON.md")) && (await client.call<{ sessions: { id: string; state: string }[] }>("ui.snapshot")).sessions.find((s) => s.id === "init")?.state === "done");
     const snap = await client.call<{ has_context: boolean }>("ui.snapshot");
     expect(snap.has_context).toBe(true);
