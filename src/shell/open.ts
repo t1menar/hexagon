@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { cliEntry } from "../client/client.js";
+import { selfCommand } from "../util/resources.js";
 
 const exec = promisify(execFile);
 
@@ -11,7 +11,7 @@ const asq = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
 /** Shell command that runs a hexagon subcommand with this exact node + package. */
 export function hexagonCommand(cwd: string, args: string[]): string {
-  return `cd ${shq(cwd)} && ${shq(process.execPath)} ${shq(cliEntry())} ${args.map(shq).join(" ")}`;
+  return `cd ${shq(cwd)} && ${[...selfCommand(), ...args].map(shq).join(" ")}`;
 }
 
 export function detectTerminal(): Exclude<OpenWith, "auto"> {

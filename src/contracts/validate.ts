@@ -1,20 +1,16 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import addFormatsModule from "ajv-formats";
+import { readResource } from "../util/resources.js";
 import type { AgentStatus, Message, Plan, ResultEnvelope } from "./types.js";
 
 const addFormats = ((addFormatsModule as unknown as { default?: unknown }).default ?? addFormatsModule) as (ajv: Ajv2020) => void;
-
-export const SCHEMA_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../schemas");
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);
 
 function load<T>(file: string): ValidateFunction<T> {
-  const schema = JSON.parse(fs.readFileSync(path.join(SCHEMA_DIR, file), "utf8"));
+  const schema = JSON.parse(readResource(`schemas/${file}`));
   return ajv.compile<T>(schema);
 }
 
@@ -53,5 +49,5 @@ export const validateResult = (d: unknown) => run(validators().result, d);
 
 /** Raw schema objects, e.g. to hand to a model as a tool input_schema. */
 export function rawSchema(file: "result.v1.schema.json" | "plan.v1.schema.json"): Record<string, unknown> {
-  return JSON.parse(fs.readFileSync(path.join(SCHEMA_DIR, file), "utf8"));
+  return JSON.parse(readResource(`schemas/${file}`));
 }

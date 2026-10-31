@@ -5,7 +5,8 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { HexClient, daemonRunning } from "./client/client.js";
 import type { AgentStatus, RunStatus } from "./contracts/types.js";
-import { findProjectRoot, PACKAGE_ROOT, ProjectPaths, scaffold } from "./core/project.js";
+import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
+import { readResource } from "./util/resources.js";
 import { isRepo } from "./core/git.js";
 import type { Push } from "./daemon/orchestrator.js";
 import { formatEvent, formatMessage, runTable } from "./shell/render.js";
@@ -13,7 +14,7 @@ import { lintReport, Shell } from "./shell/repl.js";
 import { c } from "./util/term.js";
 import { readJson } from "./util/fsx.js";
 
-const VERSION = (JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf8")) as { version: string }).version;
+const VERSION = (JSON.parse(readResource("package.json")) as { version: string }).version;
 
 const USAGE = `${c.bold("hexagon")} ${VERSION} — spec-driven multi-agent orchestrator
 
@@ -49,6 +50,10 @@ function root(): string {
 async function main(argv: string[]): Promise<void> {
   const [cmd, ...rest] = argv;
 
+  if (cmd === "__daemon") {
+    const { runDaemon } = await import("./daemon/run.js");
+    return runDaemon(rest[0] ?? process.cwd());
+  }
   if (cmd === "--version" || cmd === "-v") return void console.log(VERSION);
   if (cmd === "--help" || cmd === "-h" || cmd === "help") return void console.log(USAGE);
 

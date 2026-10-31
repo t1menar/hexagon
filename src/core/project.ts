@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+import { listResources, readResource } from "../util/resources.js";
 
 /** Walk up from cwd to the directory containing .hexagon/ (or a git root as a fallback). */
 export function findProjectRoot(start = process.cwd()): string | null {
@@ -64,16 +62,15 @@ export class RunPaths {
 export function scaffold(root: string): string[] {
   const p = new ProjectPaths(root);
   const created: string[] = [];
-  const tpl = path.join(PACKAGE_ROOT, "templates");
-  const copy = (from: string, to: string) => {
+  const copy = (resource: string, to: string) => {
     if (fs.existsSync(to)) return;
     fs.mkdirSync(path.dirname(to), { recursive: true });
-    fs.copyFileSync(from, to);
+    fs.writeFileSync(to, readResource(resource));
     created.push(path.relative(root, to));
   };
-  copy(path.join(tpl, "config.toml"), p.config);
+  copy("templates/config.toml", p.config);
   for (const dir of ["roles", "skills"] as const) {
-    for (const f of fs.readdirSync(path.join(tpl, dir))) copy(path.join(tpl, dir, f), path.join(p.hex, dir, f));
+    for (const f of listResources(`templates/${dir}`)) copy(`templates/${dir}/${f}`, path.join(p.hex, dir, f));
   }
   fs.mkdirSync(p.runs, { recursive: true });
   fs.mkdirSync(path.join(root, "specs"), { recursive: true });
