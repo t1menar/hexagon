@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/t1menar/hexagon/schemas/message.v1.schema.json",
+  "title": "Hexagon message",
+  "description": "One message routed by the Hexagon daemon; appended to .hexagon/runs/<run>/messages.jsonl.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "ts", "run_id", "from", "to", "type", "body", "delivery"],
+  "$defs": {
+    "party": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["user", "agent", "role", "orchestrator", "blackboard", "broadcast", "lead"] },
+        "id": { "type": ["string", "null"], "description": "Task id for agent (e.g. T-007), role name for role, null otherwise." }
+      }
+    }
+  },
+  "properties": {
+    "schema": { "const": "hexagon.message/v1" },
+    "id": { "type": "string", "pattern": "^M-[0-9]+$" },
+    "ts": { "type": "string", "format": "date-time" },
+    "run_id": { "type": "string" },
+    "thread_id": { "type": ["string", "null"], "description": "Usually the task id." },
+    "from": { "$ref": "#/$defs/party" },
+    "to": { "$ref": "#/$defs/party" },
+    "type": { "enum": ["instruction", "question", "answer", "note", "request", "handoff", "notify", "ack"] },
+    "body": { "type": "string" },
+    "question": {
+      "type": ["object", "null"],
+      "description": "Present when type = question; same shape as status.needs_input.",
+      "additionalProperties": true
+    },
+    "refs": { "type": "array", "items": { "type": "string" } },
+    "reply_to": { "type": ["string", "null"] },
+    "priority": { "enum": ["low", "normal", "urgent"], "default": "normal" },
+    "requires_ack": { "type": "boolean", "default": false },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "enum": ["queued", "delivered", "acked", "expired", "rejected"] },
+        "delivered_at": { "type": ["string", "null"], "format": "date-time" },
+        "acked_at": { "type": ["string", "null"], "format": "date-time" },
+        "reason": { "type": ["string", "null"], "description": "Why rejected/expired, e.g. rate limit exceeded." }
+      }
+    }
+  }
+}

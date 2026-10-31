@@ -10,4 +10,11 @@ Terminal orchestrator for spec-driven development with multiple AI coding agents
 - **Personal metrics** — local-only records of agent usage and output quality, for your own
   analysis. Nothing is exported.
 
-Status: design phase. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **Interactive shell** — run `hexagon` and drive everything with slash commands; focus,
+  message, attach to or take over any agent, each in its own terminal if you like.
+
+Status: design phase.
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — architecture & implementation plan
+- [docs/COMMUNICATION.md](docs/COMMUNICATION.md) — messaging, agent status contract, shell, attach/takeover
+- [schemas/](schemas/) — JSON Schemas for `status.json` and messages
