@@ -31,6 +31,10 @@ export interface RunContext {
   context: string;
   integration: { branch: string; worktree: string };
   adapterFor(role: Role, override?: string | null): AgentAdapter;
+  /** All tasks of the run (for areas of responsibility). */
+  tasks: Task[];
+  /** Reopen task `to` with a defect report from `from`; resolves when `to` finishes again. */
+  returnTask(from: string, to: string, issue: string): { ok: true; done: Promise<{ state: AgentState; summary: string }> } | { ok: false; message: string };
   /** Environment for agent processes: lets them run `hexagon report|ask|…`. */
   agentEnv(agentId: string): Record<string, string>;
 }
@@ -47,6 +51,9 @@ export class AgentRun {
   private gate: Gate | null = null;
   private resumeNote: string | null = null;
   private restarting = false;
+  /** Set by `hexagon return`: this agent waits until the other task's fix is merged. */
+  private waiting: { task: string; issue: string; done: Promise<{ state: AgentState; summary: string }> } | null = null;
+  private wake: (() => void) | null = null;
   private questions = new Map<string, { q: NeedsInput; messageId: string }>();
   private blockingAsked = 0;
   private finished = false;
@@ -115,18 +122,24 @@ export class AgentRun {
   }
 
   /** The agent's CLI session exists, so a finished attempt can be continued in place. */
+  /** One line on how the attempt ended (for agents waiting on it). */
+  get outcomeSummary(): string {
+    return this.result?.summary || this.rc.store.get(this.agentRunId)?.state_reason || this.state;
+  }
+
   get resumable(): boolean {
     return this.started && fs.existsSync(this.worktree);
   }
 
   /** Continue a blocked/failed/cancelled attempt: same worktree, same session, the user's message as the next turn. */
-  async continueWith(text: string): Promise<AgentState> {
+  async continueWith(text: string, from: "user" | "hexagon" = "user"): Promise<AgentState> {
     this.cancelled = false;
     this.userDone = false;
-    this.ev({ type: "chat", from: "user", text });
+    this.ev({ type: "chat", from, text });
     const unregister = this.rc.registry.register(this.agentRunId, this.api());
     try {
-      return await this.pipeline(`Message from the user:\n${text}\n\nContinue the task with this in mind. When it is finished, run \`hexagon done\` again.`, true);
+      const body = from === "user" ? `Message from the user:\n${text}\n\nContinue the task with this in mind. When it is finished, run \`hexagon done\` again.` : text;
+      return await this.pipeline(body, true);
     } finally {
       unregister();
     }
@@ -145,6 +158,12 @@ export class AgentRun {
       quiet = false;
 
       if (this.cancelled) return this.final("cancelled", "cancelled by user");
+      if (this.waiting) {
+        followUp = await this.waitForReturn(this.waiting);
+        this.waiting = null;
+        if (this.cancelled) return this.final("cancelled", "cancelled by user");
+        continue;
+      }
       if (this.userDone) {
         this.result = await this.userResult();
       } else if (outcome.kind === "error") {
@@ -239,7 +258,7 @@ export class AgentRun {
         sessionId: this.sessionId,
         resume: this.started,
         followUp: fu,
-        prompt: taskCard(this.task, this.rc.specs, this.rc.router.notes()),
+        prompt: taskCard(this.task, this.rc.specs, this.rc.router.notes(), this.rc.tasks.filter((t) => t.id !== this.task.id)),
         system: systemPrompt(this.rc.paths, this.task.role, this.agentRunId, this.rc.skills, this.task.skills, this.rc.context),
         readOnly: false,
         api: this.api(),
@@ -311,6 +330,23 @@ export class AgentRun {
     if (state === "done") this.notify("done ✔ merged into the integration branch");
     else if (state === "failed") this.notify(`failed: ${reason ?? "see logs"}`);
     return state;
+  }
+
+  /** Wait for the task we returned to finish, bring its fix into this worktree, and say what happened. */
+  private async waitForReturn(w: { task: string; issue: string; done: Promise<{ state: AgentState; summary: string }> }): Promise<string> {
+    this.st("paused", `waiting for ${w.task} to fix what it returned`);
+    const r = await Promise.race([w.done, new Promise<null>((res) => (this.wake = () => res(null)))]);
+    this.wake = null;
+    if (!r || this.cancelled) return "";
+    if (r.state !== "done") {
+      return `${w.task} could not fix what you returned (${r.state}: ${r.summary}). Continue within your own scope: work around it if you can, otherwise finish with \`hexagon done --status blocked\` and the reason.`;
+    }
+    await this.commit();
+    const m = await g.merge(this.worktree, this.rc.integration.branch, `Merge fix from ${w.task} into ${this.task.id}`);
+    this.ev({ type: "chat", from: "hexagon", text: `${w.task} fixed it${m.ok ? " and the fix is merged into this worktree" : ", but merging it here failed"}: ${r.summary}` });
+    return m.ok
+      ? `${w.task} fixed what you returned, and the fix is merged into your worktree. Their summary: ${r.summary}\n\nContinue your task: re-check it, then run \`hexagon done\`.`
+      : `${w.task} fixed what you returned, but merging the fix into your worktree failed:\n${truncateMiddle(m.output, 2000)}\nResolve it if it is in your scope, otherwise report blocked.`;
   }
 
   private async commit(): Promise<void> {
@@ -472,6 +508,18 @@ export class AgentRun {
         return ok("Result recorded. Hexagon will now verify, review and merge your work. End your turn now.");
       },
       review: () => ({ ok: false, message: "Only the reviewer can run `hexagon review`." }),
+      return: (x) => {
+        const to = String(x.task ?? "").toUpperCase().replace(/^T(\d)/, "T-$1");
+        const issue = String(x.issue ?? "").trim();
+        if (!to || !issue) return { ok: false, message: 'Usage: hexagon return <T-n> "<what is wrong, where, and the evidence>"' };
+        if (this.waiting) return { ok: false, message: `You already returned work to ${this.waiting.task}. End your turn and wait.` };
+        const r = this.rc.returnTask(this.task.id, to, issue);
+        if (!r.ok) return { ok: false, message: r.message };
+        this.waiting = { task: to, issue, done: r.done };
+        this.finished = true; // ends this turn; the pipeline then waits for the fix
+        this.ev({ type: "chat", from: "hexagon", text: `↩ Returned to ${to}: ${issue}` });
+        return ok(`${to} was reopened with your report. End your turn now; Hexagon resumes you here once ${to}'s fix is merged into your worktree.`);
+      },
     };
   }
 
@@ -553,6 +601,7 @@ export class AgentRun {
     this.cancelled = true;
     this.abort.abort();
     this.gate?.resolve();
+    this.wake?.();
   }
 
   async takeover(): Promise<{ worktree: string; branch: string; command: string[] }> {

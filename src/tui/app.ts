@@ -38,6 +38,8 @@ const COMMANDS: [string, string][] = [
   ["/abort", "stop the run"],
   ["/clean", "remove worktrees of finished runs (and close the run)"],
   ["/close", "hide the finished run from the dashboard (without merging)"],
+  ["/model [role] [model]", "show or set the model per role, e.g. /model planner opus · /model implementer sonnet"],
+  ["/install <tool>", "install go, node, java or maven for agents (official release, no Homebrew)"],
   ["/stop", "stop the daemon and every agent, then quit"],
   ["/quit", "leave — agents keep running in the background"],
   ["/help", "show this list"],
@@ -517,6 +519,12 @@ export class App {
         items = (flags[cmd] ?? []).map((f) => ({ value: f, desc: f === "-j" ? "max agents in parallel" : f === "--effort" ? "low|medium|high|xhigh|max" : "agent from config.toml" })).filter((i) => match(i.value));
       } else if (words[words.length - (token ? 2 : 1)] === "--effort") {
         items = ["low", "medium", "high", "xhigh", "max"].map((e) => ({ value: e, desc: "" })).filter((i) => match(i.value));
+      } else if (cmd === "/model" && argIdx === 1) {
+        items = ["planner", "implementer", "tester", "reviewer", "lead", "init"].map((r) => ({ value: r, desc: r === "lead" ? "the Claude chat" : "" })).filter((i) => match(i.value));
+      } else if (cmd === "/model" && argIdx === 2) {
+        items = [["opus", "deepest analysis"], ["sonnet", "fast, strong coding"], ["haiku", "cheapest"], ["default", "the agent's model"]].map(([v, d]) => ({ value: v!, desc: d! })).filter((i) => match(i.value));
+      } else if (cmd === "/install" && argIdx === 1) {
+        items = [["go", "Go toolchain"], ["node", "Node.js LTS"], ["java", "Temurin JDK 21"], ["maven", "Apache Maven"]].map(([v, d]) => ({ value: v!, desc: d! })).filter((i) => match(i.value));
       } else if (cmd === "/answer" && argIdx === 1) {
         const qs: { value: string; desc: string }[] = [];
         for (const a of this.full.values()) if (a.needs_input && !TERMINAL_STATES.has(a.state)) qs.push({ value: a.needs_input.question_id, desc: `${a.task_id}: ${a.needs_input.prompt}` });
@@ -543,7 +551,7 @@ export class App {
     this.input = this.input.slice(0, this.input.length - c.token.length) + item.value + " ";
     this.cursor = this.input.length;
     this.menuIdx = 0;
-    const noArgs = ["/help", "/quit", "/stop", "/run", "/discard", "/spec", "/plan", "/merge", "/abort", "/clean", "/close", "/init"];
+    const noArgs = ["/help", "/quit", "/stop", "/run", "/discard", "/spec", "/plan", "/merge", "/abort", "/clean", "/close", "/init", "/model"];
     if (submitIfComplete && noArgs.includes(item.value) && this.input.trim() === item.value) {
       const text = this.input;
       this.input = "";
@@ -680,6 +688,28 @@ export class App {
           return;
         }
         case "/close": await c.call("run.close"); this.log("run closed", S.gray); return;
+        case "/model": case "/models": {
+          type M = { role: string; agent: string; model: string; effort: string }[];
+          const list = args.length >= 2
+            ? await c.call<M>("models.set", { role: args[0]!.toLowerCase(), model: args[1] === "default" ? null : args[1] })
+            : await c.call<M>("models.list");
+          this.log(list.map((m) => `${padTo(m.role, 12)} ${padTo(m.model, 10)} effort ${m.effort}${m.agent !== "claude" ? `  (agent ${m.agent})` : ""}`).join("\n"), S.white);
+          if (args.length < 2) this.log("Change with /model <role> <opus|sonnet|haiku|full model id|default>", S.gray);
+          this.select(HEX);
+          return;
+        }
+        case "/install": {
+          if (!args[0]) {
+            const l = await c.call<{ name: string; installed: string | null; on_path: boolean }[]>("toolchain.list");
+            this.log(l.map((t) => `${padTo(t.name, 8)} ${t.installed ? `installed by Hexagon (${t.installed})` : t.on_path ? "on your PATH" : "not installed"}`).join("\n"), S.white);
+            this.select(HEX);
+            return;
+          }
+          this.flash(`installing ${args[0]}…`);
+          const r = await c.call<{ text: string }>("toolchain.install", { name: args[0] });
+          this.flash(r.text);
+          return;
+        }
         case "/discard": await c.call("draft.discard"); this.log("draft discarded", S.gray); return;
         case "/spec": {
           const d = this.snap.draft;

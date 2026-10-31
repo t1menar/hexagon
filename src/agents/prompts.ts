@@ -93,7 +93,7 @@ export function systemPrompt(paths: ProjectPaths, role: Role, agentRunId: string
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-export function taskCard(task: Task, specs: Spec[], notes: string): string {
+export function taskCard(task: Task, specs: Spec[], notes: string, others: Task[] = []): string {
   const reqs = specs.flatMap((s) => s.requirements).filter((r) => task.requirements.includes(r.id));
   const acs = reqs.flatMap((r) => r.acceptance.filter((a) => task.acceptance.includes(a.id)).map((a) => ({ req: r.id, ...a })));
   const parts = [
@@ -111,6 +111,9 @@ export function taskCard(task: Task, specs: Spec[], notes: string): string {
     ...task.definition_of_done.map((d) => `    <check>${esc(d)}</check>`),
     ...task.verify.map((v) => `    <verify_cmd>${esc(v)}</verify_cmd>`),
     "  </definition_of_done>",
+    others.length ? "  <other_tasks note=\"each owns its write scope; send defects there with hexagon return\">" : "",
+    ...others.map((o) => `    <task id="${o.id}" role="${o.role}" owns="${esc(o.files.write.join(", "))}">${esc(o.title)}</task>`),
+    others.length ? "  </other_tasks>" : "",
     notes.trim() ? `  <notes_from_other_agents>\n${esc(notes.trim())}\n  </notes_from_other_agents>` : "",
     "</task>",
     "",

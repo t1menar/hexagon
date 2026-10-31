@@ -21,6 +21,9 @@ export class Scheduler extends EventEmitter {
   private outcome = new Map<string, AgentState>();
   /** Latest attempt per task, kept after it finishes so it can be continued. */
   private last = new Map<string, AgentRun>();
+  /** Agents waiting for a task they returned work to. */
+  private waiters = new Map<string, ((r: { state: AgentState; summary: string }) => void)[]>();
+  private returns = new Map<string, number>();
   private tasks: Task[];
   paused = false;
   aborted = false;
@@ -154,6 +157,7 @@ export class Scheduler extends EventEmitter {
 
   private finish(t: Task, run: AgentRun, state: AgentState): void {
     this.active.delete(t.id);
+    const waiting = this.waiters.get(t.id);
     const s = this.rc.store.get(run.agentRunId);
     const retryable = state === "failed" && s?.last_error?.retryable !== false;
     const attempt = this.attempts.get(t.id)!;
@@ -163,6 +167,10 @@ export class Scheduler extends EventEmitter {
       this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `${t.id}: retrying (attempt ${attempt + 1}) with more effort` });
     } else {
       this.outcome.set(t.id, state);
+      if (waiting?.length) {
+        this.waiters.delete(t.id);
+        for (const w of waiting) w({ state, summary: run.outcomeSummary });
+      }
     }
     this.tick();
   }
@@ -192,6 +200,35 @@ export class Scheduler extends EventEmitter {
         this.createStatus(d, n);
       }
     }
+  }
+
+  /** `hexagon return`: reopen task `to` (its own session) with a defect report from `from`. */
+  returnTask(from: string, to: string, issue: string): { ok: true; done: Promise<{ state: AgentState; summary: string }> } | { ok: false; message: string } {
+    const t = this.task(to);
+    if (from === to) return { ok: false, message: "That's your own task: fix it yourself." };
+    if (!t || !this.tasks.includes(t)) return { ok: false, message: `There is no task ${to} in this run.` };
+    const key = `${from}>${to}`;
+    const n = this.returns.get(key) ?? 0;
+    if (n >= this.rc.cfg.run.fix_loops) return { ok: false, message: `You already returned ${to} ${n} time(s). Work around it within your scope, or finish with \`hexagon done --status blocked\` and the reason.` };
+    const active = this.active.get(to);
+    const last = this.last.get(to);
+    const body = `↩ ${from} returned this task to you:\n${issue}\n\nThis is your area of responsibility (your write scope). Fix it, re-run your verify commands, then run \`hexagon done\` again. Hexagon verifies, reviews and merges it, and ${from} continues with your fix.`;
+    if (active) {
+      this.rc.router.send({ from: { kind: "agent", id: from }, to: { kind: "agent", id: to }, type: "instruction", body });
+    } else if (last && last.resumable && ["done", "blocked", "failed", "cancelled"].includes(last.state)) {
+      this.outcome.delete(to);
+      if (this.rc.store.runState === "done") { this.rc.store.runState = "running"; this.rc.store.startHeartbeat(); }
+      this.active.set(to, last);
+      this.watch(t, last, last.continueWith(body, "hexagon"));
+    } else {
+      return { ok: false, message: `${to} hasn't run yet, so there is nothing to return. Share what it needs with \`hexagon note\`.` };
+    }
+    this.returns.set(key, n + 1);
+    const done = new Promise<{ state: AgentState; summary: string }>((resolve) => {
+      this.waiters.set(to, [...(this.waiters.get(to) ?? []), resolve]);
+    });
+    this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `${from} returned ${to}: ${issue}` });
+    return { ok: true, done };
   }
 
   canContinue(taskId: string): boolean {

@@ -153,6 +153,14 @@ agents can build in parallel:
 - **Do it yourself:** Ctrl-T takes over the agent's Claude session in its worktree. Exit
   it to hand the task back.
 
+**Areas of responsibility.** Each task owns its write scope, and every agent sees which
+task owns what. Suppose an agent finds a defect in another task's code, e.g. the tester
+finds a bug in T-1's handler. It doesn't fix it; it runs
+`hexagon return T-1 "<what's wrong, with evidence>"`. Then:
+- T-1's agent is reopened in its own session with the report.
+- T-1's fix goes through verify, review and merge again.
+- The returning agent waits, gets the fix merged into its worktree, and carries on.
+
 **5. When an agent gets stuck.** An agent that can't finish (a missing tool, an unclear
 spec) stops as `⊘ blocked` and explains why in its chat. Fix the cause, then reply on its
 tab:
@@ -163,6 +171,16 @@ continue T-2  › maven is installed now, run the tests again
 
 It continues in the same session and worktree. `/retry T-2` instead starts a fresh
 attempt, optionally with `--effort high` or `--agent <other>`.
+
+**Missing tools.** If agents need a toolchain that isn't installed, Hexagon says so. Run
+`/install go` (also `node`, `java`, `maven`): it downloads the official release into
+`~/.hexagon/toolchains`, without Homebrew or sudo. Agents and verify commands get it on
+their PATH, and agents that were blocked on it continue.
+
+**Models per role.** `/model` shows which model each role uses.
+`/model planner opus` and `/model implementer sonnet` change it, and so does
+`model = "…"` under `[roles.<role>]` in `.hexagon/config.toml`. By default, analysis
+roles (planner, reviewer, the Claude chat) use opus, and building roles use sonnet.
 
 **6. Merge.** Each finished task has passed verification and review and is already merged
 into the run's integration branch, `hexagon/<run>/integration`. When the run ends:

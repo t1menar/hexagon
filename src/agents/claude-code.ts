@@ -143,6 +143,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
               if (c.type === "tool_result" && c.is_error) {
                 const text = contentText(c.content);
                 host.emit({ type: "tool_result", name: "tool", ok: false, summary: firstLine(text, 160) });
+                const missing = /command not found:\s*([\w.+-]+)|([\w.+-]+): command not found|([\w.+-]+): not found/.exec(text);
+                if (missing) host.emit({ type: "tool_missing", command: missing[1] ?? missing[2] ?? missing[3]! });
                 const use = toolUses.get(String(c.tool_use_id ?? ""));
                 if (use && /requires approval|permission to use|haven't granted|not allowed/i.test(text)) {
                   const command = use.name === "Bash" ? String(use.input.command ?? "") : use.name;
