@@ -225,6 +225,9 @@ every AC has a linked passing test. Commits carry trailers
   (e.g. "T-004 introduced `AuthStore`; use it"). The orchestrator appends from envelopes
   and injects relevant notes into later tasks.
 - **Per-task pipeline** — `implement → verify(cmds) → review → (fix loop ≤ 2) → integrate → re-verify on main`.
+- **Integration branch** — each run gets `hexagon/<run>/integration` (from the base branch, in
+  its own worktree). Task branches start from it and merge back into it; a task's
+  dependents therefore see its code. The user's branch is touched only by `/merge`.
 
 ### 4.3 Error handling
 

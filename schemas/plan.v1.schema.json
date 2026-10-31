@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/t1menar/hexagon/schemas/plan.v1.schema.json",
+  "title": "Hexagon plan (task DAG)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "created_at", "specs", "tasks", "spec_issues"],
+  "$defs": {
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "role", "requirements", "acceptance", "depends_on", "files", "skills", "definition_of_done", "verify"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^T-[0-9]+$" },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "role": { "enum": ["implementer", "tester"] },
+        "requirements": { "type": "array", "items": { "type": "string" } },
+        "acceptance": { "type": "array", "items": { "type": "string" } },
+        "depends_on": { "type": "array", "items": { "type": "string", "pattern": "^T-[0-9]+$" } },
+        "files": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["write", "read"],
+          "properties": {
+            "write": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "read": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "skills": { "type": "array", "items": { "type": "string" } },
+        "definition_of_done": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "verify": { "type": "array", "items": { "type": "string" }, "description": "Shell commands the orchestrator re-runs in the worktree." },
+        "estimate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "size": { "type": "string" }, "risk": { "type": "string" } }
+        },
+        "agent_hint": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "properties": {
+    "schema": { "const": "hexagon.plan/v1" },
+    "id": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "specs": { "type": "array", "items": { "type": "string" } },
+    "tasks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/task" } },
+    "spec_issues": { "type": "array", "items": { "type": "string" } }
+  }
+}

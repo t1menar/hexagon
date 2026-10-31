@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/t1menar/hexagon/schemas/result.v1.schema.json",
+  "title": "Hexagon result envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "status", "summary", "files_changed", "acceptance_evidence", "commands_run", "blockers", "spec_issues", "assumptions", "follow_ups"],
+  "properties": {
+    "task_id": { "type": "string" },
+    "status": { "enum": ["completed", "blocked", "failed", "needs_spec_change"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "acceptance_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ac", "evidence", "verified"],
+        "properties": { "ac": { "type": "string" }, "evidence": { "type": "string" }, "verified": { "type": "boolean" } }
+      }
+    },
+    "commands_run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cmd", "exit_code"],
+        "properties": { "cmd": { "type": "string" }, "exit_code": { "type": "integer" } }
+      }
+    },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "spec_issues": { "type": "array", "items": { "type": "string" } },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "properties": { "text": { "type": "string" }, "question_id": { "type": ["string", "null"] } }
+      }
+    },
+    "follow_ups": { "type": "array", "items": { "type": "string" } }
+  }
+}

@@ -12,6 +12,18 @@ Companion to [ARCHITECTURE.md](ARCHITECTURE.md). Covers:
 Schemas: [`schemas/agent-status.v1.schema.json`](../schemas/agent-status.v1.schema.json),
 [`schemas/message.v1.schema.json`](../schemas/message.v1.schema.json).
 
+> **v0.1 implementation notes:** where the code differs from this design:
+> - A blocking `ask_user` waits inside the tool call instead of ending the turn. The status
+>   still shows `waiting_input`, and the answer comes back as the tool result.
+> - Blackboard notes are injected when a task starts, not pushed live to running agents.
+> - `/takeover` opens a shell in the worktree for every adapter. Resuming a native
+>   `claude --resume` session will come with the Claude Code adapter.
+> - Ctrl-C on an empty line shows a hint, and pressing it twice leaves the shell. Use
+>   `/pause` to pause the run.
+> - `hexagon agent report` for external CLIs isn't built yet.
+> - Tasks merge into a per-run integration branch (`hexagon/<run>/integration`), never
+>   straight into your branch. `/merge` is the human gate into the base branch.
+
 ---
 
 ## 1. Runtime topology
