@@ -146,9 +146,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
                 const missing = /command not found:\s*([\w.+-]+)|([\w.+-]+): command not found|([\w.+-]+): not found/.exec(text);
                 if (missing) host.emit({ type: "tool_missing", command: missing[1] ?? missing[2] ?? missing[3]! });
                 const use = toolUses.get(String(c.tool_use_id ?? ""));
-                if (use && /requires approval|permission to use|haven't granted|not allowed/i.test(text)) {
-                  const command = use.name === "Bash" ? String(use.input.command ?? "") : use.name;
-                  host.emit({ type: "permission_denied", tool: use.name, command });
+                if (use && /requires approval|permission to use|haven't granted|not allowed|was blocked/i.test(text)) {
+                  // For compound commands Claude Code names the part it refused: approve just that part.
+                  const part = /following part requires approval:\s*(.+)/i.exec(text)?.[1]?.trim();
+                  const command = use.name === "Bash" ? part ?? String(use.input.command ?? "") : use.name;
+                  // "ls in '/usr/local/go/bin' was blocked": a folder outside the project, which no prefix rule lifts.
+                  host.emit({ type: "permission_denied", tool: /was blocked/i.test(text) ? "path" : use.name, command });
                 }
               }
             }

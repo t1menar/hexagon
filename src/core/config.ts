@@ -55,6 +55,13 @@ export const DEFAULT_CONFIG: HexagonConfig = {
   ui: { open_with: "auto" },
 };
 
+/** Read-only probes every agent may always run (checking what's installed, looking around). */
+export const SAFE_COMMANDS = [
+  "ls", "cat", "head", "tail", "wc", "find", "grep", "rg", "which", "command -v", "type", "uname", "pwd", "echo", "printenv",
+  "date", "tree", "file", "stat", "du", "sort", "uniq", "diff", "test", "git status", "git diff", "git log", "git show", "git ls-files",
+  "go version", "go env", "node --version", "npm --version", "python3 --version", "java -version", "mvn -v", "mvn --version",
+];
+
 function merge<T>(base: T, over: unknown): T {
   if (over === null || typeof over !== "object" || Array.isArray(over)) return (over ?? base) as T;
   const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
@@ -79,16 +86,19 @@ export function loadConfig(file: string): HexagonConfig {
   }
   delete (cfg.run as Record<string, unknown>).budget_usd; // v0.1 setting; budgets are in tokens now
   if (cfg.run.budget_tokens !== null && cfg.run.budget_tokens <= 0) cfg.run.budget_tokens = null;
+  cfg.sandbox.allow_commands = [...new Set([...cfg.sandbox.allow_commands, ...SAFE_COMMANDS])];
   return cfg;
 }
 
 /** Add command prefixes to [sandbox].allow_commands in config.toml (keeps the rest of the file). */
 export function allowCommands(file: string, add: string[]): string[] {
-  const cfg = loadConfig(file);
-  const fresh = add.map((a) => a.trim()).filter((a) => a && !cfg.sandbox.allow_commands.includes(a));
-  if (!fresh.length || !fs.existsSync(file)) return [];
+  if (!fs.existsSync(file)) return [];
   const text = fs.readFileSync(file, "utf8");
-  const list = JSON.stringify([...fresh, ...cfg.sandbox.allow_commands]).replace(/","/g, '", "');
+  // The file's own list (loadConfig adds SAFE_COMMANDS, which shouldn't be written out).
+  const raw = (parse(text) as { sandbox?: { allow_commands?: string[] } }).sandbox?.allow_commands ?? DEFAULT_CONFIG.sandbox.allow_commands;
+  const fresh = add.map((a) => a.trim()).filter((a) => a && !raw.includes(a));
+  if (!fresh.length) return [];
+  const list = JSON.stringify([...fresh, ...raw]).replace(/","/g, '", "');
   const next = /^allow_commands\s*=.*$/m.test(text)
     ? text.replace(/^allow_commands\s*=.*$/m, `allow_commands = ${list}`)
     : text.replace(/^\[sandbox\]\s*$/m, `[sandbox]\nallow_commands = ${list}`);

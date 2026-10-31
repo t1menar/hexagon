@@ -91,6 +91,7 @@ export class DaemonServer {
       "merge.base": async () => ({ text: await o.mergeToBase() }),
       "worktrees.clean": async () => ({ removed: await o.cleanup() }),
       "run.close": () => ({ closed: o.closeRun("closed by user") }),
+      "allow": (p) => ({ text: o.allow((p.rules as string[]) ?? []) }),
       "models.list": () => o.models(),
       "models.set": (p) => { o.setModel(str(p.role, "role"), (p.model as string) || null); return o.models(); },
       "toolchain.list": () => o.toolchains(),

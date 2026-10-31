@@ -33,6 +33,7 @@ ${c.bold("Watch & steer")}
   hexagon pause|resume|cancel <T-n>  ·  hexagon retry <T-n> [--agent X] [--effort E]
   hexagon takeover <T-n>           continue the agent's own session yourself (claude --resume)
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
+  hexagon allow <cmd…> | all       let agents run these commands (e.g. allow brew curl) or everything
   hexagon model [role model]       show/set the model per role (e.g. model planner opus)
   hexagon install [go|node|java|maven]   install a toolchain for agents (official release, no Homebrew)
 
@@ -272,6 +273,7 @@ async function main(argv: string[]): Promise<void> {
         for (const m of list) console.log(`${m.role.padEnd(12)} ${m.model.padEnd(10)} effort ${m.effort}`);
         break;
       }
+      case "allow": console.log((await client.call<{ text: string }>("allow", { rules: rest })).text); break;
       case "install": {
         if (!rest[0]) {
           for (const t of await client.call<{ name: string; installed: string | null; on_path: boolean }[]>("toolchain.list")) {

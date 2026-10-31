@@ -79,7 +79,7 @@ describe("end to end with the mock agent", () => {
     await client.call("chat.send", { text: "second message" });
     await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.feed.some((f) => f.kind === "agent" && f.text.includes("second message"))));
     // A denied command becomes an approval request; approving restarts the session with the new rule.
-    await client.call("chat.send", { text: "check go\n@needs: go version" });
+    await client.call("chat.send", { text: "check go\n@needs: curl -sO https://go.dev/dl" });
     const perm = await until(async () => (await client.call<{ permissions: { id: string; agent: string }[] }>("ui.snapshot")).permissions.find((p) => p.agent === "claude"));
     await client.call("question.answer", { question_id: perm.id, answer: "1" });
     await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.state === "idle" && s.feed.some((f) => f.text.includes("Approved, running it now"))));

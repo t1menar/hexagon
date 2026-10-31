@@ -280,3 +280,13 @@ describe("models and toolchains", () => {
     expect(toolchainFor("brew")).toBeNull();
   });
 });
+
+describe("allow list", () => {
+  it("always allows read-only probes, and writes only new rules to config.toml", () => {
+    const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hx-")), "config.toml");
+    fs.writeFileSync(f, '[sandbox]\nallow_commands = ["go"]\n');
+    expect(loadConfig(f).sandbox.allow_commands).toEqual(expect.arrayContaining(["go", "which", "command -v", "go version"]));
+    allowCommands(f, ["brew"]);
+    expect(fs.readFileSync(f, "utf8")).toContain('allow_commands = ["brew", "go"]');
+  });
+});
