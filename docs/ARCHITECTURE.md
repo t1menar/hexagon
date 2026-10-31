@@ -5,8 +5,18 @@ AI coding agents (Claude, OpenAI CLI, DeepSeek, …) in parallel, turns textual 
 agent tasks, verifies and merges their results, and records **personal** metrics about
 agent usage and output quality.
 
-**Stack:** TypeScript on Node 22, Ink for the TUI, `@anthropic-ai/sdk` for direct Claude
-API calls, Claude Agent SDK for Claude Code agents, SQLite + JSONL for local state.
+**Stack:** TypeScript on Node 22, shipped as a standalone binary (Node SEA). The
+full-screen TUI uses a small built-in ANSI renderer. Agents are wrapped coding CLIs (Claude
+Code via `claude -p` stream-json, or any `exec` CLI). State is kept in JSON and JSONL files.
+
+> **v0.2 changes vs. this plan:**
+> - **No direct API integration.** Agents are CLI sessions that report through
+>   `hexagon report|ask|note|done|review` shell commands; see COMMUNICATION.md, "v0.2".
+> - **Simpler spec flow.** Type a goal. The planner agent writes the spec and a plan
+>   draft, you approve or revise it, and then it runs.
+> - **Agent-driven init.** `hexagon init` runs an agent that writes `HEXAGON.md`.
+> - **Prompt engineering.** §5's API-level guidance (thinking, effort, caching) now applies
+>   through the CLI: `--effort` per role, `--append-system-prompt`, session resume.
 
 ---
 
@@ -50,10 +60,9 @@ API calls, Claude Agent SDK for Claude Code agents, SQLite + JSONL for local sta
                                          ▼
                  ┌───────────────── Agent Pool ─────────────────┐
                  │  Adapter interface (one per provider)        │
-                 │  ├─ ClaudeApiAdapter   (Messages API + tools)│
-                 │  ├─ ClaudeCodeAdapter  (Agent SDK / headless)│
-                 │  ├─ OpenAICliAdapter   (subprocess)          │
-                 │  └─ DeepSeekAdapter    (HTTP)                │
+                 │  ├─ ClaudeCodeAdapter  (claude -p stream-json)│
+                 │  ├─ ExecAdapter        (any one-shot CLI)    │
+                 │  └─ MockAdapter        (offline, scripted)   │
                  │  each run → isolated git worktree            │
                  └──────────┬───────────────────────────────────┘
                             ▼

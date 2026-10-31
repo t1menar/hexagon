@@ -1,42 +1,50 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { HexClient, daemonRunning } from "./client/client.js";
-import type { AgentStatus, RunStatus } from "./contracts/types.js";
-import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
-import { readResource } from "./util/resources.js";
+import type { Reply } from "./agents/types.js";
+import type { AgentStatus, Phase, RunStatus } from "./contracts/types.js";
 import { isRepo } from "./core/git.js";
-import type { Push } from "./daemon/orchestrator.js";
-import { formatEvent, formatMessage, runTable } from "./shell/render.js";
-import { lintReport, Shell } from "./shell/repl.js";
-import { c } from "./util/term.js";
+import { planTree } from "./core/plan.js";
+import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
+import type { SessionStatus } from "./core/solo.js";
+import { findSpecs, lintSpec, listProjectFiles, parseSpec } from "./core/spec.js";
+import type { Draft, Push } from "./daemon/orchestrator.js";
+import { agentDetail, formatEvent, formatMessage, runTable } from "./shell/render.js";
 import { readJson } from "./util/fsx.js";
+import { readResource } from "./util/resources.js";
+import { c } from "./util/term.js";
 
 const VERSION = (JSON.parse(readResource("package.json")) as { version: string }).version;
 
-const USAGE = `${c.bold("hexagon")} ${VERSION} — spec-driven multi-agent orchestrator
+const USAGE = `${c.bold("hexagon")} ${VERSION} — run several coding agents (Claude Code, …) on one goal, in parallel
 
-${c.bold("Usage")}
-  hexagon                         open the interactive shell (slash commands)
-  hexagon init                    set up .hexagon/ in this repository
-  hexagon spec lint [files…]      validate specs
-  hexagon plan [specs…] [--agent X]
-  hexagon run [plan.json] [-j N] [--only T-1,T-2] [--agent X] [--budget N] [--follow]
-  hexagon status [T-n] [--json]   run overview (reads status files; works without the daemon)
-  hexagon attach <T-n>            live view of one agent; type to message it
-  hexagon open <T-n>              open a new terminal attached to an agent
-  hexagon tell <T-n|@role|@all> <text>
-  hexagon answer <Q-n> <text>
-  hexagon inbox | notes | stats | merge | abort | clean
-  hexagon pause|resume|cancel <T-n>   ·   hexagon retry <T-n> [--agent X] [--effort E]
-  hexagon diff <T-n> [--stat]     ·   hexagon logs <T-n> [N]
-  hexagon up | down               start / stop the project daemon
+${c.bold("Start")}
+  hexagon init ["what you're building"]   set up .hexagon/ and let an agent write HEXAGON.md
+  hexagon                                 open the dashboard: type a goal, approve the plan, watch agents
+  hexagon new "<goal>"                    plan a goal (planner agent writes spec + task graph)
+  hexagon run [plan.json] [-j N] [--agent X] [--follow]   run the approved draft (or a plan file)
 
-Every command is also available inside the shell as /command. Docs: docs/COMMUNICATION.md`;
+${c.bold("Watch & steer")}
+  hexagon status [T-n] [--json]    ·  hexagon attach <T-n>  ·  hexagon open <T-n>
+  hexagon tell <T-n|@role|@all> <text>  ·  hexagon answer <Q-n> <text>
+  hexagon pause|resume|cancel <T-n>  ·  hexagon retry <T-n> [--agent X] [--effort E]
+  hexagon takeover <T-n>           continue the agent's own session yourself (claude --resume)
+  hexagon diff <T-n> · logs <T-n> · merge · abort · clean · up · down
 
-const ONE_SHOT = new Set(["plan", "run", "tell", "answer", "inbox", "notes", "stats", "merge", "abort", "clean", "pause", "resume", "cancel", "retry", "diff", "logs", "agents"]);
+${c.bold("Agent protocol")} (run by agents inside their sessions)
+  hexagon report "<activity>" [--phase P] [--done AC-1 …]
+  hexagon ask "<question>" [--option "…" …] [--default "…"]
+  hexagon note "<fact for other agents>"
+  hexagon done --summary "…" [--evidence "AC-1: …" …] [--status completed|blocked|failed|needs_spec_change]
+               [--issue "…" …] [--assume "…" …] [--allow <cmd> …]
+  hexagon review approve|changes --summary "…" [--finding "high: file:line issue -> fix" …]
+  hexagon plan-check`;
+
+const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check"]);
+const TASK_RE = /^t-?\d+$/i;
+const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
 function root(): string {
   const r = findProjectRoot();
@@ -45,6 +53,21 @@ function root(): string {
     process.exit(2);
   }
   return r;
+}
+
+/** Remove `--name value` pairs (repeatable) and return the values. */
+function multi(args: string[], name: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length;) {
+    if (args[i] === name && i + 1 < args.length) { out.push(args[i + 1]!); args.splice(i, 2); } else i++;
+  }
+  return out;
+}
+const one = (args: string[], name: string) => multi(args, name).at(-1);
+function bool(args: string[], ...names: string[]): boolean {
+  let hit = false;
+  for (const n of names) { const i = args.indexOf(n); if (i >= 0) { args.splice(i, 1); hit = true; } }
+  return hit;
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -56,34 +79,36 @@ async function main(argv: string[]): Promise<void> {
   }
   if (cmd === "--version" || cmd === "-v") return void console.log(VERSION);
   if (cmd === "--help" || cmd === "-h" || cmd === "help") return void console.log(USAGE);
-
-  if (cmd === "init") {
-    const dir = process.cwd();
-    if (!(await isRepo(dir))) console.log(c.orange("! this directory is not a git repository; Hexagon runs need git (`git init` and one commit)"));
-    const created = scaffold(dir);
-    console.log(created.length ? `${c.blue("✔")} created:\n  ${created.join("\n  ")}` : "already initialized");
-    console.log(`Next: write a spec in specs/ (see docs/ARCHITECTURE.md §3.1), then run ${c.cyan("hexagon")} and ${c.cyan("/spec lint")}, ${c.cyan("/plan")}, ${c.cyan("/run")}.`);
-    return;
-  }
+  if (cmd && AGENT_OPS.has(cmd)) return agentOp(cmd, rest);
+  if (cmd === "init") return init(rest);
 
   if (cmd === "spec") {
-    if (rest[0] !== "lint") return void console.error("usage: hexagon spec lint [files…]");
-    console.log(lintReport(root(), rest.slice(1)));
+    const r = root();
+    const files = findSpecs(r, rest.slice(1));
+    const projectFiles = listProjectFiles(r);
+    let errors = 0;
+    for (const f of files) {
+      const issues = lintSpec(parseSpec(f), projectFiles);
+      errors += issues.filter((i) => i.level === "error").length;
+      console.log(`${path.relative(r, f)}: ${issues.length ? "" : c.blue("✔ ok")}`);
+      for (const i of issues) console.log(`  ${i.level === "error" ? c.orange("✖") : "!"} :${i.line} ${i.message}`);
+    }
+    process.exitCode = errors ? 1 : 0;
     return;
   }
 
   if (cmd === "status") {
     const r = root();
-    const json = rest.includes("--json");
-    const task = rest.find((a) => /^t-?\d+$/i.test(a));
+    const json = bool(rest, "--json");
+    const task = rest.find((a) => TASK_RE.test(a));
     const paths = new ProjectPaths(r);
     const rs = latestRunStatus(paths);
     if (!rs) return void console.log(json ? "null" : "no runs yet");
     if (task) {
-      const st = rs.agents.find((a) => a.task_id === task.toUpperCase());
+      const st = rs.agents.find((a) => a.task_id === normTask(task));
       if (!st) return void console.error(`unknown task ${task}`);
       const full = readJson<AgentStatus>(paths.run(rs.run_id).agentStatus(st.agent_run_id));
-      return void console.log(json ? JSON.stringify(full, null, 2) : (await import("./shell/render.js")).agentDetail(full!));
+      return void console.log(json ? JSON.stringify(full, null, 2) : agentDetail(full!));
     }
     console.log(json ? JSON.stringify(rs, null, 2) : runTable(rs));
     if (!json && !daemonRunning(paths)) console.log(c.dim("(daemon not running — snapshot from status files)"));
@@ -94,8 +119,7 @@ async function main(argv: string[]): Promise<void> {
     const client = await HexClient.connect(root());
     const info = await client.call<{ pid: number }>("ping");
     console.log(`daemon running (pid ${info.pid})`);
-    client.close();
-    return;
+    return void client.close();
   }
 
   if (cmd === "down") {
@@ -112,8 +136,7 @@ async function main(argv: string[]): Promise<void> {
     }
     await client.call("shutdown");
     client.close();
-    console.log("daemon stopped");
-    return;
+    return void console.log("daemon stopped");
   }
 
   if (cmd === "open") {
@@ -121,85 +144,284 @@ async function main(argv: string[]): Promise<void> {
     const t = rest[0];
     if (!t) return void console.error("usage: hexagon open <T-n>");
     const { openTerminal, hexagonCommand } = await import("./shell/open.js");
-    console.log(await openTerminal(t.toUpperCase(), hexagonCommand(r, ["attach", t.toUpperCase()])));
-    return;
+    return void console.log(await openTerminal(normTask(t), hexagonCommand(r, ["attach", normTask(t)])));
   }
 
-  if (cmd === "takeover-shell") return takeoverShell(root(), rest[0]);
-
-  if (!cmd || cmd === "shell" || cmd === "attach") {
-    const r = root();
-    if (cmd === "attach" && !rest[0]) return void console.error("usage: hexagon attach <T-n>");
-    const client = await HexClient.connect(r);
-    const shell = new Shell(client, r, true);
-    await shell.start(cmd === "attach" ? rest[0] : undefined);
-    return;
+  if (cmd === "takeover" || cmd === "takeover-shell") {
+    if (!rest[0]) return void console.error("usage: hexagon takeover <T-n>");
+    const client = await HexClient.connect(root());
+    const { takeoverInTerminal } = await import("./tui/takeover.js");
+    console.log(await takeoverInTerminal(client, normTask(rest[0])));
+    return void client.close();
   }
 
-  if (ONE_SHOT.has(cmd)) {
+  if (!cmd || cmd === "shell" || cmd === "attach" || cmd === "ui") {
     const r = root();
-    const client = await HexClient.connect(r);
-    const follow = cmd === "run" && (rest.includes("--follow") || rest.includes("-f"));
-    const args = rest.filter((a) => a !== "--follow" && a !== "-f");
-    if (cmd === "plan" || follow) {
-      await client.subscribe();
-      client.on("push", (p: Push) => {
-        if (p.event === "planner") {
-          const e = p.data;
-          if (e.type === "status_report" && e.activity) console.log(c.dim(`planner · ${e.activity}`));
-          if (e.type === "tool_call") console.log(c.dim(`planner ▸ ${e.summary}`));
-        }
-        if (follow && p.event === "agent_event") { const l = formatEvent(p.data, false); if (l) console.log(l); }
-        if (follow && p.event === "message") { const l = formatMessage(p.data); if (l && p.data.delivery.state === "delivered") console.log(l); }
-        if (follow && p.event === "notice") console.log(`◆ ${p.data.text}`);
-        if (follow && p.event === "run" && (p.data.state === "done" || p.data.state === "aborted")) {
-          console.log(runTable(p.data));
-          client.close();
-          process.exit(p.data.agents.every((a) => a.state === "done") ? 0 : 1);
-        }
-      });
+    if (!process.stdout.isTTY || !process.stdin.isTTY) {
+      const rs = latestRunStatus(new ProjectPaths(r));
+      return void console.log(rs ? runTable(rs) : "no runs yet — `hexagon new \"<goal>\"`");
     }
-    const shell = new Shell(client, r, false);
-    const quoted = args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ");
-    await shell.exec(`/${cmd} ${quoted}`);
-    if (!follow) client.close();
+    const client = await HexClient.connect(r);
+    const { App } = await import("./tui/app.js");
+    await new App(client, r, cmd === "attach" ? rest[0] : undefined).start();
     return;
   }
 
-  console.error(`unknown command: ${cmd}\n\n${USAGE}`);
-  process.exitCode = 2;
+  if (cmd === "new") return newGoal(rest);
+
+  const r = root();
+  const client = await HexClient.connect(r);
+  try {
+    switch (cmd) {
+      case "run": {
+        const follow = bool(rest, "--follow", "-f");
+        const j = one(rest, "-j");
+        const agent = one(rest, "--agent") ?? null;
+        const budget = one(rest, "--budget");
+        const only = one(rest, "--only")?.split(",").map(normTask);
+        const snap = await client.call<{ draft: Draft | null }>("ui.snapshot");
+        if (follow) await followRun(client);
+        const res = rest[0]
+          ? await client.call<{ run_id: string }>("run.start", { plan_path: rest[0], agent, only, max_parallel: j ? Number(j) : undefined, budget_usd: budget ? Number(budget) : undefined })
+          : snap.draft
+            ? await client.call<{ run_id: string }>("draft.approve", { agent, max_parallel: j ? Number(j) : undefined })
+            : (() => { throw new Error("no plan to run — `hexagon new \"<goal>\"` first, or pass a plan file"); })();
+        console.log(`${c.blue("▶")} run ${res.run_id} started${follow ? "" : " — watch it with `hexagon`"}`);
+        if (follow) return await new Promise<void>(() => undefined);
+        break;
+      }
+      case "tell": {
+        const [to, ...body] = rest;
+        if (!to || !body.length) throw new Error("usage: hexagon tell <T-n|@role|@all|@lead> <text>");
+        const target = TASK_RE.test(to) ? normTask(to) : to.startsWith("@") ? to : `@${to}`;
+        const res = await client.call<{ answer?: string }>("message.send", { to: target, body: body.join(" ") });
+        console.log(res.answer ?? "sent");
+        break;
+      }
+      case "answer": {
+        const [qid, ...ans] = rest;
+        if (!qid || !ans.length) throw new Error("usage: hexagon answer <Q-n> <text>");
+        const res = await client.call<{ task_id: string }>("question.answer", { question_id: qid, answer: ans.join(" ") });
+        console.log(`answered ${qid} (${res.task_id})`);
+        break;
+      }
+      case "pause": case "resume": case "cancel": {
+        const t = rest[0];
+        if (t) await client.call(`agent.${cmd}`, { task: normTask(t) });
+        else if (cmd === "cancel") throw new Error("usage: hexagon cancel <T-n>");
+        else await client.call(`run.${cmd}`);
+        console.log(`${cmd}: ${t ? normTask(t) : "run"}`);
+        break;
+      }
+      case "retry": {
+        const agent = one(rest, "--agent");
+        const effort = one(rest, "--effort");
+        if (!rest[0]) throw new Error("usage: hexagon retry <T-n>");
+        await client.call("agent.retry", { task: normTask(rest[0]), agent, effort });
+        console.log(`${normTask(rest[0])}: new attempt queued`);
+        break;
+      }
+      case "diff": {
+        if (!rest[0]) throw new Error("usage: hexagon diff <T-n> [--stat]");
+        const res = await client.call<{ diff: string }>("agent.diff", { task: normTask(rest[0]), stat: rest.includes("--stat") });
+        console.log(res.diff);
+        break;
+      }
+      case "logs": {
+        if (!rest[0]) throw new Error("usage: hexagon logs <T-n> [N]");
+        const evs = await client.call<Parameters<typeof formatEvent>[0][]>("agent.events", { task: normTask(rest[0]), limit: Number(rest[1] ?? 100) });
+        for (const e of evs) { const l = formatEvent(e, true); if (l) console.log(l); }
+        break;
+      }
+      case "inbox": console.log(JSON.stringify(await client.call("inbox.list"), null, 2)); break;
+      case "merge": console.log((await client.call<{ text: string }>("merge.base")).text); break;
+      case "abort": await client.call("run.abort"); console.log("run aborted"); break;
+      case "clean": console.log(`removed ${(await client.call<{ removed: string[] }>("worktrees.clean")).removed.length} worktree(s)`); break;
+      default:
+        console.error(`unknown command: ${cmd}\n\n${USAGE}`);
+        process.exitCode = 2;
+    }
+  } finally {
+    client.close();
+  }
+}
+
+// ───────────── init / new: run an agent session in this terminal ─────────────
+
+async function init(args: string[]): Promise<void> {
+  const bare = bool(args, "--bare", "--no-agent");
+  const agent = one(args, "--agent");
+  const dir = process.cwd();
+  const created = scaffold(dir);
+  console.log(created.length ? `${c.blue("✔")} created ${created.join(", ")}` : "Hexagon is already set up here");
+  if (!(await isRepo(dir))) console.log(c.orange("! not a git repository yet — runs need git: `git init && git add -A && git commit -m init`"));
+  if (bare) return;
+  if (agent) {
+    const cfgFile = path.join(dir, ".hexagon", "config.toml");
+    fs.writeFileSync(cfgFile, fs.readFileSync(cfgFile, "utf8").replace(/(\[roles\.init\]\nagent = )"[^"]*"/, `$1"${agent}"`));
+  }
+  const client = await HexClient.connect(dir);
+  await client.subscribe();
+  console.log(`${c.cyan("◆")} the init agent is studying the repository and writing HEXAGON.md ${c.dim("(Ctrl-C to stop)")}`);
+  await client.call("init.start", { description: args.join(" ") || null });
+  const st = await followSession(client, "init");
+  client.close();
+  if (st.state !== "done") { process.exitCode = 1; return; }
+  console.log(`\n${c.blue("✔")} HEXAGON.md written${st.summary ? ` — ${st.summary}` : ""} · ${fmtCost(st.cost_usd)}`);
+  console.log(`Next: run ${c.cyan("hexagon")} and describe what you want built.`);
+}
+
+async function newGoal(args: string[]): Promise<void> {
+  const goal = args.join(" ").trim();
+  if (!goal) throw new Error('usage: hexagon new "<what you want built>"');
+  const r = root();
+  const client = await HexClient.connect(r);
+  if (process.stdout.isTTY && process.stdin.isTTY) {
+    await client.call("goal.new", { goal });
+    const { App } = await import("./tui/app.js");
+    await new App(client, r, "planner").start();
+    return;
+  }
+  await client.subscribe();
+  await client.call("goal.new", { goal });
+  const draft = new Promise<Draft>((resolve) => client.on("push", (p: Push) => { if (p.event === "draft" && p.data) resolve(p.data); }));
+  const st = await followSession(client, "planner");
+  if (st.state !== "done") { client.close(); process.exitCode = 1; return; }
+  const d = await draft;
+  console.log(`\n${c.bold("Plan")} ${d.id} · spec ${path.relative(r, d.spec_path)}\n${planTree(d.plan)}`);
+  for (const e of d.check.errors) console.log(c.orange(`✖ ${e}`));
+  for (const w of d.check.warnings) console.log(`! ${w}`);
+  console.log(`\nApprove with ${c.cyan("hexagon run")}, or open ${c.cyan("hexagon")} to revise it.`);
+  client.close();
+}
+
+/** Stream a solo session (init/planner) to the terminal; answer its questions inline. */
+async function followSession(client: HexClient, id: string): Promise<SessionStatus> {
+  let printed = 0;
+  let asked: string | null = null;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+  rl.on("SIGINT", () => { void client.call("session.cancel", { id }).finally(() => process.exit(130)); });
+  process.on("SIGINT", () => { void client.call("session.cancel", { id }).finally(() => process.exit(130)); });
+  return new Promise((resolve) => {
+    client.on("push", (p: Push) => {
+      if (p.event === "notice" && p.data.level === "error") console.log(c.orange(`✖ ${p.data.text}`));
+      if (p.event !== "session" || p.data.id !== id) return;
+      const s = p.data;
+      for (const f of s.feed.slice(printed)) {
+        const t = f.kind === "tool" ? c.blue(`  ▸ ${f.text}`) : f.kind === "status" ? c.cyan(`  · ${f.text}`) : f.kind === "error" ? c.orange(`  ✖ ${f.text}`) : f.kind === "user" ? c.bold(`  › ${f.text}`) : c.dim(`    ${f.text}`);
+        console.log(t);
+      }
+      printed = s.feed.length;
+      if (s.question && asked !== s.question.question_id) {
+        asked = s.question.question_id;
+        const opts = s.question.options?.length ? `\n${s.question.options.map((o) => `   ${o.id}) ${o.label}`).join("\n")}` : "";
+        void rl.question(c.orange(`\n? ${s.question.prompt}${opts}\n› `)).then((a) => client.call("session.say", { id, text: a || s.question!.options?.[0]?.label || "decide yourself" }));
+      }
+      if (s.state === "done" || s.state === "failed" || s.state === "cancelled") {
+        if (s.state === "failed") console.log(c.orange(`✖ ${s.error ?? "failed"}`));
+        rl.close();
+        resolve(s);
+      }
+    });
+  });
+}
+
+async function followRun(client: HexClient): Promise<void> {
+  await client.subscribe();
+  client.on("push", (p: Push) => {
+    if (p.event === "agent_event") { const l = formatEvent(p.data, false); if (l) console.log(l); }
+    if (p.event === "message") { const l = formatMessage(p.data); if (l && p.data.delivery.state !== "acked") console.log(l); }
+    if (p.event === "notice") console.log(`◆ ${p.data.text}`);
+    if (p.event === "run" && (p.data.state === "done" || p.data.state === "aborted")) {
+      console.log(runTable(p.data));
+      client.close();
+      process.exit(p.data.agents.every((a) => a.state === "done") ? 0 : 1);
+    }
+  });
+}
+
+// ───────────── agent protocol commands ─────────────
+
+async function agentOp(cmd: string, args: string[]): Promise<void> {
+  const r = process.env.HEXAGON_ROOT ?? findProjectRoot();
+  if (!r) { console.error("hexagon: not inside a Hexagon project"); process.exit(2); }
+  const a = [...args];
+  let op = cmd === "plan-check" ? "plan_check" : cmd;
+  let params: Record<string, unknown> = {};
+  switch (cmd) {
+    case "report": {
+      const phase = one(a, "--phase") as Phase | undefined;
+      const done = multi(a, "--done").flatMap((x) => x.split(/[,\s]+/)).filter(Boolean);
+      params = { activity: a.join(" ") || undefined, phase, done };
+      break;
+    }
+    case "ask": {
+      const options = multi(a, "--option");
+      const def = one(a, "--default");
+      params = { prompt: a.join(" "), options, default: def };
+      break;
+    }
+    case "note": params = { body: a.join(" ") }; break;
+    case "done": {
+      const summary = one(a, "--summary") ?? a.join(" ");
+      const status = one(a, "--status");
+      params = {
+        summary, status,
+        acceptance_evidence: multi(a, "--evidence").map((e) => {
+          const m = /^\s*(AC-\d+)\s*[:=-]\s*([\s\S]*)$/i.exec(e);
+          return { ac: m ? m[1]!.toUpperCase() : "AC-?", evidence: m ? m[2]! : e, verified: true };
+        }),
+        spec_issues: multi(a, "--issue"),
+        blockers: status === "blocked" ? multi(a, "--blocker").concat(multi(a, "--issue")) : multi(a, "--blocker"),
+        assumptions: multi(a, "--assume").map((text) => ({ text })),
+        follow_ups: multi(a, "--follow-up"),
+        allow: multi(a, "--allow"),
+      };
+      break;
+    }
+    case "review": {
+      const verdict = a.shift();
+      if (verdict !== "approve" && verdict !== "changes") { console.error("usage: hexagon review approve|changes --summary \"…\" [--finding \"high: file:line issue -> fix\"]"); process.exit(2); }
+      const summary = one(a, "--summary") ?? a.join(" ");
+      const findings = multi(a, "--finding").map((f) => {
+        const m = /^\s*(high|medium|low)\s*:\s*(?:([^\s:]+\.[\w]+)(?::(\d+))?\s+)?([\s\S]*?)(?:\s*->\s*([\s\S]*))?$/i.exec(f);
+        return m
+          ? { severity: m[1]!.toLowerCase(), ...(m[2] ? { file: m[2] } : {}), ...(m[3] ? { line: Number(m[3]) } : {}), issue: m[4]!.trim(), ...(m[5] ? { suggestion: m[5].trim() } : {}) }
+          : { severity: "medium", issue: f };
+      });
+      params = { verdict, summary, findings };
+      op = "review";
+      break;
+    }
+  }
+  let client: HexClient;
+  try {
+    client = await HexClient.connect(r, { autostart: false });
+  } catch {
+    console.error("hexagon: the Hexagon daemon is not running, so this report was not delivered. Continue your task.");
+    process.exit(1);
+  }
+  try {
+    const reply = await client.call<Reply>("agent.api", { agent: process.env.HEXAGON_AGENT ?? null, cwd: process.cwd(), op, args: params });
+    (reply.ok ? console.log : console.error)(reply.message);
+    process.exitCode = reply.ok ? 0 : 1;
+  } finally {
+    client.close();
+  }
+}
+
+function fmtCost(n: number): string {
+  return `$${n.toFixed(2)}`;
 }
 
 function latestRunStatus(paths: ProjectPaths): RunStatus | null {
   if (!fs.existsSync(paths.runs)) return null;
   const runs = fs.readdirSync(paths.runs).filter((d) => d.startsWith("r-")).sort();
-  for (const r of runs.reverse()) {
-    const s = readJson<RunStatus>(paths.run(r).status);
+  for (const run of runs.reverse()) {
+    const s = readJson<RunStatus>(paths.run(run).status);
     if (s) return s;
   }
   return null;
-}
-
-async function takeoverShell(r: string, task: string | undefined): Promise<void> {
-  if (!task) return void console.error("usage: hexagon takeover-shell <T-n>");
-  const client = await HexClient.connect(r);
-  const t = await client.call<{ worktree: string; branch: string; command: string[]; task_id: string }>("agent.takeover", { task });
-  console.log(c.magenta(`── You have taken over ${t.task_id} ──`));
-  console.log(`The agent is paused at its next safe point. You are in its worktree (branch ${t.branch}).`);
-  console.log(`Edit, run tests, commit or not — when you exit this shell you choose what happens next.\n`);
-  const [bin, ...args] = t.command;
-  await new Promise<void>((resolve) => {
-    const child = spawn(bin!, args, { cwd: t.worktree, stdio: "inherit", env: { ...process.env, HEXAGON_TASK: t.task_id } });
-    child.on("exit", () => resolve());
-    child.on("error", () => resolve());
-  });
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const ans = (await rl.question(`\n${t.task_id}: [h]and back to the agent · [d]one, verify & merge my changes · [x] discard my changes and hand back  (h/d/x) [h] `)).trim().toLowerCase();
-  rl.close();
-  const action = ans.startsWith("d") ? "done" : ans.startsWith("x") ? "discard" : "handback";
-  await client.call("agent.takeover_end", { task: t.task_id, action });
-  console.log(`${c.blue("✔")} ${action === "done" ? "marked done — the orchestrator will verify and merge" : action === "discard" ? "changes discarded, agent resumed" : "handed back to the agent"}`);
-  client.close();
 }
 
 main(process.argv.slice(2)).catch((e) => {

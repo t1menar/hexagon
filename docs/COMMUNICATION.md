@@ -12,17 +12,32 @@ Companion to [ARCHITECTURE.md](ARCHITECTURE.md). Covers:
 Schemas: [`schemas/agent-status.v1.schema.json`](../schemas/agent-status.v1.schema.json),
 [`schemas/message.v1.schema.json`](../schemas/message.v1.schema.json).
 
-> **v0.1 implementation notes:** where the code differs from this design:
-> - A blocking `ask_user` waits inside the tool call instead of ending the turn. The status
->   still shows `waiting_input`, and the answer comes back as the tool result.
-> - Blackboard notes are injected when a task starts, not pushed live to running agents.
-> - `/takeover` opens a shell in the worktree for every adapter. Resuming a native
->   `claude --resume` session will come with the Claude Code adapter.
-> - Ctrl-C on an empty line shows a hint, and pressing it twice leaves the shell. Use
->   `/pause` to pause the run.
-> - `hexagon agent report` for external CLIs isn't built yet.
-> - Tasks merge into a per-run integration branch (`hexagon/<run>/integration`), never
->   straight into your branch. `/merge` is the human gate into the base branch.
+> **v0.2 — agents are wrapped CLIs.** Where this document describes model tool calls
+> (`report_status`, `ask_user`, `post_note`, `submit_result`, `submit_review`), v0.2 agents run
+> shell commands instead. Each agent is a Claude Code session
+> (`claude -p --input-format stream-json --output-format stream-json`) or any `exec` CLI,
+> started in its worktree with `HEXAGON_ROOT`/`HEXAGON_AGENT` and a `hexagon` launcher on `PATH`:
+>
+> | v0.1 tool | v0.2 command |
+> |---|---|
+> | `report_status` | `hexagon report "<activity>" [--phase P] [--done AC-1]` |
+> | `ask_user` (blocking) | `hexagon ask "<q>" [--option …]`. The agent then ends its turn, and the answer arrives as its next user message. |
+> | `post_note` | `hexagon note "<fact>"` |
+> | `submit_result` | `hexagon done --summary … [--evidence "AC-1: …"] [--status …] [--issue …] [--assume …]` |
+> | `submit_review` | `hexagon review approve\|changes --summary … [--finding "high: f:12 issue -> fix"]` |
+> | `submit_plan` | The planner writes `spec.md` and `plan.json` to its output dir, then runs `hexagon plan-check` and `hexagon done`. |
+>
+> - **Delivery.** User messages are written to the CLI's stdin while it works. Claude Code
+>   picks them up at its next safe point, and its replay of the message is the
+>   acknowledgement (✓ received).
+> - **Pause and takeover.** Pause stops the process; resume continues the same session
+>   (`--resume <id>`). Takeover runs `claude --resume <id>` in your terminal, in the worktree.
+> - **Chat events.** Each agent's conversation is stored as `chat` events in its
+>   `events.jsonl`: agent text, your messages, and Hexagon's instructions.
+> - **Interface.** The line-based REPL was replaced by a full-screen dashboard
+>   (`src/tui/`): task graph, agent list, per-agent chat, input with autocomplete.
+> - **Integration branch.** Tasks still merge into a per-run integration branch;
+>   `/merge` is the human gate.
 
 ---
 

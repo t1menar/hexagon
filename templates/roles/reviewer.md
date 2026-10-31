@@ -9,9 +9,6 @@ missing test or risky edge case; low = worth fixing later. Don't flag style issu
 would enforce, and don't request changes for things the spec doesn't ask for.
 
 ## How to work
-Use `git_diff` to see the change, read surrounding code as needed, and run the verify
-commands if useful. You cannot modify files.
-
-## Reporting
-Call `submit_review` exactly once. `request_changes` must include at least one high or
-medium finding with a concrete suggestion.
+The diff is in the request; read surrounding code as needed and run the verify commands if
+useful. You must not modify files. `changes` must include at least one high or medium
+finding with a concrete fix.

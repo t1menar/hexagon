@@ -1,6 +1,6 @@
 // Contract types. JSON Schemas in /schemas are the source of truth; these mirror them.
 
-export type Role = "planner" | "implementer" | "tester" | "reviewer" | "integrator" | "resolver" | "lead";
+export type Role = "planner" | "implementer" | "tester" | "reviewer" | "integrator" | "resolver" | "lead" | "init";
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type AgentState =
@@ -159,6 +159,8 @@ export interface ReviewVerdict {
 export type AgentEvent =
   | { type: "state"; state: AgentState; reason?: string | null }
   | { type: "progress"; text: string }
+  /** Conversation: what the agent said, what you sent it, what Hexagon told it. */
+  | { type: "chat"; from: "agent" | "user" | "hexagon"; text: string; message_id?: string }
   | { type: "status_report"; phase?: Phase; activity?: string; checklist?: { id: string; label?: string; status: ChecklistStatus }[] }
   | { type: "tool_call"; name: string; summary: string }
   | { type: "tool_result"; name: string; ok: boolean; summary: string }

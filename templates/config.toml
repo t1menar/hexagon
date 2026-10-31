@@ -8,6 +8,9 @@ budget_usd = 20         # pause the run when spend reaches this (0 = no limit)
 # base_branch = "main"  # default: the branch checked out when the run starts
 
 # Which agent and effort each role uses. Agents are defined below.
+[roles.init]
+agent = "claude"
+effort = "medium"
 [roles.planner]
 agent = "claude"
 effort = "high"
@@ -24,12 +27,21 @@ effort = "high"
 agent = "claude"
 effort = "low"
 
+# Agents are coding CLIs that Hexagon wraps; each runs in its own git worktree.
+# claude-code: the Claude Code CLI (streams events, takes live messages, takeover = `claude --resume`).
 [agents.claude]
-adapter = "claude"
-model = "claude-sonnet-5-5"
+adapter = "claude-code"
+command = ["claude"]
+model = "sonnet"        # any value `claude --model` accepts
+# args = ["--add-dir", "../shared"]
 
-# Scripted offline agent, useful to try the workflow without API calls:
-#   hexagon run --plan plan.json --agent mock
+# Any other non-interactive coding CLI ({prompt} is replaced by the task prompt):
+# [agents.codex]
+# adapter = "exec"
+# command = ["codex", "exec", "--full-auto", "{prompt}"]
+
+# Scripted offline agent, useful to try the workflow without spending anything:
+#   set agent = "mock" for every role, or `hexagon run plan.json --agent mock`
 [agents.mock]
 adapter = "mock"
 step_ms = 600
@@ -42,8 +54,10 @@ max_outbound_per_run = 10
 max_blocking_questions = 2
 
 [sandbox]
-# Commands agents may run via run_cmd (prefix match). Use ["*"] to allow anything.
-allow_commands = ["npm", "npx", "pnpm", "yarn", "node", "tsc", "vitest", "jest", "pytest", "python", "python3", "go", "cargo", "make", "ls", "cat", "grep", "rg", "find", "git status", "git diff", "git log"]
+# Shell commands agents may run without asking (prefix match; passed to Claude Code as
+# --allowedTools "Bash(<prefix>:*)"). File edits inside the worktree are always allowed.
+# ["*"] = anything (--permission-mode bypassPermissions). `hexagon init` adds what your project needs.
+allow_commands = ["npm", "npx", "pnpm", "yarn", "node", "tsc", "vitest", "jest", "pytest", "python", "python3", "go", "cargo", "make", "mvn", "gradle", "./gradlew", "./mvnw", "java", "sh", "ls", "cat", "grep", "rg", "find", "mkdir", "test", "git status", "git diff", "git log"]
 command_timeout_s = 600
 
 [ui]

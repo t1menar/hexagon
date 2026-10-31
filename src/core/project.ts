@@ -63,7 +63,14 @@ export function scaffold(root: string): string[] {
   const p = new ProjectPaths(root);
   const created: string[] = [];
   const copy = (resource: string, to: string) => {
-    if (fs.existsSync(to)) return;
+    if (fs.existsSync(to)) {
+      // Refresh role prompts from v0.1 that still reference the removed API tools.
+      const cur = fs.readFileSync(to, "utf8");
+      if (!/\/roles\//.test(to) || !/\b(submit_result|submit_review|submit_plan|report_status|ask_user)\b/.test(cur)) return;
+      fs.writeFileSync(to, readResource(resource));
+      created.push(`${path.relative(root, to)} (updated)`);
+      return;
+    }
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.writeFileSync(to, readResource(resource));
     created.push(path.relative(root, to));
@@ -75,10 +82,12 @@ export function scaffold(root: string): string[] {
   fs.mkdirSync(p.runs, { recursive: true });
   fs.mkdirSync(path.join(root, "specs"), { recursive: true });
   const gi = path.join(root, ".gitignore");
-  const ignore = ["# Hexagon local/personal data", ".hexagon/runs/", ".hexagon/worktrees/", ".hexagon/metrics.db", ".hexagon/hexagon.sock", ".hexagon/daemon.*", ".hexagon/shell_history"];
+  const ignore = [".hexagon/runs/", ".hexagon/worktrees/", ".hexagon/drafts/", ".hexagon/bin/", ".hexagon/plans/", ".hexagon/metrics.db", ".hexagon/hexagon.sock", ".hexagon/daemon.*", ".hexagon/shell_history"];
   const existing = fs.existsSync(gi) ? fs.readFileSync(gi, "utf8") : "";
-  if (!existing.includes(".hexagon/runs/")) {
-    fs.appendFileSync(gi, (existing && !existing.endsWith("\n") ? "\n" : "") + ignore.join("\n") + "\n");
+  const missing = ignore.filter((l) => !existing.split("\n").includes(l));
+  if (missing.length) {
+    const head = existing.includes("# Hexagon local/personal data") ? [] : ["# Hexagon local/personal data"];
+    fs.appendFileSync(gi, (existing && !existing.endsWith("\n") ? "\n" : "") + [...head, ...missing].join("\n") + "\n");
     created.push(".gitignore (updated)");
   }
   return created;

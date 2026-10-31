@@ -1,120 +1,116 @@
 # Hexagon
 
-Terminal orchestrator for spec-driven development with multiple AI coding agents
-running in parallel.
+A terminal dashboard that runs several coding agents in parallel on one goal. The agents are
+Claude Code (or any other coding CLI), each in its own git worktree.
 
-- **Specs are the source of truth.** Markdown requirements with acceptance criteria are
-  planned into a task DAG. Each task is implemented in an isolated git worktree, then
-  verified, reviewed and merged.
-- **Interactive shell.** Run `hexagon` and drive everything with slash commands. You can
-  focus, message, attach to or take over any agent, each in its own terminal if you like.
-- **Status contract.** Every agent publishes a schema-validated `status.json`, written
-  atomically by a single writer, so any console or script can follow along.
-- **Reusable skills.** Versioned markdown workflow instructions are compiled into each
-  agent's prompt.
-- **Personal metrics.** Agent usage and output quality are recorded locally for your own
-  analysis. Nothing is exported.
+- **One step from goal to running agents.** Type what you want. A planner agent writes a
+  short spec and a task graph, and you approve it with Enter (or say what to change).
+  Agents then implement the tasks in parallel. Hexagon re-runs each task's verify commands,
+  a reviewer agent checks the diff, and the work is merged into an integration branch.
+  `/merge` brings it into your branch.
+- **Wraps agent CLIs, no API integration.** Each agent is a real `claude -p` session
+  (stream-json), so it uses your Claude Code login, tools, CLAUDE.md and settings. Agents
+  report back by running plain shell commands (`hexagon report|ask|note|done`). Any other
+  non-interactive CLI can be plugged in with `adapter = "exec"`.
+- **See everything.** A full-screen dashboard shows:
+  - a live task graph (boxes and arrows, state per task);
+  - the active agents, with what each is doing and what it costs;
+  - a **chat with the selected agent**: its replies, your messages (✓ once received),
+    Hexagon's instructions, and its tool steps folded into compact lines.
+- **Steer and take over.** Message any agent mid-task, answer its questions, pause it, or
+  take over: you land in the same Claude Code conversation (`claude --resume`) in its
+  worktree, and hand it back when you're done.
+- **`hexagon init` runs an agent.** It studies the repository (or asks what you're
+  building) and writes `HEXAGON.md`, the brief every agent reads first.
+- **Status contract.** Every agent publishes a schema-validated `status.json`, so scripts
+  can follow along too. Metrics are local and personal; nothing is exported.
 
 ## Quick start
 
-Requires git. Building needs Node ≥ 22; the resulting binary does not.
+Requires git and [Claude Code](https://claude.com/claude-code) (`claude` on your PATH,
+logged in). Building needs Node ≥ 22; the binary doesn't.
 
 ```bash
 git clone git@github.com:t1menar/hexagon.git && cd hexagon
-npm install
-npm run install:bin        # builds a standalone ./build/hexagon and copies it to ~/.local/bin
-#   or: npm run build:bin  (binary only)   ·   npm run build && npm link  (dev: runs from dist/)
+npm install && npm run install:bin           # standalone binary → ~/.local/bin/hexagon
 
 cd ~/projects/your-repo                      # a git repo with at least one commit
-hexagon init                                 # creates .hexagon/ (config, roles, skills) and specs/
-$EDITOR specs/feature.spec.md                # write a spec (format below)
-hexagon                                      # open the shell
+hexagon init                                 # an agent writes HEXAGON.md (commit it)
+hexagon                                      # dashboard: type a goal, press Enter
 ```
 
-Inside the shell:
-
 ```
-/spec lint                 validate specs
-/plan                      planner turns specs into tasks (saved to .hexagon/plans/)
-/run                       start: agents work in parallel, each in its own worktree
-/focus T-2                 plain text now goes to T-2 …
-please also handle the empty-password case
-/inbox · /answer Q-1 2     answer agents' questions
-/attach T-2 · /open T-2    live view here, or in a new terminal (tmux / iTerm / Terminal)
-/takeover T-2              pause the agent and get a shell in its worktree
-/merge                     merge the run's integration branch into your branch
-```
-
-Claude agents use `claude-sonnet-5-5` and find credentials through the Anthropic SDK
-(`ANTHROPIC_API_KEY`, or a profile from `ant auth login`). To try the whole workflow
-offline, set `agent = "mock"` for the roles in `.hexagon/config.toml`.
-
-### Spec format
-
-```markdown
----
-spec: auth
----
-# Authentication
-
-## REQ-AUTH-001: Password login
-Users log in with email + password and receive a session cookie.
-
-**Acceptance**
-- AC-1: Valid credentials → 200 with an HttpOnly session cookie
-- AC-2: Invalid credentials → 401, generic message
-
-**Touches**: `src/auth/**`
+⬡ HEXAGON  your-repo │ ⠙ running │ 1/3 done │ $0.21 / $20.00 │ 2m10s
+╭─ Task graph ────────────────────────────────────────────────────────────────╮
+│  ╭──────────────────────╮     ╭──────────────────────╮                      │
+│  │ ✔ T-1 implementer    │     │ ⠙ T-2 tester         │                      │
+│  │ Hello controller     │──┬─▶│ Smoke test script    │                      │
+│  ╰──────────────────────╯  │  ╰──────────────────────╯                      │
+│                            │  ╭──────────────────────╮                      │
+│                            ╰─▶│ ? T-3 implementer    │                      │
+│                               │ README run section   │                      │
+╰─────────────────────────────────────────────────────────────────────────────╯
+╭─ Agents ───────────────────╮╭─ Chat · T-2 · tester · claude (sonnet) ────────╮
+│  ◆ hexagon                 ││ ⬡ hexagon  14:02                               │
+│  ✔ T-1 implementer  $0.09  ││   Task T-2: Smoke test script (AC-1)            │
+│▌ ⠙ T-2 tester       $0.07  ││ ◆ T-2  14:03                                    │
+│▌   $ sh scripts/smoke.sh   ││   The jar builds; now starting the server…      │
+│  ? T-3 implementer  $0.05  ││   ▸ $ mvn -q package                            │
+╰────────────────────────────╯╰─────────────────────────────────────────────────╯
+  to T-2  › also check /hello?name=Ann▏
 ```
 
-## How a run works
+**Keys:**
+- **Typing** goes to whoever the chip before the input names: a new goal, plan feedback,
+  the selected agent, an answer to a question, or the lead (`@lead`).
+- `/` opens commands and `@` mentions, with suggestions as you type (Tab or → to
+  complete).
+- **Tab** or **↑↓** switches agents.
+- **Ctrl-T** takes over the selected agent, **Ctrl-O** opens it in a new terminal window,
+  and **Ctrl-D** shows its diff.
+- **Ctrl-C** twice leaves; the agents keep working in the background daemon.
+
+Without the dashboard:
+
+```bash
+hexagon new "add GET /health returning the git sha"    # planner → draft spec + plan
+hexagon run --follow                                   # approve and stream the run
+hexagon status · hexagon tell T-2 "…" · hexagon answer Q-1 2 · hexagon takeover T-2 · hexagon merge
+```
+
+To try it all offline at no cost, set `agent = "mock"` for every role in `.hexagon/config.toml`.
+
+## How it works
 
 ```
-spec → planner → task DAG → for each ready task (respecting deps, file leases, -j N):
-  worktree ← integration branch → agent implements → out-of-scope changes reverted → commit
-  → verify commands re-run by Hexagon → reviewer agent → merge into hexagon/<run>/integration
-→ /merge integration branch into your base branch
+goal ─▶ planner agent ─▶ specs/<name>.spec.md + task graph ─▶ you approve
+     ─▶ for each ready task (deps, file leases, -j N): worktree from the integration branch
+        ─▶ `claude -p` session implements it, runs `hexagon done`
+        ─▶ out-of-scope edits reverted ─▶ commit ─▶ verify commands re-run ─▶ reviewer agent
+        ─▶ merged into hexagon/<run>/integration
+     ─▶ /merge into your branch
 ```
 
-Failed attempts are retried with one step more effort, and a fix loop runs when
-verification or review fails. A task's dependents are blocked if it can't complete.
-Spending pauses the run at `budget_usd`.
+- Failed attempts are retried with more effort.
+- A failed verify or review sends the agent back into the same session with the output.
+- The run pauses when spending reaches `budget_usd`.
 
-## Status
-
-v0.1 has the following:
-
-- Daemon with a JSON-RPC Unix-socket API, plus `status.json` / `run.status.json` /
-  `events.jsonl` / `messages.jsonl`. Contracts are in `schemas/`.
-- Spec parser and linter, plan validation, scheduler, supervisor, retries and budget.
-- Claude adapter. It streams the Messages API with adaptive thinking, effort per role,
-  prompt caching, refusal fallback, and an append-only transcript.
-- Mock adapter for offline runs.
-- Messaging: user → agent instructions delivered at safe points and acknowledged, blocking
-  and non-blocking questions, blackboard notes, change requests, and the Lead
-  (`@lead …`).
-- Shell with slash commands, completion, history, focus cycling, attach, open-in-terminal
-  and takeover.
-
-Not built yet:
-
-- Adapters for Claude Code (Agent SDK), the OpenAI CLI and DeepSeek.
-- A full-screen dashboard.
-- `hexagon resume` after a daemon restart.
-- An agent that resolves merge conflicts.
-- Personal metrics analysis (`stats` beyond per-run totals, ratings).
+**Agent permissions:**
+- Edits are auto-accepted inside the worktree.
+- Shell commands are limited to `[sandbox].allow_commands` (Claude Code
+  `--allowedTools "Bash(<prefix>:*)"`). `hexagon init` adds what your project needs.
+- `["*"]` allows everything (bypass mode).
 
 ## Docs
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): architecture and implementation plan
-- [docs/COMMUNICATION.md](docs/COMMUNICATION.md): messaging, the agent status contract,
-  the shell, and attach/takeover
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): architecture and design
+- [docs/COMMUNICATION.md](docs/COMMUNICATION.md): messaging, status contract, attach and takeover
 - [schemas/](schemas/): JSON Schemas for agent status, messages, plans and results
 
 ## Development
 
 ```bash
-npm run build:bin  # standalone executable (Node SEA: esbuild bundle + embedded templates/schemas)
-npm run build      # tsc → dist/
-npm test           # unit + end-to-end (mock agent, real git worktrees)
+npm run install:bin   # build the standalone executable (Node SEA) and install it
+npm run build         # tsc → dist/
+npm test              # unit + end-to-end (mock agent, real git worktrees)
 ```

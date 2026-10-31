@@ -2,17 +2,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { WorkspaceTools, validateToolInput, toolsForRole } from "../src/agents/tools.js";
+import { ClaudeCodeAdapter, toolSummary } from "../src/agents/claude-code.js";
+import type { AgentRunContext } from "../src/agents/types.js";
 import type { Plan, Task } from "../src/contracts/types.js";
 import { validateMessage, validateStatus } from "../src/contracts/validate.js";
-import { checkPlan, topoOrder } from "../src/core/plan.js";
+import { checkPlan, normalizePlan, topoOrder } from "../src/core/plan.js";
 import { RunPaths } from "../src/core/project.js";
 import { MessageRouter } from "../src/core/router.js";
 import { overlaps, escalate } from "../src/core/scheduler.js";
 import { lintSpec, parseSpec } from "../src/core/spec.js";
 import { StatusStore } from "../src/core/status.js";
 import { confinePath, globToRegExp, matchesAny, readJsonl } from "../src/util/fsx.js";
-import { tokenize } from "../src/shell/repl.js";
+import { tokenize } from "../src/tui/app.js";
+import { renderDag } from "../src/tui/dag.js";
+import { allowCommands } from "../src/core/config.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "hex-test-"));
 
@@ -124,29 +127,90 @@ describe("router", () => {
   });
 });
 
-describe("tools", () => {
-  it("enforces write scope and allowlist", async () => {
-    const dir = tmp();
-    const ws = new WorkspaceTools({ cwd: dir, writeGlobs: ["src/**"], allowCommands: ["ls", "node"], timeoutS: 10 });
-    expect((await ws.run("write_file", { path: "src/a.ts", content: "x" })).is_error).toBeFalsy();
-    expect((await ws.run("write_file", { path: "pkg.json", content: "x" })).content).toMatch(/outside your write scope/);
-    expect((await ws.run("write_file", { path: "../evil", content: "x" })).content).toMatch(/escapes/);
-    expect((await ws.run("edit_file", { path: "src/a.ts", old_str: "x", new_str: "y" })).is_error).toBeFalsy();
-    expect(fs.readFileSync(path.join(dir, "src/a.ts"), "utf8")).toBe("y");
-    expect((await ws.run("run_cmd", { cmd: "rm -rf /" })).content).toMatch(/allowlist/);
-    expect((await ws.run("run_cmd", { cmd: "ls; rm x" })).content).toMatch(/operators/);
-    const ok = await ws.run("run_cmd", { cmd: "node -e \"process.exit(3)\"".replace(/"/g, "'") });
-    expect(ok.content).toMatch(/^exit 3/);
+describe("claude code adapter", () => {
+  const ctx = (over: Partial<AgentRunContext>): AgentRunContext => ({
+    agentRunId: "T-1-a1", role: "implementer", effort: "medium", cwd: "/w", system: "SYS", prompt: "P", sessionId: "uuid-1", resume: false,
+    env: { HEXAGON_BIN: "/r/.hexagon/bin/hexagon" }, allowCommands: ["mvn", "git diff"], readOnly: false,
+    host: {} as never, api: {} as never, signal: new AbortController().signal, ...over,
   });
-  it("validates tool inputs and keeps a stable order", () => {
-    expect(validateToolInput("ask_user", { kind: "choice", prompt: "?", blocking: true })).toEqual([]);
-    expect(validateToolInput("ask_user", { prompt: "?" }).length).toBeGreaterThan(0);
-    expect(toolsForRole("implementer").map((t) => t.name)).toEqual([...toolsForRole("implementer").map((t) => t.name)].sort());
+  const a = new ClaudeCodeAdapter("claude", { command: ["claude"], model: "sonnet", args: [] });
+  it("builds stream-json args with permissions from the allowlist", () => {
+    const args = a.args(ctx({}));
+    expect(args).toContain("--input-format");
+    expect(args.slice(args.indexOf("--session-id"), args.indexOf("--session-id") + 2)).toEqual(["--session-id", "uuid-1"]);
+    expect(args).toContain("Bash(mvn:*)");
+    expect(args).toContain("Bash(git diff:*)");
+    expect(args).toContain("Bash(hexagon:*)");
+    expect(args).toContain("Bash(/r/.hexagon/bin/hexagon:*)");
+    expect(args[args.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+    expect(args[args.indexOf("--model") + 1]).toBe("sonnet");
+  });
+  it("resumes sessions, goes read-only for reviewers, and bypasses with *", () => {
+    expect(a.args(ctx({ resume: true }))).toContain("--resume");
+    const ro = a.args(ctx({ readOnly: true }));
+    expect(ro).toContain("--disallowedTools");
+    expect(ro.slice(ro.indexOf("--allowedTools"))).not.toContain("Edit");
+    const any = a.args(ctx({ allowCommands: ["*"] }));
+    expect(any[any.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+    expect(a.takeoverCommand("uuid-1")).toEqual(["claude", "--resume", "uuid-1"]);
+  });
+  it("summarizes tool calls and hides protocol reports", () => {
+    expect(toolSummary("Bash", { command: "mvn -q test" })).toBe("$ mvn -q test");
+    expect(toolSummary("Bash", { command: "hexagon report \"x\"" })).toBeNull();
+    expect(toolSummary("Edit", { file_path: "/p/.hexagon/worktrees/r-1/T-1-a1/src/A.java" })).toBe("edit src/A.java");
+  });
+});
+
+describe("plan normalization", () => {
+  it("fills optional fields so agents can write short plans", () => {
+    const p = normalizePlan({ tasks: [{ id: "T-1", title: "x", acceptance: ["AC-1"], files: { write: ["a"] }, verify: ["true"] }] }, { id: "p-1", specs: ["specs/x.md"] });
+    expect(checkPlan(p).errors).toEqual([]);
+    expect(p.tasks[0]!.definition_of_done).toEqual(["AC-1 holds"]);
+  });
+});
+
+describe("config", () => {
+  it("adds allowed commands in place", () => {
+    const f = path.join(tmp(), "config.toml");
+    fs.writeFileSync(f, "[sandbox]\nallow_commands = [\"ls\"]\ncommand_timeout_s = 5\n");
+    expect(allowCommands(f, ["mvn", "ls"])).toEqual(["mvn"]);
+    expect(fs.readFileSync(f, "utf8")).toContain('allow_commands = ["mvn", "ls"]');
+  });
+});
+
+describe("dag", () => {
+  it("draws boxes and arrows for dependencies", () => {
+    const nodes = [
+      { id: "T-1", title: "Controller", role: "implementer", deps: [], state: "done" as const },
+      { id: "T-2", title: "Smoke test", role: "tester", deps: ["T-1"], state: "running" as const },
+      { id: "T-3", title: "Docs", role: "implementer", deps: [], state: "queued" as const },
+      { id: "T-4", title: "Release", role: "implementer", deps: ["T-2", "T-3"], state: "queued" as const },
+    ];
+    const text = renderDag(nodes, { maxW: 120, maxH: 20, frame: 0 }).lines(false).join("\n");
+    for (const id of ["T-1", "T-2", "T-3", "T-4"]) expect(text).toContain(id);
+    expect(text).toContain("▶");
+    expect(text).toContain("╭");
   });
 });
 
 describe("shell", () => {
   it("tokenizes quotes", () => {
     expect(tokenize(`tell T-1 "hello world" x`)).toEqual(["tell", "T-1", "hello world", "x"]);
+  });
+});
+
+describe("git", () => {
+  it("lists uncommitted files without losing characters", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { uncommittedFiles } = await import("../src/core/git.js");
+    const dir = tmp();
+    const g = (...a: string[]) => execFileSync("git", a, { cwd: dir });
+    g("init", "-q");
+    fs.writeFileSync(path.join(dir, "hello.sh"), "a");
+    g("add", "-A");
+    g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x");
+    fs.writeFileSync(path.join(dir, "hello.sh"), "b");
+    fs.writeFileSync(path.join(dir, "new file.txt"), "c");
+    expect((await uncommittedFiles(dir)).sort()).toEqual(["hello.sh", "new file.txt"]);
   });
 });

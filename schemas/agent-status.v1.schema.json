@@ -21,7 +21,7 @@
     "agent_run_id": { "type": "string", "pattern": "^T-[0-9]+-a[0-9]+$" },
     "task_id": { "type": "string", "pattern": "^T-[0-9]+$" },
     "attempt": { "type": "integer", "minimum": 1 },
-    "role": { "enum": ["planner", "implementer", "tester", "reviewer", "integrator", "resolver", "lead"] },
+    "role": { "enum": ["planner", "implementer", "tester", "reviewer", "integrator", "resolver", "lead", "init"] },
     "agent": {
       "type": "object",
       "additionalProperties": false,

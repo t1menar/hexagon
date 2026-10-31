@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HexClient } from "../src/client/client.js";
 import type { AgentStatus, Message, Plan, RunStatus } from "../src/contracts/types.js";
+import type { Draft } from "../src/daemon/orchestrator.js";
 import { validateStatus } from "../src/contracts/validate.js";
 import { scaffold } from "../src/core/project.js";
 import { DaemonServer } from "../src/daemon/server.js";
@@ -44,10 +45,6 @@ describe("end to end with the mock agent", () => {
     fs.writeFileSync(path.join(root, ".hexagon/config.toml"), cfg);
     git(root, "add", "-A");
     git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hexagon init");
-    fs.writeFileSync(
-      path.join(root, "specs/demo.spec.md"),
-      "---\nspec: demo\n---\n# Demo\n\n## REQ-DEMO-001: Greeting\nA greeting file.\n\n**Acceptance**\n- AC-1: greeting.txt exists\n\n**Touches**: `greeting.txt`\n\n## REQ-DEMO-002: Farewell\nA farewell file.\n\n**Acceptance**\n- AC-1: farewell.txt exists\n",
-    );
     server = new DaemonServer(root);
     await server.listen();
     client = await HexClient.connect(root, { autostart: false });
@@ -59,22 +56,40 @@ describe("end to end with the mock agent", () => {
     server?.orch.shutdown();
   });
 
-  it("plans, runs, asks, takes instructions, verifies, reviews and merges", async () => {
+  it("init agent writes HEXAGON.md", async () => {
+    await client.call("init.start", {});
+    await until(async () => fs.existsSync(path.join(root, "HEXAGON.md")) && (await client.call<{ sessions: { id: string; state: string }[] }>("ui.snapshot")).sessions.find((s) => s.id === "init")?.state === "done");
+    const snap = await client.call<{ has_context: boolean }>("ui.snapshot");
+    expect(snap.has_context).toBe(true);
+    git(root, "add", "-A");
+    git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "context");
+  });
+
+  it("rejects protocol calls from unknown agents", async () => {
+    const r = await client.call<{ ok: boolean }>("agent.api", { agent: "T-9-a1", op: "report", args: { activity: "x" } });
+    expect(r.ok).toBe(false);
+  });
+
+  it("goal → draft plan → approve → run: asks, takes instructions, verifies, reviews and merges", async () => {
     const pushes: Message[] = [];
     client.on("push", (p) => { if (p.event === "message") pushes.push(p.data); });
 
-    // Planner (mock) → plan file
-    const planned = await client.call<{ path: string; plan: Plan }>("plan.create", { specs: [] });
-    expect(planned.plan.tasks).toHaveLength(2);
+    // Planner (mock) turns the goal into a spec + plan draft.
+    const drafted = new Promise<Draft>((resolve) => client.on("push", (p) => { if (p.event === "draft" && p.data) resolve(p.data); }));
+    await client.call("goal.new", { goal: "Greeting and farewell" });
+    const draft = await drafted;
+    expect(draft.plan.tasks).toHaveLength(2);
+    expect(fs.existsSync(draft.spec_path)).toBe(true);
+    expect(draft.check.errors).toEqual([]);
 
-    // Customize: T-2 asks a question and has a verify command; T-2 depends on T-1.
-    const plan = planned.plan;
+    // The user edits the plan: T-2 asks a question.
+    const plan = JSON.parse(fs.readFileSync(draft.plan_path, "utf8")) as Plan;
     plan.tasks[1]!.description = "@ask: Formal or casual farewell?";
-    plan.tasks[1]!.depends_on = ["T-1"];
-    plan.tasks[1]!.verify = ["test -f hexagon-mock/req-demo-002.md"];
-    fs.writeFileSync(planned.path, JSON.stringify(plan));
+    fs.writeFileSync(draft.plan_path, JSON.stringify(plan));
+    await client.call("draft.reload");
 
-    const { run_id } = await client.call<{ run_id: string }>("run.start", { plan_path: planned.path });
+    const { run_id } = await client.call<{ run_id: string }>("draft.approve", {});
+
     expect(run_id).toMatch(/^r-/);
 
     // T-1: send an instruction while it runs; it should be delivered and acknowledged.
@@ -111,9 +126,9 @@ describe("end to end with the mock agent", () => {
     const last = new Map(msgs.map((m) => [m.id, m]));
     expect(last.get(sent.messages[0]!.id)!.delivery.state).toBe("acked");
     const integ = path.join(root, ".hexagon/worktrees", run_id, "integration");
-    expect(fs.readFileSync(path.join(integ, "greeting.txt"), "utf8")).toContain("Say hello in Russian too");
+    expect(fs.readFileSync(path.join(integ, "hexagon-mock/part-1.md"), "utf8")).toContain("Say hello in Russian too");
     // The answer reached T-2's output.
-    expect(fs.readFileSync(path.join(integ, "hexagon-mock/req-demo-002.md"), "utf8")).toContain("Option B");
+    expect(fs.readFileSync(path.join(integ, "hexagon-mock/part-2.md"), "utf8")).toContain("Option B");
 
     // Commits carry trailers; both tasks merged into the integration branch.
     const log = git(integ, "log", "--format=%B", "-n", "10");
@@ -123,7 +138,7 @@ describe("end to end with the mock agent", () => {
     // Merge into main.
     const merged = await client.call<{ text: string }>("merge.base");
     expect(merged.text).toMatch(/Merged/);
-    expect(fs.existsSync(path.join(root, "greeting.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "hexagon-mock/part-1.md"))).toBe(true);
     expect(pushes.some((m) => m.type === "question")).toBe(true);
   });
 });
