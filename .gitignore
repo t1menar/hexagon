@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.DS_Store
+
+# Hexagon local/personal data — never commit
+.hexagon/runs/
+.hexagon/worktrees/
+.hexagon/metrics.db
+.hexagon/*.db-journal
+.hexagon/*.db-wal
+
+# Local Claude Code settings
+.claude/settings.local.json
