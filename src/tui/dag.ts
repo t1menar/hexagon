@@ -116,6 +116,42 @@ const LINE: Record<number, string> = {
   [U | D | R]: "├", [U | D | L]: "┤", [L | R | D]: "┬", [L | R | U]: "┴", [U | D | L | R]: "┼",
 };
 
+/** Finished links are drawn as double bonds. */
+const DOUBLE: Record<string, string> = { "─": "═", "│": "║", "╭": "╔", "╮": "╗", "╰": "╚", "╯": "╝", "├": "╠", "┤": "╣", "┬": "╦", "┴": "╩", "┼": "╬" };
+
+/** Cells of a hexagon's outline, clockwise from the top-left edge (for the orbiting electron). */
+function perimeter(x: number, y: number, w: number, h: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = x + 1; i <= x + w - 2; i++) out.push([i, y]);
+  for (let j = y + 1; j <= y + h - 2; j++) out.push([x + w - 1, j]);
+  for (let i = x + w - 2; i >= x + 1; i--) out.push([i, y + h - 1]);
+  for (let j = y + h - 2; j >= y + 1; j--) out.push([x, j]);
+  return out;
+}
+
+/**
+ * A hexagonal node:   ╱──────────╲
+ *                    ╱ ● Title    ╲
+ *                    ╲ T-1 · role ╱
+ *                     ╲──────────╱
+ */
+function hexagon(c: Canvas, x: number, y: number, w: number, h: number, style: string, dashed: boolean) {
+  const edge = dashed ? "╌" : "─";
+  c.set(x + 1, y, "╱", style);
+  for (let i = x + 2; i <= x + w - 3; i++) c.set(i, y, edge, style);
+  c.set(x + w - 2, y, "╲", style);
+  const mid = h - 2;
+  for (let j = 0; j < mid; j++) {
+    const upper = j < Math.ceil(mid / 2);
+    const one = mid === 1;
+    c.set(x, y + 1 + j, one ? "<" : upper ? "╱" : "╲", style);
+    c.set(x + w - 1, y + 1 + j, one ? ">" : upper ? "╲" : "╱", style);
+  }
+  c.set(x + 1, y + h - 1, "╲", style);
+  for (let i = x + 2; i <= x + w - 3; i++) c.set(i, y + h - 1, edge, style);
+  c.set(x + w - 2, y + h - 1, "╱", style);
+}
+
 export interface DagRenderOptions {
   maxW: number;
   maxH: number;
@@ -123,7 +159,7 @@ export interface DagRenderOptions {
   selected?: string | null;
 }
 
-/** Render the task DAG as boxes and arrows. */
+/** Render the task DAG as a molecule: hexagonal agents joined by bonds. */
 export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
   if (!nodes.length) return new Canvas(Math.max(1, o.maxW), 1);
   const { layers, edges } = layout(nodes);
@@ -172,6 +208,8 @@ export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
     for (let y = a; y <= b; y++) mark(x, y, (y < b ? D : 0) | (y > a ? U : 0), style, r);
   };
   const arrows: { x: number; y: number; style: string }[] = [];
+  /** Cells of bonds into working agents, in flow order: electrons travel along them. */
+  const flows: { cells: [number, number][]; style: string }[] = [];
   for (const [a, b] of edges) {
     const pa = pos.get(a)!;
     const pb = pos.get(b)!;
@@ -183,12 +221,16 @@ export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
     const bus = sx + Math.floor(G / 2);
     const bReal = realOf(b) !== null;
     const tx = bReal ? pb.x - 1 : pb.x;
-    if (!realOf(a)) hseg(pa.x, sx, pa.mid, style, r);
-    if (pa.mid === pb.mid) hseg(sx, tx, pa.mid, style, r);
+    const path: [number, number][] = [];
+    const run = (x1: number, x2: number, y: number) => { for (let x = x1; x1 <= x2 ? x <= x2 : x >= x2; x += x1 <= x2 ? 1 : -1) path.push([x, y]); };
+    const col = (x: number, y1: number, y2: number) => { for (let y = y1; y1 <= y2 ? y <= y2 : y >= y2; y += y1 <= y2 ? 1 : -1) path.push([x, y]); };
+    if (!realOf(a)) { hseg(pa.x, sx, pa.mid, style, r); run(pa.x, sx - 1, pa.mid); }
+    if (pa.mid === pb.mid) { hseg(sx, tx, pa.mid, style, r); run(sx, tx, pa.mid); }
     else {
       hseg(sx, bus, pa.mid, style, r);
       vseg(bus, pa.mid, pb.mid, style, r);
       hseg(bus, tx, pb.mid, style, r);
+      run(sx, bus - 1, pa.mid); col(bus, pa.mid, pb.mid); run(bus + 1, tx, pb.mid);
     }
     // Make the junction where bus meets segments correct.
     if (pa.mid !== pb.mid) {
@@ -196,13 +238,21 @@ export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
       mark(bus, pb.mid, R | (pb.mid > pa.mid ? U : D), style, r);
     }
     if (bReal) arrows.push({ x: tx, y: pb.mid, style });
-    else hseg(pb.x, pb.x + boxW - 1, pb.mid, style, r);
+    else { hseg(pb.x, pb.x + boxW - 1, pb.mid, style, r); run(pb.x, pb.x + boxW - 1, pb.mid); }
+    if (r === 2) flows.push({ cells: path, style });
   }
   for (const [k, bits] of mask) {
     const [x, y] = k.split(",").map(Number) as [number, number];
-    c.set(x, y, LINE[bits] ?? "┼", styleAt.get(k) ?? S.gray);
+    const ch = LINE[bits] ?? "┼";
+    c.set(x, y, rank.get(k) === 1 ? DOUBLE[ch] ?? ch : ch, styleAt.get(k) ?? S.gray);
   }
-  for (const a of arrows) c.set(a.x, a.y, "▶", a.style);
+  for (const a of arrows) c.set(a.x, a.y, "▸", a.style);
+  // Electrons flow along bonds into working agents.
+  for (const f of flows) {
+    const n = f.cells.length;
+    if (n < 3) continue;
+    for (let k = Math.floor(o.frame / 2) % 6; k < n - 1; k += 6) c.set(f.cells[k]![0], f.cells[k]![1], "•", st(f.style, S.bold));
+  }
 
   // Boxes.
   for (const layer of layers) {
@@ -212,9 +262,11 @@ export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
       const node = n.real;
       const sel = o.selected === node.id;
       const color = STATE_COLOR[node.state];
-      const border = sel ? st(S.white, S.bold) : color;
+      const live = ACTIVE.has(node.state) || node.state === "waiting_input";
+      // Working agents "resonate": the outline brightens and dims.
+      const border = sel ? st(S.white, S.bold) : live && Math.floor(o.frame / 6) % 2 ? st(color, S.bold) : color;
       c.fill(p.x + 1, p.y + 1, boxW - 2, boxH - 2, sel ? S.bgSel : "");
-      c.box(p.x, p.y, boxW, boxH, border);
+      hexagon(c, p.x, p.y, boxW, boxH, border, node.state === "queued");
       const g = glyph(node.state, o.frame);
       const inner = boxW - 4;
       const bg = sel ? S.bgSel : "";
@@ -223,6 +275,14 @@ export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
         let bx = c.text(p.x + 2, p.y + boxH - 1, b.fill, color);
         bx = c.text(bx, p.y + boxH - 1, b.rest, st(S.gray, S.dim));
         c.text(bx, p.y + boxH - 1, b.label, node.state === "done" ? S.green : S.gray);
+      }
+      // An electron orbits a working agent's hexagon (with a short trail).
+      if (ACTIVE.has(node.state)) {
+        const ring = perimeter(p.x, p.y, boxW, boxH);
+        const at = o.frame % ring.length;
+        const [tx, ty] = ring[(at + ring.length - 1) % ring.length]!;
+        c.set(tx, ty, "•", st(color, S.dim));
+        c.set(ring[at]![0], ring[at]![1], "●", st(color, S.bold));
       }
       if (normal) {
         const x = c.text(p.x + 2, p.y + 1, g, st(color, bg));

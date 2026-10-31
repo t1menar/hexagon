@@ -140,8 +140,10 @@ agents can build in parallel:
 
 **4. Watch and steer the run.**
 
-- **Graph boxes:** each one fills a progress bar as its agent goes through work →
-  verify → review → merge.
+- **The graph is a molecule.** Each task is a hexagon, and its bottom edge fills as a
+  progress bar through work → verify → review → merge. Working agents pulse, with an
+  electron orbiting them, and electrons flow along the bonds into them. Finished links
+  become double bonds (`════▸`), and queued tasks have dashed outlines.
 - **Agents list:** one card per agent: its task name, progress bar, tokens, current
   step, the task's stack (`Java · Spring Boot · Maven`) and the tools it has used
   (`⚒ mvn×3 edit×5`). Tab or ↑↓ selects an

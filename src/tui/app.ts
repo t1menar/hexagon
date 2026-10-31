@@ -826,7 +826,9 @@ export class App {
 
   private header(cv: Canvas, W: number) {
     cv.fill(0, 0, W, 1, S.bgBar);
-    let x = cv.text(1, 0, "⬡ HEXAGON", st(S.bold, S.cyan, S.bgBar));
+    // The logo "breathes" (⬡ ⬢) while agents work.
+    const logo = this.anyActive() ? ["⬡", "⬢"][Math.floor(this.frame / 5) % 2]! : "⬡";
+    let x = cv.text(1, 0, `${logo} HEXAGON`, st(S.bold, S.cyan, S.bgBar));
     x = cv.text(x + 2, 0, path.basename(this.root), st(S.white, S.bgBar));
     const r = this.snap.run;
     const parts: [string, string][] = [];
