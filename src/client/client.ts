@@ -2,10 +2,10 @@ import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
-import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { PACKAGE_ROOT, ProjectPaths } from "../core/project.js";
+import { ProjectPaths } from "../core/project.js";
 import type { Push } from "../daemon/orchestrator.js";
+import { selfCommand } from "../util/resources.js";
 
 /** Client for the per-project daemon. Emits "push" for subscribed events and "close". */
 export class HexClient extends EventEmitter {
@@ -86,15 +86,11 @@ export class HexClient extends EventEmitter {
   }
 }
 
-export function cliEntry(): string {
-  return path.join(PACKAGE_ROOT, "dist", "cli.js");
-}
-
 export async function startDaemon(paths: ProjectPaths): Promise<void> {
-  const entry = path.join(PACKAGE_ROOT, "dist", "daemon", "main.js");
+  const [bin, ...pre] = selfCommand();
   fs.mkdirSync(paths.hex, { recursive: true });
   const log = fs.openSync(paths.daemonLog, "a");
-  const child = spawn(process.execPath, [entry, paths.root], { cwd: paths.root, detached: true, stdio: ["ignore", log, log], env: process.env });
+  const child = spawn(bin!, [...pre, "__daemon", paths.root], { cwd: paths.root, detached: true, stdio: ["ignore", log, log], env: process.env });
   child.unref();
   for (let i = 0; i < 50; i++) {
     await sleep(100);

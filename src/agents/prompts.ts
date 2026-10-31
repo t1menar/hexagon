@@ -1,26 +1,31 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Role, Task } from "../contracts/types.js";
-import { PACKAGE_ROOT, type ProjectPaths } from "../core/project.js";
+import type { ProjectPaths } from "../core/project.js";
 import { listProjectFiles, type Spec } from "../core/spec.js";
+import { hasResource, listResources, readResource } from "../util/resources.js";
 
 export interface Skill { name: string; version: string; appliesTo: string[]; body: string }
 
 export function loadRolePrompt(paths: ProjectPaths, role: Role): string {
-  for (const dir of [paths.roles, path.join(PACKAGE_ROOT, "templates", "roles")]) {
-    const f = path.join(dir, `${role}.md`);
-    if (fs.existsSync(f)) return fs.readFileSync(f, "utf8").trim();
-  }
+  const f = path.join(paths.roles, `${role}.md`);
+  if (fs.existsSync(f)) return fs.readFileSync(f, "utf8").trim();
+  const packaged = `templates/roles/${role}.md`;
+  if (hasResource(packaged)) return readResource(packaged).trim();
   throw new Error(`no role prompt for ${role}`);
 }
 
 export function loadSkills(paths: ProjectPaths): Skill[] {
-  const dirs = [paths.skills, path.join(PACKAGE_ROOT, "templates", "skills")];
+  // Project skills first (they override packaged ones with the same name).
+  const sources: { name: string; read: () => string }[] = [];
+  if (fs.existsSync(paths.skills)) {
+    for (const f of fs.readdirSync(paths.skills).sort()) sources.push({ name: f, read: () => fs.readFileSync(path.join(paths.skills, f), "utf8") });
+  }
+  for (const f of listResources("templates/skills")) sources.push({ name: f, read: () => readResource(`templates/skills/${f}`) });
   const byName = new Map<string, Skill>();
-  for (const dir of dirs) {
-    if (!fs.existsSync(dir)) continue;
-    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".skill.md"))) {
-      const text = fs.readFileSync(path.join(dir, f), "utf8");
+  {
+    for (const { name: f, read } of sources.filter((s) => s.name.endsWith(".skill.md"))) {
+      const text = read();
       const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(text);
       const meta: Record<string, string> = {};
       for (const line of (m?.[1] ?? "").split("\n")) {

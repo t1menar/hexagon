@@ -17,11 +17,13 @@ running in parallel.
 
 ## Quick start
 
-Requires Node ≥ 22 and git.
+Requires git. Building needs Node ≥ 22; the resulting binary does not.
 
 ```bash
 git clone git@github.com:t1menar/hexagon.git && cd hexagon
-npm install && npm run build && npm link     # puts `hexagon` on your PATH
+npm install
+npm run install:bin        # builds a standalone ./build/hexagon and copies it to ~/.local/bin
+#   or: npm run build:bin  (binary only)   ·   npm run build && npm link  (dev: runs from dist/)
 
 cd ~/projects/your-repo                      # a git repo with at least one commit
 hexagon init                                 # creates .hexagon/ (config, roles, skills) and specs/
@@ -112,6 +114,7 @@ Not built yet:
 ## Development
 
 ```bash
+npm run build:bin  # standalone executable (Node SEA: esbuild bundle + embedded templates/schemas)
 npm run build      # tsc → dist/
 npm test           # unit + end-to-end (mock agent, real git worktrees)
 ```
