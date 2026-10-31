@@ -9,7 +9,7 @@ import type { SessionStatus } from "../core/solo.js";
 import type { Draft, Push, Snapshot } from "../daemon/orchestrator.js";
 import { hexagonCommand, openTerminal } from "../shell/open.js";
 import { Canvas, clip, padTo, S, st, wrap } from "./canvas.js";
-import { ACTIVE, glyph, renderDag, spinner, STATE_COLOR, type DagNode } from "./dag.js";
+import { ACTIVE, bar, glyph, progressOf, renderDag, spinner, STATE_COLOR, type DagNode } from "./dag.js";
 import { takeoverInTerminal } from "./takeover.js";
 import { fmtTokens } from "../util/term.js";
 import { chatLines, itemsFromEvents, itemsFromSession, type ChatItem } from "./chat.js";
@@ -17,7 +17,7 @@ import { chatLines, itemsFromEvents, itemsFromSession, type ChatItem } from "./c
 interface FeedLine { ts: string; text: string; style: string }
 
 const COMMANDS: [string, string][] = [
-  ["/new <goal>", "start the planner directly (or just ask Claude in the chat)"],
+  ["/sdd <goal>", "spec-driven development: spec + task graph → parallel agents (optional)"],
   ["/run [-j N] [--agent X]", "approve the draft plan and start the agents"],
   ["/discard", "throw away the draft plan"],
   ["/spec", "open the spec in $EDITOR"],
@@ -42,6 +42,7 @@ const COMMANDS: [string, string][] = [
 ];
 
 const HEX = "claude";
+const CONTINUABLE = new Set(["blocked", "failed", "cancelled"]);
 const TASK_RE = /^t-?\d+$/i;
 const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
@@ -101,6 +102,7 @@ export function eventLine(e: StampedEvent): FeedLine | null {
 export class App {
   private snap!: Snapshot;
   private full = new Map<string, AgentStatus>();
+  private lastProgress = new Map<string, number>();
   private sessions = new Map<string, SessionStatus>();
   private feeds = new Map<string, FeedLine[]>();
   private events = new Map<string, StampedEvent[]>();
@@ -350,8 +352,9 @@ export class App {
     if (sel === "planner" && this.plannerBusy()) return "tell the planner something…";
     const a = this.full.get(sel);
     if (a && !TERMINAL_STATES.has(a.state)) return `message ${a.task_id}…`;
+    if (a && CONTINUABLE.has(a.state)) return `${a.task_id} is ${a.state}: reply to continue its session (e.g. "mvn is installed now, try again") · /retry for a fresh attempt`;
     if (this.sessions.get(sel)?.state === "running") return `message the ${sel} agent…`;
-    return "chat with Claude — ask anything, or describe what to build · / commands · @T-n agents";
+    return "chat with Claude — it works directly in this repo · /sdd <goal> for spec-driven parallel agents";
   }
 
   // ───────────── input ─────────────
@@ -571,6 +574,7 @@ export class App {
       if (sel === "planner" && this.snap.draft) return { kind: "revise", id: "planner", label: "revise plan", style: S.orange };
       const a = this.full.get(sel);
       if (a && !TERMINAL_STATES.has(a.state) && this.activeRun()) return { kind: "agent", id: sel, label: `to ${sel}`, style: S.blue };
+      if (a && CONTINUABLE.has(a.state)) return { kind: "agent", id: sel, label: `continue ${sel}`, style: S.orange };
     }
     if (!text) return { kind: "none", id: "", label: "chat", style: S.green };
     return { kind: "chat", id: HEX, label: sel === HEX ? "chat" : "chat (agent idle)", style: S.green };
@@ -619,7 +623,7 @@ export class App {
         case "/stop":
           await c.call("shutdown").catch(() => undefined);
           return this.exit("daemon stopped");
-        case "/new": case "/goal": return await this.newGoal(args.join(" "));
+        case "/sdd": case "/new": case "/goal": return await this.newGoal(args.join(" "));
         case "/init": {
           await c.call("init.start", { description: args.join(" ") || null });
           this.sessions.set("init", blankSession("init", "init"));
@@ -791,7 +795,18 @@ export class App {
     return plan.tasks.map((t) => ({
       id: t.id, title: t.title, role: t.role, deps: t.depends_on,
       state: (this.snap.run && !this.showingDraft() ? this.full.get(t.id)?.state ?? brief.get(t.id)?.state ?? "queued" : "queued") as AgentState,
+      progress: this.snap.run && !this.showingDraft() ? this.progress(t.id) : null,
     }));
+  }
+
+  /** Pipeline progress of a task's agent (never goes backwards while it runs). */
+  private progress(id: string): number | null {
+    const a = this.full.get(id);
+    const b = this.runAgents().find((x) => x.task_id === id);
+    const state = (a?.state ?? b?.state ?? "queued") as AgentState;
+    const p = progressOf(state, a?.phase, a?.progress ?? b?.progress, this.lastProgress.get(`${this.snap.run?.run_id}/${id}`) ?? 0);
+    if (p != null) this.lastProgress.set(`${this.snap.run?.run_id}/${id}`, p);
+    return p;
   }
 
   private planPanel(cv: Canvas, y: number, W: number, h: number, dag: Canvas) {
@@ -820,8 +835,8 @@ export class App {
     } else if (p?.state === "failed") {
       lines.push([`✖ Planning failed: ${p.error ?? ""}`, S.red], ["Describe the goal again, or adjust it.", S.gray]);
     } else {
-      lines.push(["Describe what you want built and press Enter.", st(S.white, S.bold)]);
-      lines.push(["A planner agent writes the spec and a task graph; you approve it; agents build it in parallel.", S.gray]);
+      lines.push(["Chat with Claude below: it answers questions and makes changes directly in this repo.", st(S.white, S.bold)]);
+      lines.push(["For bigger work, /sdd <goal>: a planner writes a spec and a task graph, you approve it, agents build it in parallel.", S.gray]);
       if (!this.snap.has_context) lines.push(["Tip: /init lets an agent study this repo and write HEXAGON.md first.", S.cyan]);
     }
     lines.slice(0, h - 2).forEach(([t, s], i) => cv.text(3, y + 1 + i, clip(t, W - 6), s));
@@ -829,7 +844,7 @@ export class App {
 
   private agentList(cv: Canvas, x: number, y: number, w: number, h: number) {
     cv.box(x, y, w, h, S.gray, "Agents", st(S.bold, S.white));
-    const rows: { id: string; l1: [string, string][]; l2: string; l2s: string }[] = [];
+    const rows: { id: string; l1: [string, string][]; l2: string; l2s: string; bar?: number | null; barStyle?: string }[] = [];
     const r = this.snap.run;
     for (const id of this.entries()) {
       if (id === HEX) {
@@ -855,8 +870,10 @@ export class App {
       const prog = a?.progress && a.progress.total ? ` ${a.progress.done}/${a.progress.total}` : "";
       rows.push({
         id,
-        l1: [[glyph(state, this.frame), STATE_COLOR[state]], [` ${id}`, S.bold], [` ${a?.role ?? b?.role ?? ""}`, S.gray], [prog, S.green], ...extra, [`  ${tok(a ? spent(a.usage) : b?.tokens ?? 0)}`, S.gray]],
-        l2: state === "queued" || TERMINAL_STATES.has(state) ? `${state.replace("_", " ")}${a?.state_reason ? ` — ${a.state_reason}` : ""}` : a?.activity ?? b?.activity ?? state,
+        bar: this.progress(id),
+        barStyle: STATE_COLOR[state],
+        l1: [[glyph(state, this.frame), STATE_COLOR[state]], [` ${id}`, S.bold], [` ${a?.role ?? b?.role ?? ""}`, S.gray], [prog, S.green], ...extra],
+        l2: `${tok(a ? spent(a.usage) : b?.tokens ?? 0)} · ${state === "queued" || TERMINAL_STATES.has(state) ? `${state.replace("_", " ")}${a?.state_reason ? ` — ${a.state_reason}` : ""}` : a?.activity ?? b?.activity ?? state}`,
         l2s: state === "failed" || state === "blocked" ? S.orange : S.gray,
       });
     }
@@ -870,7 +887,14 @@ export class App {
       const bg = sel ? S.bgSel : "";
       if (sel) { cv.fill(x + 1, yy, w - 2, 2, S.bgSel); cv.set(x + 1, yy, "▌", st(S.cyan, bg)); cv.set(x + 1, yy + 1, "▌", st(S.cyan, bg)); }
       let cx = x + 3;
-      for (const [t, s] of row.l1) cx = cv.text(cx, yy, t, st(s, bg), x + w - 1);
+      const barW = row.bar != null && w >= 34 ? Math.min(16, Math.floor(w / 3)) : 0;
+      for (const [t, s] of row.l1) cx = cv.text(cx, yy, t, st(s, bg), x + w - 2 - barW);
+      if (barW) {
+        const b = bar(row.bar!, barW);
+        let bx = cv.text(x + w - 1 - barW, yy, b.fill, st(row.barStyle ?? S.blue, bg));
+        bx = cv.text(bx, yy, b.rest, st(S.gray, S.dim, bg));
+        cv.text(bx, yy, b.label, st(row.bar === 1 ? S.green : S.gray, bg));
+      }
       cv.text(x + 5, yy + 1, clip(row.l2, w - 7), st(row.l2s, bg), x + w - 1);
     });
   }
@@ -891,7 +915,7 @@ export class App {
       const items = [...(cs ? itemsFromSession(cs) : []), ...notes].sort((x, y) => x.ts.localeCompare(y.ts));
       chat = chatLines(items, inner, "claude");
       const r = this.snap.run;
-      head.push([cs ? `${cs.state === "running" ? `${spinner(this.frame)} thinking` : cs.state} · ${tokLine(cs.tokens)}` : "Ask anything about this project, or describe what to build — Claude starts the planner for you.", S.gray]);
+      head.push([cs ? `${cs.state === "running" ? `${spinner(this.frame)} thinking` : cs.state} · ${tokLine(cs.tokens)}` : "Ask Claude anything or ask for a change: it works directly in this repo. /sdd <goal> runs the spec-driven flow.", S.gray]);
       if (r) head.push([`run ${r.run_id} · ${r.state} · ${r.integration_branch} → ${r.base_branch}`, S.gray]);
     } else if (s) {
       title = `Chat · ${s.id} · ${s.agent}`;

@@ -150,4 +150,25 @@ describe("end to end with the mock agent", () => {
     expect(fs.existsSync(path.join(root, "hexagon-mock/part-1.md"))).toBe(true);
     expect(pushes.some((m) => m.type === "question")).toBe(true);
   });
+  it("a blocked agent continues its own session when the user replies", async () => {
+    const planFile = path.join(root, ".hexagon/blocked-plan.json");
+    fs.writeFileSync(planFile, JSON.stringify({
+      tasks: [{ id: "T-1", title: "Build it", role: "implementer", description: "@block: mvn is not installed", acceptance: ["AC-1"], files: { write: ["hexagon-mock/blk.md"] }, verify: ["test -f hexagon-mock/blk.md"] }],
+    }));
+    await client.call("run.start", { plan_path: planFile });
+    const blocked = await until(async () => {
+      const s = await client.call<AgentStatus>("agent.status", { task: "T-1" });
+      return s.state === "blocked" ? s : null;
+    });
+    expect(blocked.last_error).toBeFalsy(); // blocked is not an "internal" error
+    await until(async () => (await client.call<RunStatus>("run.status")).state === "done");
+    await client.call("message.send", { to: "T-1", body: "mvn is installed now, try again" });
+    const done = await until(async () => {
+      const s = await client.call<AgentStatus>("agent.status", { task: "T-1" });
+      return s.state === "done" ? s : null;
+    });
+    expect(done.attempt).toBe(1); // same attempt, same session
+    const rs = await until(async () => { const r = await client.call<RunStatus>("run.status"); return r.state === "done" ? r : null; });
+    expect(rs.agents[0]!.state).toBe("done");
+  });
 });

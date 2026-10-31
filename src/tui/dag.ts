@@ -7,6 +7,34 @@ export interface DagNode {
   role: string;
   deps: string[];
   state: AgentState;
+  /** 0..1 through the task pipeline, or null when not started. */
+  progress?: number | null;
+}
+
+const PHASE_AT: Record<string, number> = { reading: 0.1, planning: 0.2, editing: 0.45, testing: 0.65, reporting: 0.75 };
+
+/** How far an agent is through its pipeline: work (phase / acceptance criteria) → verify → review → merge. */
+export function progressOf(state: AgentState, phase?: string | null, prog?: { done: number; total: number } | null, prev = 0): number | null {
+  switch (state) {
+    case "queued": return null;
+    case "starting": return 0.03;
+    case "verifying": return 0.82;
+    case "reviewing": return 0.9;
+    case "merging": return 0.97;
+    case "done": return 1;
+    default: {
+      const ac = prog && prog.total ? 0.1 + 0.65 * (prog.done / prog.total) : 0;
+      return Math.max(0.05, PHASE_AT[phase ?? ""] ?? 0.05, ac, Math.min(prev, 0.8));
+    }
+  }
+}
+
+/** "━━━━━━──── 60%" in `w` cells. */
+export function bar(p: number, w: number): { fill: string; rest: string; label: string } {
+  const label = ` ${Math.round(p * 100)}%`;
+  const n = Math.max(1, w - label.length);
+  const f = Math.round(p * n);
+  return { fill: "━".repeat(f), rest: "─".repeat(n - f), label };
 }
 
 export const STATE_GLYPH: Record<AgentState, string> = {
@@ -190,6 +218,12 @@ export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
       const g = glyph(node.state, o.frame);
       const inner = boxW - 4;
       const bg = sel ? S.bgSel : "";
+      if (node.progress != null && boxW >= 12) {
+        const b = bar(node.progress, boxW - 4);
+        let bx = c.text(p.x + 2, p.y + boxH - 1, b.fill, color);
+        bx = c.text(bx, p.y + boxH - 1, b.rest, st(S.gray, S.dim));
+        c.text(bx, p.y + boxH - 1, b.label, node.state === "done" ? S.green : S.gray);
+      }
       if (normal) {
         let x = c.text(p.x + 2, p.y + 1, g, st(color, bg));
         x = c.text(x + 1, p.y + 1, node.id, st(S.bold, bg), p.x + boxW - 2);

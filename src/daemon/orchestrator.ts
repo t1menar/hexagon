@@ -478,7 +478,10 @@ export class Orchestrator extends EventEmitter {
       const id = target.toUpperCase();
       const s = r.store.byTask(id);
       if (!s) throw new Error(`unknown task ${target}`);
-      if (TERMINAL_STATES.has(s.state)) throw new Error(`${id} is ${s.state}; /retry ${id} starts a new attempt`);
+      if (TERMINAL_STATES.has(s.state)) {
+        if (r.scheduler.canContinue(id)) { r.scheduler.continueTask(id, body); return { messages: [] }; }
+        throw new Error(s.state === "done" ? `${id} is done and merged; /retry ${id} starts a new attempt` : `${id} is ${s.state}; /retry ${id} starts a new attempt`);
+      }
       party = { kind: "agent", id };
     }
     const type = party.kind === "blackboard" ? "note" : "instruction";
@@ -527,9 +530,9 @@ export class Orchestrator extends EventEmitter {
     const s = cur ?? this.solo("claude", "lead", {
       system: systemPrompt(this.paths, "lead", "claude", loadSkills(this.paths), [], projectContext(this.root)),
       env: this.agentEnv("claude"),
-      allowCommands: ["hexagon", ...PLANNER_COMMANDS, "git diff", "git show"],
+      allowCommands: ["hexagon", ...new Set([...this.cfg.sandbox.allow_commands, ...PLANNER_COMMANDS, "git diff", "git show", "git status", "git log", "git add", "git commit"])],
       conversational: true,
-      readOnly: true,
+      readOnly: false,
     });
     s.logUser(text);
     const first = `${context}\n<user_message>\n${text}\n</user_message>`;

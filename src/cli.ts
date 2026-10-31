@@ -22,8 +22,9 @@ const USAGE = `${c.bold("hexagon")} ${VERSION} — run several coding agents (Cl
 
 ${c.bold("Start")}
   hexagon init ["what you're building"]   set up .hexagon/ and let an agent write HEXAGON.md
-  hexagon                                 open the dashboard: type a goal, approve the plan, watch agents
-  hexagon new "<goal>"                    plan a goal (planner agent writes spec + task graph)
+  hexagon                                 open the dashboard: chat with Claude; /sdd for parallel agents
+  hexagon sdd "<goal>"                    spec-driven: planner writes spec + task graph (alias: new)
+  hexagon chat "<message>"                talk to Claude (works directly in the repo)
   hexagon run [plan.json] [-j N] [--agent X] [--follow]   run the approved draft (or a plan file)
 
 ${c.bold("Watch & steer")}
@@ -159,7 +160,7 @@ async function main(argv: string[]): Promise<void> {
     const r = root();
     if (!process.stdout.isTTY || !process.stdin.isTTY) {
       const rs = latestRunStatus(new ProjectPaths(r));
-      return void console.log(rs ? runTable(rs) : "no runs yet — `hexagon new \"<goal>\"`");
+      return void console.log(rs ? runTable(rs) : "no runs yet — `hexagon sdd \"<goal>\"`");
     }
     const client = await HexClient.connect(r);
     const { App } = await import("./tui/app.js");
@@ -167,7 +168,7 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  if (cmd === "new") return newGoal(rest);
+  if (cmd === "new" || cmd === "sdd") return newGoal(rest);
   if (cmd === "plan") {
     // Used by the chat agent: start the planner and return at once.
     const goal = rest.join(" ").trim();
@@ -204,7 +205,7 @@ async function main(argv: string[]): Promise<void> {
           ? await client.call<{ run_id: string }>("run.start", { plan_path: rest[0], agent, only, max_parallel: j ? Number(j) : undefined, budget_tokens: budget ? parseTokens(budget) : undefined })
           : snap.draft
             ? await client.call<{ run_id: string }>("draft.approve", { agent, max_parallel: j ? Number(j) : undefined })
-            : (() => { throw new Error("no plan to run — `hexagon new \"<goal>\"` first, or pass a plan file"); })();
+            : (() => { throw new Error("no plan to run — `hexagon sdd \"<goal>\"` first, or pass a plan file"); })();
         console.log(`${c.blue("▶")} run ${res.run_id} started${follow ? "" : " — watch it with `hexagon`"}`);
         if (follow) return await new Promise<void>(() => undefined);
         break;
@@ -292,7 +293,7 @@ async function init(args: string[]): Promise<void> {
 
 async function newGoal(args: string[]): Promise<void> {
   const goal = args.join(" ").trim();
-  if (!goal) throw new Error('usage: hexagon new "<what you want built>"');
+  if (!goal) throw new Error('usage: hexagon sdd "<what you want built>"');
   const r = root();
   const client = await HexClient.connect(r);
   if (process.stdout.isTTY && process.stdin.isTTY) {
