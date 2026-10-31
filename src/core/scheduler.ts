@@ -19,6 +19,8 @@ export class Scheduler extends EventEmitter {
   private attempts = new Map<string, number>();
   private overrides = new Map<string, { agent?: string; effort?: Effort }>();
   private outcome = new Map<string, AgentState>();
+  /** Latest attempt per task, kept after it finishes so it can be continued. */
+  private last = new Map<string, AgentRun>();
   private tasks: Task[];
   paused = false;
   aborted = false;
@@ -135,8 +137,13 @@ export class Scheduler extends EventEmitter {
     const adapter = this.rc.adapterFor(t.role, ov?.agent ?? this.opts.agentOverride ?? t.agent_hint);
     const run = new AgentRun(this.rc, t, attempt, this.effortFor(t, attempt, this.rc.cfg.roles[t.role].effort), adapter);
     this.active.set(t.id, run);
+    this.last.set(t.id, run);
     this.emit("launch", run);
-    run.execute()
+    this.watch(t, run, run.execute());
+  }
+
+  private watch(t: Task, run: AgentRun, p: Promise<AgentState>): void {
+    p
       .catch((e) => {
         this.rc.store.apply(run.agentRunId, { type: "error", kind: "internal", message: String(e), retryable: false });
         this.rc.store.apply(run.agentRunId, { type: "state", state: "failed", reason: "internal error" });
@@ -170,7 +177,13 @@ export class Scheduler extends EventEmitter {
     const next = (this.attempts.get(taskId) ?? 0) + 1;
     this.attempts.set(taskId, next);
     this.outcome.delete(taskId);
-    // dependents that were blocked by this task get another chance
+    this.reviveDependents(taskId);
+    this.createStatus(t, next);
+    if (!cur) this.tick(); // otherwise finish() of the cancelled run ticks
+  }
+
+  /** Dependents that were blocked by this task get another chance. */
+  private reviveDependents(taskId: string): void {
     for (const d of this.tasks) {
       if (d.depends_on.includes(taskId) && this.outcome.get(d.id) === "blocked") {
         this.outcome.delete(d.id);
@@ -179,8 +192,24 @@ export class Scheduler extends EventEmitter {
         this.createStatus(d, n);
       }
     }
-    this.createStatus(t, next);
-    if (!cur) this.tick(); // otherwise finish() of the cancelled run ticks
+  }
+
+  canContinue(taskId: string): boolean {
+    const run = this.last.get(taskId);
+    return !!run && !this.active.has(taskId) && !this.aborted && ["blocked", "failed", "cancelled"].includes(run.state) && run.resumable;
+  }
+
+  /** Send the user's message to a finished (blocked/failed/cancelled) agent: it resumes its own session. */
+  continueTask(taskId: string, text: string): void {
+    const t = this.task(taskId);
+    const run = this.last.get(taskId);
+    if (!t || !run || !this.canContinue(taskId)) throw new Error(`${taskId} can't be continued; /retry ${taskId} starts a new attempt`);
+    this.outcome.delete(taskId);
+    this.reviveDependents(taskId);
+    if (this.rc.store.runState === "done") { this.rc.store.runState = "running"; this.rc.store.startHeartbeat(); }
+    this.active.set(taskId, run);
+    this.watch(t, run, run.continueWith(text));
+    this.tick();
   }
 
   pauseAll(): void {

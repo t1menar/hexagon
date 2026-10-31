@@ -3,7 +3,9 @@
 A terminal dashboard that runs several coding agents in parallel on one goal. The agents are
 Claude Code (or any other coding CLI), each in its own git worktree.
 
-- **One step from goal to running agents.** Type what you want. A planner agent writes a
+- **Chat with Claude by default.** Ask questions or ask for changes; Claude works directly
+  in your repository, like Claude Code.
+- **Spec-driven development when you want it.** `/sdd <goal>`: a planner agent writes a
   short spec and a task graph, and you approve it with Enter (or say what to change).
   Agents then implement the tasks in parallel. Hexagon re-runs each task's verify commands,
   a reviewer agent checks the diff, and the work is merged into an integration branch.
@@ -36,7 +38,7 @@ npm install && npm run install:bin           # standalone binary → ~/.local/bi
 
 cd ~/projects/your-repo                      # a git repo with at least one commit
 hexagon init                                 # an agent writes HEXAGON.md (commit it)
-hexagon                                      # dashboard: type a goal, press Enter
+hexagon                                      # dashboard: chat with Claude, or /sdd <goal>
 ```
 
 ```
@@ -62,8 +64,9 @@ hexagon                                      # dashboard: type a goal, press Ent
 
 **Keys:**
 - **Typing** goes to whoever the chip before the input names. On the `claude` tab it is a
-  chat with Claude: ask about the project or the run, or describe what to build and it
-  starts the planner. On an agent's tab it goes to that agent (or answers its question).
+  chat with Claude: ask about the project or the run, or ask for a change and it makes it
+  directly in the repo. `/sdd <goal>` starts the spec-driven multi-agent flow. On an agent's tab it goes to that agent (or answers its question). Replying to a
+  blocked or failed agent continues its own session ("mvn is installed now, try again").
 - Metrics are tokens, not money: per run, per agent, and per model step in each chat
   (`⌁ 12k in · 310 out`).
 - `/` opens commands and `@` mentions, with suggestions as you type (Tab or → to
@@ -76,7 +79,7 @@ hexagon                                      # dashboard: type a goal, press Ent
 Without the dashboard:
 
 ```bash
-hexagon new "add GET /health returning the git sha"    # planner → draft spec + plan
+hexagon sdd "add GET /health returning the git sha"    # planner → draft spec + plan
 hexagon run --follow                                   # approve and stream the run
 hexagon status · hexagon tell T-2 "…" · hexagon answer Q-1 2 · hexagon takeover T-2 · hexagon merge
 ```

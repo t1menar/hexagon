@@ -113,15 +113,35 @@ export class AgentRun {
     }
   }
 
-  private async pipeline(): Promise<AgentState> {
-    let followUp: string | undefined;
+  /** The agent's CLI session exists, so a finished attempt can be continued in place. */
+  get resumable(): boolean {
+    return this.started && fs.existsSync(this.worktree);
+  }
+
+  /** Continue a blocked/failed/cancelled attempt: same worktree, same session, the user's message as the next turn. */
+  async continueWith(text: string): Promise<AgentState> {
+    this.cancelled = false;
+    this.userDone = false;
+    this.ev({ type: "chat", from: "user", text });
+    const unregister = this.rc.registry.register(this.agentRunId, this.api());
+    try {
+      return await this.pipeline(`Message from the user:\n${text}\n\nContinue the task with this in mind. When it is finished, run \`hexagon done\` again.`, true);
+    } finally {
+      unregister();
+    }
+  }
+
+  private async pipeline(initial?: string, initialFromUser = false): Promise<AgentState> {
+    let followUp: string | undefined = initial;
+    let quiet = initialFromUser;
     let fixLoops = 0;
     for (;;) {
       // 1. Implement (or fix)
       this.finished = false;
       this.result = undefined;
-      const outcome = await this.agentSegment(followUp);
+      const outcome = await this.agentSegment(followUp, quiet);
       followUp = undefined;
+      quiet = false;
 
       if (this.cancelled) return this.final("cancelled", "cancelled by user");
       if (this.userDone) {
@@ -138,7 +158,7 @@ export class AgentRun {
       }
       if (r.status === "needs_spec_change" || r.status === "blocked") {
         this.notify(`${r.status.replace(/_/g, " ")}: ${[...r.blockers, ...r.spec_issues].join("; ") || r.summary}`);
-        this.ev({ type: "error", kind: r.status === "blocked" ? "internal" : "needs_spec_change", message: r.summary, retryable: false });
+        if (r.status === "needs_spec_change") this.ev({ type: "error", kind: "needs_spec_change", message: r.summary, retryable: false });
         await this.commit();
         return this.final("blocked", r.status === "blocked" ? r.blockers.join("; ") || r.summary : `needs spec change: ${r.spec_issues.join("; ")}`);
       }
@@ -200,9 +220,11 @@ export class AgentRun {
   }
 
   /** Run the agent CLI until it finishes. Pause/takeover kill the process; resume continues the same session. */
-  private async agentSegment(followUp?: string): Promise<AdapterOutcome> {
+  private async agentSegment(followUp?: string, quiet = false): Promise<AdapterOutcome> {
     let fu = followUp;
-    if (!this.started) {
+    if (quiet) {
+      // already shown in the chat as the user's message
+    } else if (!this.started) {
       const acs = this.task.acceptance.length ? ` (${this.task.acceptance.join(", ")})` : "";
       this.ev({ type: "chat", from: "hexagon", text: `Task ${this.task.id}: ${this.task.title}${acs}\nWrite scope: ${this.task.files.write.join(", ")}${this.task.verify.length ? `\nVerify: ${this.task.verify.join(" && ")}` : ""}` });
     } else if (fu) {

@@ -84,6 +84,12 @@ export class MockAdapter implements AgentAdapter {
       drain();
       await step("Exploring the workspace");
 
+      const block = /@block:\s*(.+)$/m.exec(task.description ?? "");
+      if (block && !ctx.resume) {
+        host.emit({ type: "chat", from: "agent", text: `I can't finish: ${block[1]!.trim()}` });
+        api.done({ status: "blocked", summary: block[1]!.trim(), blockers: [block[1]!.trim()] });
+        return { kind: "finished" };
+      }
       const ask = /@ask:\s*(.+)$/m.exec(task.description ?? "");
       if (ask && !ctx.resume) {
         api.ask({ prompt: ask[1]!.trim(), options: ["Option A", "Option B"], default: "Option A", blocking: true });
