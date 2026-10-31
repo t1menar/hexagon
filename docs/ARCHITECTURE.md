@@ -15,8 +15,9 @@ API calls, Claude Agent SDK for Claude Code agents, SQLite + JSONL for local sta
 1. **The spec is the source of truth.** Every task, commit and test traces to a requirement
    ID (`REQ-AUTH-001`). When code and spec disagree, the spec wins — or the agent files a
    spec-change proposal. Agents never silently reinterpret.
-2. **Agents never talk to each other.** They talk to the orchestrator through typed results;
-   shared knowledge lives on a blackboard. This keeps runs deterministic and replayable.
+2. **Agents never talk to each other directly.** All messages go through the orchestrator's
+   router (hub-and-spoke); shared knowledge lives on a blackboard. This keeps runs
+   deterministic and replayable. See [COMMUNICATION.md](COMMUNICATION.md).
 3. **Isolation by default.** Each task runs in its own git worktree/branch; results reach
    the main branch only through the Integrator.
 4. **Everything is an event.** The TUI, metrics, `resume` and `replay` all read one
@@ -436,6 +437,10 @@ drive routing via `agent_hint`.
 ## 7. CLI user experience
 
 ### 7.1 Commands
+
+Running `hexagon` with no arguments opens the interactive shell, where every command below
+is also available as a slash command (`/run`, `/focus T-007`, `/open`, …). See
+[COMMUNICATION.md §4–5](COMMUNICATION.md#4-interactive-shell-hexagon).
 
 ```
 hexagon init                         # scaffold .hexagon/, detect test cmds, write config

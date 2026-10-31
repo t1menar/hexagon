@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/t1menar/hexagon/schemas/agent-status.v1.schema.json",
+  "title": "Hexagon agent status snapshot",
+  "description": "Full snapshot of one agent run, written atomically by the Hexagon daemon (single writer) to .hexagon/runs/<run>/agents/<agent_run_id>/status.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "seq", "updated_at", "heartbeat_at",
+    "run_id", "agent_run_id", "task_id", "attempt", "role", "agent",
+    "state", "state_since", "controller",
+    "needs_input", "inbox", "usage", "last_error", "result_path"
+  ],
+  "properties": {
+    "schema": { "const": "hexagon.agent-status/v1" },
+    "seq": { "type": "integer", "minimum": 0, "description": "Monotonic per agent run; readers ignore snapshots with seq <= last seen." },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "heartbeat_at": { "type": "string", "format": "date-time", "description": "Refreshed every ~5s while alive; >30s old means stale." },
+
+    "run_id": { "type": "string", "minLength": 1 },
+    "agent_run_id": { "type": "string", "pattern": "^T-[0-9]+-a[0-9]+$" },
+    "task_id": { "type": "string", "pattern": "^T-[0-9]+$" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "role": { "enum": ["planner", "implementer", "tester", "reviewer", "integrator", "resolver", "lead"] },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider"],
+      "properties": {
+        "id": { "type": "string" },
+        "provider": { "type": "string" },
+        "model": { "type": ["string", "null"] },
+        "effort": { "enum": ["low", "medium", "high", "xhigh", "max", null] }
+      }
+    },
+
+    "state": {
+      "enum": ["queued", "starting", "running", "waiting_input", "paused", "verifying", "reviewing", "merging", "done", "failed", "blocked", "cancelled"]
+    },
+    "state_reason": { "type": ["string", "null"], "description": "Human-readable reason, e.g. 'waiting for lease src/auth/login.ts held by T-006'." },
+    "state_since": { "type": "string", "format": "date-time" },
+    "controller": { "enum": ["agent", "user", "none"], "description": "'user' during /takeover." },
+    "phase": { "enum": ["reading", "planning", "editing", "testing", "reporting", null] },
+    "activity": { "type": ["string", "null"], "maxLength": 200 },
+
+    "progress": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["done", "total"],
+      "properties": {
+        "done": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "unit": { "type": "string" }
+      }
+    },
+    "checklist": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "status": { "enum": ["pending", "in_progress", "done", "failed", "skipped"] }
+        }
+      }
+    },
+
+    "needs_input": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["question_id", "kind", "blocking", "prompt", "asked_at"],
+          "properties": {
+            "question_id": { "type": "string", "pattern": "^Q-[0-9]+$" },
+            "kind": { "enum": ["clarification", "choice", "approval", "spec_change"] },
+            "blocking": { "type": "boolean" },
+            "prompt": { "type": "string", "minLength": 1 },
+            "options": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "label"],
+                "properties": { "id": { "type": "string" }, "label": { "type": "string" } }
+              }
+            },
+            "default_option": { "type": ["string", "null"] },
+            "auto_answer_after_s": { "type": ["integer", "null"], "minimum": 1 },
+            "asked_at": { "type": "string", "format": "date-time" },
+            "refs": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    },
+
+    "inbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pending"],
+      "properties": {
+        "pending": { "type": "integer", "minimum": 0 },
+        "last_delivered": { "type": ["string", "null"] },
+        "last_acked": { "type": ["string", "null"] }
+      }
+    },
+
+    "workspace": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "worktree": { "type": "string" },
+        "branch": { "type": "string" }
+      }
+    },
+    "files_touched": { "type": "array", "items": { "type": "string" } },
+
+    "attach": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "native_session_id": { "type": ["string", "null"] },
+        "takeover_command": { "type": ["array", "null"], "items": { "type": "string" } },
+        "supports_live_input": { "type": "boolean" }
+      }
+    },
+
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "cache_read_tokens": { "type": "integer", "minimum": 0 },
+        "cost_usd": { "type": "number", "minimum": 0 },
+        "wall_ms": { "type": "integer", "minimum": 0 },
+        "turns": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "last_error": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "message", "retryable"],
+          "properties": {
+            "kind": { "enum": ["transient", "refusal", "truncated", "invalid_output", "verify_failed", "scope_violation", "stuck", "needs_spec_change", "internal"] },
+            "message": { "type": "string" },
+            "retryable": { "type": "boolean" },
+            "at": { "type": "string", "format": "date-time" }
+          }
+        }
+      ]
+    },
+    "result_path": { "type": ["string", "null"], "description": "Set when state is terminal; points to result.json (ResultEnvelope)." }
+  }
+}
