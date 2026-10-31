@@ -158,6 +158,8 @@ describe("end to end with the mock agent", () => {
     // Merge into main.
     const merged = await client.call<{ text: string }>("merge.base");
     expect(merged.text).toMatch(/Merged/);
+    // A merged run is closed: the dashboard no longer shows its tasks.
+    expect((await client.call<{ run: unknown }>("ui.snapshot")).run).toBeNull();
     expect(fs.existsSync(path.join(root, "hexagon-mock/part-1.md"))).toBe(true);
     expect(pushes.some((m) => m.type === "question")).toBe(true);
   });

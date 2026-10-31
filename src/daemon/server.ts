@@ -90,6 +90,7 @@ export class DaemonServer {
       },
       "merge.base": async () => ({ text: await o.mergeToBase() }),
       "worktrees.clean": async () => ({ removed: await o.cleanup() }),
+      "run.close": () => ({ closed: o.closeRun("closed by user") }),
       shutdown: () => { setTimeout(() => this.stop(0), 50); return { ok: true }; },
     };
   }

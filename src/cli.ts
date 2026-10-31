@@ -32,7 +32,7 @@ ${c.bold("Watch & steer")}
   hexagon tell <T-n|@role|@all> <text>  ·  hexagon answer <Q-n> <text>
   hexagon pause|resume|cancel <T-n>  ·  hexagon retry <T-n> [--agent X] [--effort E]
   hexagon takeover <T-n>           continue the agent's own session yourself (claude --resume)
-  hexagon diff <T-n> · logs <T-n> · merge · abort · clean · up · down
+  hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
 
 ${c.bold("Agent protocol")} (run by agents inside their sessions)
   hexagon report "<activity>" [--phase P] [--done AC-1 …]
@@ -260,6 +260,7 @@ async function main(argv: string[]): Promise<void> {
       }
       case "inbox": console.log(JSON.stringify(await client.call("inbox.list"), null, 2)); break;
       case "merge": console.log((await client.call<{ text: string }>("merge.base")).text); break;
+      case "close": await client.call("run.close"); console.log("run closed"); break;
       case "abort": await client.call("run.abort"); console.log("run aborted"); break;
       case "clean": console.log(`removed ${(await client.call<{ removed: string[] }>("worktrees.clean")).removed.length} worktree(s)`); break;
       default:
@@ -364,7 +365,7 @@ async function followRun(client: HexClient): Promise<void> {
     if (p.event === "agent_event") { const l = formatEvent(p.data, false); if (l) console.log(l); }
     if (p.event === "message") { const l = formatMessage(p.data); if (l && p.data.delivery.state !== "acked") console.log(l); }
     if (p.event === "notice") console.log(`◆ ${p.data.text}`);
-    if (p.event === "run" && (p.data.state === "done" || p.data.state === "aborted")) {
+    if (p.event === "run" && p.data && (p.data.state === "done" || p.data.state === "aborted")) {
       console.log(runTable(p.data));
       client.close();
       process.exit(p.data.agents.every((a) => a.state === "done") ? 0 : 1);

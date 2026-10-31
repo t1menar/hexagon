@@ -16,6 +16,7 @@ import { confinePath, globToRegExp, matchesAny, readJsonl } from "../src/util/fs
 import { tokenize } from "../src/tui/app.js";
 import { renderDag } from "../src/tui/dag.js";
 import { chatLines, itemsFromEvents } from "../src/tui/chat.js";
+import { taskStack } from "../src/tui/stack.js";
 import { allowCommands } from "../src/core/config.js";
 import { commandPrefix } from "../src/daemon/orchestrator.js";
 
@@ -236,5 +237,14 @@ describe("permissions", () => {
     expect(commandPrefix("git push origin main")).toBe("git push");
     expect(commandPrefix("cd x && go test")).toBeNull();
     expect(commandPrefix("GOFLAGS=-v go build")).toBeNull();
+  });
+});
+
+describe("stack", () => {
+  it("names a task's technologies from its files, commands and text", () => {
+    const t = { id: "T-1", title: "Hello endpoint with MockMvc test", role: "implementer", files: { write: ["pom.xml", "src/main/java/app/Hello.java"], read: [] }, verify: ["mvn -q test"], description: "Spring Boot controller" } as unknown as Task;
+    expect(taskStack(t)).toEqual(["Maven", "Java", "Spring Boot", "MockMvc", "HTTP API"]);
+    const g = { ...t, title: "x", description: "", files: { write: ["src/**"], read: [] }, verify: [] } as unknown as Task;
+    expect(taskStack(g, ["Go"])).toEqual(["Go"]);
   });
 });

@@ -11,6 +11,7 @@ import { hexagonCommand, openTerminal } from "../shell/open.js";
 import { Canvas, clip, padTo, S, st, wrap } from "./canvas.js";
 import { ACTIVE, bar, glyph, progressOf, renderDag, spinner, STATE_COLOR, type DagNode } from "./dag.js";
 import { takeoverInTerminal } from "./takeover.js";
+import { projectStack, taskStack, toolsUsed } from "./stack.js";
 import { fmtTokens } from "../util/term.js";
 import { chatLines, itemsFromEvents, itemsFromSession, type ChatItem } from "./chat.js";
 
@@ -35,7 +36,8 @@ const COMMANDS: [string, string][] = [
   ["/diff [T-n]", "show the agent's changes (Ctrl-D)"],
   ["/merge", "merge the finished run into your branch"],
   ["/abort", "stop the run"],
-  ["/clean", "remove worktrees of finished runs"],
+  ["/clean", "remove worktrees of finished runs (and close the run)"],
+  ["/close", "hide the finished run from the dashboard (without merging)"],
   ["/stop", "stop the daemon and every agent, then quit"],
   ["/quit", "leave — agents keep running in the background"],
   ["/help", "show this list"],
@@ -43,6 +45,11 @@ const COMMANDS: [string, string][] = [
 
 const HEX = "claude";
 const CONTINUABLE = new Set(["blocked", "failed", "cancelled"]);
+/** Readable names for the run-less sessions: [name, what it does]. */
+const SESSION_NAMES: Record<string, [string, string]> = {
+  planner: ["Planner", "writes the spec + task graph"],
+  init: ["Project setup", "writes HEXAGON.md"],
+};
 const TASK_RE = /^t-?\d+$/i;
 const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
@@ -218,6 +225,15 @@ export class App {
         break;
       }
       case "run":
+        if (!p.data) {
+          // The run was merged/cleaned/closed: back to a clean dashboard.
+          this.full.clear();
+          this.loaded.clear();
+          this.events.clear();
+          if (TASK_RE.test(this.selected)) this.selected = HEX;
+          void this.client.call<Snapshot>("ui.snapshot").then((s) => { this.snap = s; this.dirty = true; });
+          break;
+        }
         if (this.snap.run?.run_id !== p.data.run_id) {
           this.full.clear();
           this.loaded.clear();
@@ -527,7 +543,7 @@ export class App {
     this.input = this.input.slice(0, this.input.length - c.token.length) + item.value + " ";
     this.cursor = this.input.length;
     this.menuIdx = 0;
-    const noArgs = ["/help", "/quit", "/stop", "/run", "/discard", "/spec", "/plan", "/merge", "/abort", "/clean", "/init"];
+    const noArgs = ["/help", "/quit", "/stop", "/run", "/discard", "/spec", "/plan", "/merge", "/abort", "/clean", "/close", "/init"];
     if (submitIfComplete && noArgs.includes(item.value) && this.input.trim() === item.value) {
       const text = this.input;
       this.input = "";
@@ -663,6 +679,7 @@ export class App {
           this.select(this.snap.draft?.plan.tasks[0]?.id ?? HEX);
           return;
         }
+        case "/close": await c.call("run.close"); this.log("run closed", S.gray); return;
         case "/discard": await c.call("draft.discard"); this.log("draft discarded", S.gray); return;
         case "/spec": {
           const d = this.snap.draft;
@@ -764,7 +781,7 @@ export class App {
     }
     const midY = 1 + planH;
     const midH = bodyH - planH;
-    const listW = Math.min(46, Math.max(30, Math.floor(W * 0.36)));
+    const listW = Math.min(64, Math.max(34, Math.floor(W * 0.42)));
     this.agentList(cv, 0, midY, listW, midH);
     this.feedPanel(cv, listW, midY, W - listW, midH);
     this.bottom(cv, H - bottomH, W);
@@ -862,60 +879,109 @@ export class App {
 
   private agentList(cv: Canvas, x: number, y: number, w: number, h: number) {
     cv.box(x, y, w, h, S.gray, "Agents", st(S.bold, S.white));
-    const rows: { id: string; l1: [string, string][]; l2: string; l2s: string; bar?: number | null; barStyle?: string }[] = [];
-    const r = this.snap.run;
+    type Seg = [string, string];
+    // A card: a title line (glyph, readable name, progress bar) and detail lines below it.
+    const cards: { id: string; title: Seg[]; bar?: number | null; barStyle?: string; lines: Seg[][] }[] = [];
+    const project = this.projectStackCached();
     for (const id of this.entries()) {
+      const perm = this.permFor(id);
       if (id === HEX) {
         const cs = this.sessions.get(HEX);
         const busy = cs?.state === "running";
-        rows.push({ id, l1: [[busy ? spinner(this.frame) : "◆", S.cyan], [" claude", S.bold], ["  chat", S.gray], [cs ? `  ${tok(sessTok(cs))}` : "", S.gray]], l2: this.permFor(HEX) ? `⚠ approve: ${this.permFor(HEX)!.command}` : busy ? cs?.activity ?? "thinking…" : this.notice?.text ?? "talk to Claude · run notices", l2s: this.permFor(HEX) ? S.orange : S.gray });
+        cards.push({
+          id,
+          title: [[busy ? spinner(this.frame) : "◆", S.cyan], [" Claude", S.bold], ["  chat", S.gray]],
+          lines: [
+            [["works directly in this repo", S.gray], [cs ? ` · ${tok(sessTok(cs))} tokens` : "", S.gray]],
+            [[perm ? `⚠ approve: ${perm.command}` : busy ? cs?.activity ?? "thinking…" : this.notice?.text ?? "ask anything · /sdd <goal> for agents", perm ? S.orange : S.gray]],
+            ...(project.length ? [[[project.join(" · "), S.cyan] as Seg]] : []),
+          ],
+        });
         continue;
       }
       const s = this.sessions.get(id);
       if (s) {
         const g = s.state === "running" ? spinner(this.frame) : s.state === "waiting_input" ? "?" : s.state === "done" ? "✔" : s.state === "failed" ? "✖" : "−";
         const col = s.state === "running" ? S.blue : s.state === "waiting_input" ? S.orange : s.state === "done" ? S.green : S.red;
-        rows.push({ id, l1: [[g, col], [` ${id}`, S.bold], [`  ${s.agent}`, S.gray], [`  ${tok(sessTok(s))}`, S.gray]], l2: this.permFor(id) ? `⚠ approve: ${this.permFor(id)!.command}` : s.question ? `asks: ${s.question.prompt}` : s.error ?? s.activity ?? "", l2s: s.question || this.permFor(id) ? S.orange : S.gray });
+        const name = SESSION_NAMES[id] ?? [id, ""];
+        cards.push({
+          id,
+          title: [[g, col], [` ${name[0]}`, S.bold]],
+          lines: [
+            [[`${name[1]} · ${s.agent} · ${tok(sessTok(s))} tokens`, S.gray]],
+            [[perm ? `⚠ approve: ${perm.command}` : s.question ? `asks: ${s.question.prompt}` : s.error ?? s.activity ?? s.state, s.question || perm ? S.orange : s.error ? S.red : S.gray]],
+          ],
+        });
         continue;
       }
       const a = this.full.get(id);
       const b = this.runAgents().find((x) => x.task_id === id);
+      const t = this.plan()?.tasks.find((x) => x.id === id);
       const state = (a?.state ?? b?.state ?? "queued") as AgentState;
-      const extra: [string, string][] = [];
-      if (a?.needs_input) extra.push([" ?", st(S.orange, S.bold)]);
-      if ((this.snap.permissions ?? []).some((p) => p.agent === id)) extra.push([" ⚠ approve", st(S.orange, S.bold)]);
-      if (a?.inbox.pending) extra.push([` ✉${a.inbox.pending}`, S.cyan]);
-      if (a?.controller === "user") extra.push([" you", S.magenta]);
-      const prog = a?.progress && a.progress.total ? ` ${a.progress.done}/${a.progress.total}` : "";
-      rows.push({
+      const flags: Seg[] = [];
+      if (a?.needs_input) flags.push([" ?", st(S.orange, S.bold)]);
+      if (perm) flags.push([" ⚠", st(S.orange, S.bold)]);
+      if (a?.inbox.pending) flags.push([` ✉${a.inbox.pending}`, S.cyan]);
+      if (a?.controller === "user") flags.push([" you", S.magenta]);
+      const ac = a?.progress && a.progress.total ? ` · ${a.progress.done}/${a.progress.total} AC` : "";
+      const model = a?.agent.model ? `${a.agent.id} ${a.agent.model}` : a?.agent.id ?? "";
+      const now = perm ? `⚠ approve: ${perm.command}`
+        : state === "queued" || TERMINAL_STATES.has(state) ? `${state.replace("_", " ")}${a?.state_reason ? ` — ${a.state_reason}` : ""}`
+        : a?.activity ?? b?.activity ?? state;
+      const stack = t ? taskStack(t, project) : [];
+      const tools = toolsUsed(this.events.get(id) ?? []).slice(0, 4);
+      cards.push({
         id,
         bar: this.progress(id),
         barStyle: STATE_COLOR[state],
-        l1: [[glyph(state, this.frame), STATE_COLOR[state]], [` ${id}`, S.bold], [` ${a?.role ?? b?.role ?? ""}`, S.gray], [prog, S.green], ...extra],
-        l2: `${tok(a ? spent(a.usage) : b?.tokens ?? 0)} · ${state === "queued" || TERMINAL_STATES.has(state) ? `${state.replace("_", " ")}${a?.state_reason ? ` — ${a.state_reason}` : ""}` : a?.activity ?? b?.activity ?? state}`,
-        l2s: state === "failed" || state === "blocked" ? S.orange : S.gray,
+        title: [[glyph(state, this.frame), STATE_COLOR[state]], [` ${t?.title ?? id}`, S.bold], ...flags],
+        lines: [
+          [[`${id} · ${a?.role ?? b?.role ?? t?.role ?? ""} · ${tok(a ? spent(a.usage) : b?.tokens ?? 0)} tokens${ac}${model ? ` · ${model}` : ""}`, S.gray]],
+          [[now, perm || state === "failed" || state === "blocked" ? S.orange : S.white]],
+          [[stack.join(" · "), S.cyan], [tools.length ? `${stack.length ? "  " : ""}⚒ ${tools.map((u) => `${u.name}${u.n > 1 ? `×${u.n}` : ""}`).join(" ")}` : "", S.gray]],
+        ],
       });
     }
-    const per = 2;
-    const cap = Math.floor((h - 2) / per);
-    const selIdx = rows.findIndex((r) => r.id === this.selected);
-    const start = Math.max(0, Math.min(selIdx - cap + 1, rows.length - cap));
-    rows.slice(Math.max(0, start), Math.max(0, start) + cap).forEach((row, i) => {
-      const yy = y + 1 + i * per;
-      const sel = row.id === this.selected;
+    // Big cards when they fit; otherwise title + current activity only.
+    const inner = h - 2;
+    const full = cards.reduce((n, c) => n + 1 + c.lines.length + 1, 0) - 1 <= inner;
+    const sizeOf = (c: (typeof cards)[number]) => (full ? 1 + c.lines.length + 1 : 2);
+    const selIdx = Math.max(0, cards.findIndex((c) => c.id === this.selected));
+    let start = 0;
+    while (start < selIdx && cards.slice(start, selIdx + 1).reduce((n, c) => n + sizeOf(c), 0) > inner) start++;
+    let yy = y + 1;
+    for (const card of cards.slice(start)) {
+      const lines = full ? card.lines : [card.lines[1] ?? []];
+      const hgt = 1 + lines.length;
+      if (yy + hgt > y + h - 1) break;
+      const sel = card.id === this.selected;
       const bg = sel ? S.bgSel : "";
-      if (sel) { cv.fill(x + 1, yy, w - 2, 2, S.bgSel); cv.set(x + 1, yy, "▌", st(S.cyan, bg)); cv.set(x + 1, yy + 1, "▌", st(S.cyan, bg)); }
+      if (sel) { cv.fill(x + 1, yy, w - 2, hgt, S.bgSel); for (let i = 0; i < hgt; i++) cv.set(x + 1, yy + i, "▌", st(S.cyan, bg)); }
+      const barW = card.bar != null && w >= 34 ? Math.min(18, Math.floor(w / 3)) : 0;
       let cx = x + 3;
-      const barW = row.bar != null && w >= 34 ? Math.min(16, Math.floor(w / 3)) : 0;
-      for (const [t, s] of row.l1) cx = cv.text(cx, yy, t, st(s, bg), x + w - 2 - barW);
+      for (const [t, sty] of card.title) cx = cv.text(cx, yy, t, st(sty, bg), x + w - 3 - barW);
       if (barW) {
-        const b = bar(row.bar!, barW);
-        let bx = cv.text(x + w - 1 - barW, yy, b.fill, st(row.barStyle ?? S.blue, bg));
+        const b = bar(card.bar!, barW);
+        let bx = cv.text(x + w - 1 - barW, yy, b.fill, st(card.barStyle ?? S.blue, bg));
         bx = cv.text(bx, yy, b.rest, st(S.gray, S.dim, bg));
-        cv.text(bx, yy, b.label, st(row.bar === 1 ? S.green : S.gray, bg));
+        cv.text(bx, yy, b.label, st(card.bar === 1 ? S.green : S.gray, bg));
       }
-      cv.text(x + 5, yy + 1, clip(row.l2, w - 7), st(row.l2s, bg), x + w - 1);
-    });
+      lines.forEach((segs, i) => {
+        let lx = x + 5;
+        for (const [t, sty] of segs) if (t) lx = cv.text(lx, yy + 1 + i, clip(t, Math.max(0, x + w - 2 - lx)), st(sty, bg), x + w - 1);
+      });
+      yy += hgt + (full ? 1 : 0);
+    }
+  }
+
+  private taskTitle(id: string): string {
+    return this.plan()?.tasks.find((t) => t.id === id)?.title ?? id;
+  }
+
+  private stackCache: { at: number; v: string[] } = { at: 0, v: [] };
+  private projectStackCached(): string[] {
+    if (Date.now() - this.stackCache.at > 5000) this.stackCache = { at: Date.now(), v: projectStack(this.snap.root || process.cwd()) };
+    return this.stackCache.v;
   }
 
   private feedPanel(cv: Canvas, x: number, y: number, w: number, h: number) {
@@ -929,22 +995,22 @@ export class App {
     const a = this.full.get(sel);
     if (sel === HEX) {
       const cs = this.sessions.get(HEX);
-      title = "Chat · claude";
+      title = "Chat · Claude";
       const notes: ChatItem[] = (this.feeds.get(HEX) ?? []).map((f) => ({ ts: f.ts, kind: "info", text: f.text, style: f.style || S.gray }));
       const items = [...(cs ? itemsFromSession(cs) : []), ...notes].sort((x, y) => x.ts.localeCompare(y.ts));
-      chat = chatLines(items, inner, "claude");
+      chat = chatLines(items, inner, "Claude");
       const r = this.snap.run;
       head.push([cs ? `${cs.state === "running" ? `${spinner(this.frame)} thinking` : cs.state} · ${tokLine(cs.tokens)}` : "Ask Claude anything or ask for a change: it works directly in this repo. /sdd <goal> runs the spec-driven flow.", S.gray]);
       if (r) head.push([`run ${r.run_id} · ${r.state} · ${r.integration_branch} → ${r.base_branch}`, S.gray]);
     } else if (s) {
-      title = `Chat · ${s.id} · ${s.agent}`;
-      chat = chatLines(itemsFromSession(s), inner, s.id);
+      title = `Chat · ${(SESSION_NAMES[s.id] ?? [s.id])[0]} · ${s.agent}`;
+      chat = chatLines(itemsFromSession(s), inner, (SESSION_NAMES[s.id] ?? [s.id])[0]);
       head.push([`${s.state.replace("_", " ")} · ${tokLine(s.tokens)}${s.summary ? ` · ${s.summary}` : ""}`, s.state === "failed" ? S.red : S.gray]);
       if (s.question) head.push([`? ${s.question.question_id} ${s.question.prompt}${s.question.options?.length ? "  " + s.question.options.map((o) => `${o.id}) ${o.label}`).join("  ") : ""}`, st(S.orange, S.bold)]);
     } else if (a) {
-      title = `Chat · ${a.task_id} · ${a.role} · ${a.agent.id}${a.agent.model ? ` (${a.agent.model}${a.agent.effort ? `, ${a.agent.effort}` : ""})` : ""} · attempt ${a.attempt}`;
+      title = `Chat · ${this.taskTitle(a.task_id)} (${a.task_id}) · ${a.role} · ${a.agent.id}${a.agent.model ? ` (${a.agent.model}${a.agent.effort ? `, ${a.agent.effort}` : ""})` : ""} · attempt ${a.attempt}`;
       const conv = itemsFromEvents(this.events.get(sel) ?? []);
-      chat = chatLines(conv.items, inner, a.task_id, conv.acked, TERMINAL_STATES.has(a.state));
+      chat = chatLines(conv.items, inner, `${a.task_id} ${clip(this.taskTitle(a.task_id), 28)}`, conv.acked, TERMINAL_STATES.has(a.state));
       const since = Date.now() - Date.parse(a.state_since);
       head.push([`${glyph(a.state, this.frame)} ${a.state.replace("_", " ")} ${dur(since)}${a.state_reason ? ` — ${a.state_reason}` : ""} · ${a.usage.turns} step(s)`, STATE_COLOR[a.state]]);
       head.push([tokLine({ input: a.usage.input_tokens, cache_read: a.usage.cache_read_tokens, output: a.usage.output_tokens, steps: a.usage.turns }), S.gray]);

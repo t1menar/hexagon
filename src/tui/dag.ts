@@ -225,10 +225,9 @@ export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
         c.text(bx, p.y + boxH - 1, b.label, node.state === "done" ? S.green : S.gray);
       }
       if (normal) {
-        let x = c.text(p.x + 2, p.y + 1, g, st(color, bg));
-        x = c.text(x + 1, p.y + 1, node.id, st(S.bold, bg), p.x + boxW - 2);
-        c.text(x + 1, p.y + 1, clip(node.role, Math.max(0, p.x + boxW - 3 - x)), st(S.gray, bg), p.x + boxW - 2);
-        c.text(p.x + 2, p.y + 2, clip(node.title, inner), st(node.state === "queued" ? S.gray : "", bg), p.x + boxW - 2);
+        const x = c.text(p.x + 2, p.y + 1, g, st(color, bg));
+        c.text(x + 1, p.y + 1, clip(node.title, Math.max(0, p.x + boxW - 3 - x)), st(node.state === "queued" ? S.white : S.bold, bg), p.x + boxW - 2);
+        c.text(p.x + 4, p.y + 2, clip(`${node.id} · ${node.role}`, inner - 2), st(S.gray, bg), p.x + boxW - 2);
       } else {
         let x = c.text(p.x + 2, p.y + 1, g, st(color, bg));
         x = c.text(x + 1, p.y + 1, node.id, st(S.bold, bg), p.x + boxW - 2);
