@@ -186,14 +186,15 @@ describe("dag", () => {
   it("draws boxes and arrows for dependencies", () => {
     const nodes = [
       { id: "T-1", title: "Controller", role: "implementer", deps: [], state: "done" as const },
-      { id: "T-2", title: "Smoke test", role: "tester", deps: ["T-1"], state: "running" as const },
-      { id: "T-3", title: "Docs", role: "implementer", deps: [], state: "queued" as const },
+      { id: "T-2", title: "Smoke test", role: "tester", deps: ["T-1"], state: "done" as const },
+      { id: "T-3", title: "Docs", role: "implementer", deps: [], state: "running" as const },
       { id: "T-4", title: "Release", role: "implementer", deps: ["T-2", "T-3"], state: "queued" as const },
     ];
     const text = renderDag(nodes, { maxW: 120, maxH: 20, frame: 0 }).lines(false).join("\n");
     for (const id of ["T-1", "T-2", "T-3", "T-4"]) expect(text).toContain(id);
-    expect(text).toContain("▶");
-    expect(text).toContain("╭");
+    expect(text).toContain("▸"); // bond into a node
+    expect(text).toContain("╱"); // hexagon outline
+    expect(text).toContain("═"); // T-1 is done: double bond to T-2
   });
 });
 
