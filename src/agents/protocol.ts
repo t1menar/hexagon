@@ -28,7 +28,17 @@ ${report}
 ${ask}
 - \`hexagon done --summary "<one line describing the plan>"\` exactly once, as your last action, after plan-check passes.`;
     case "lead":
-      return "";
+      return `## Hexagon commands
+You can drive Hexagon by running these shell commands (\`hexagon\` is on your PATH):
+- \`hexagon plan "<clear, self-contained goal>"\` starts Hexagon's planner. It writes a spec and a task
+  graph that the user approves in the dashboard (Enter), and then coding agents build it in parallel.
+  Use it when the user asks for something to be built, changed or fixed and you agree on what. One
+  plan at a time; say in your reply that the plan will appear for approval.
+- \`hexagon status\` shows the current run; \`hexagon status T-2\` shows one agent in detail.
+- \`hexagon logs T-2 40\` shows the last steps of an agent.
+- \`hexagon tell T-2 "<instruction>"\` sends an instruction to a running agent (\`@all\` for every agent).
+- \`hexagon answer Q-3 "<answer>"\` answers an agent's question, only if the user told you the answer.
+Each user message starts with a <hexagon_state> block: the current state of runs and plans.`;
     case "init":
       return `${head}
 ${report}

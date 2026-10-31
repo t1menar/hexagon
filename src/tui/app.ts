@@ -11,12 +11,13 @@ import { hexagonCommand, openTerminal } from "../shell/open.js";
 import { Canvas, clip, padTo, S, st, wrap } from "./canvas.js";
 import { ACTIVE, glyph, renderDag, spinner, STATE_COLOR, type DagNode } from "./dag.js";
 import { takeoverInTerminal } from "./takeover.js";
-import { chatLines, itemsFromEvents, itemsFromSession } from "./chat.js";
+import { fmtTokens } from "../util/term.js";
+import { chatLines, itemsFromEvents, itemsFromSession, type ChatItem } from "./chat.js";
 
 interface FeedLine { ts: string; text: string; style: string }
 
 const COMMANDS: [string, string][] = [
-  ["/new <goal>", "plan something new (same as typing a goal)"],
+  ["/new <goal>", "start the planner directly (or just ask Claude in the chat)"],
   ["/run [-j N] [--agent X]", "approve the draft plan and start the agents"],
   ["/discard", "throw away the draft plan"],
   ["/spec", "open the spec in $EDITOR"],
@@ -24,7 +25,7 @@ const COMMANDS: [string, string][] = [
   ["/init [description]", "let an agent study the repo and write HEXAGON.md"],
   ["/answer <Q-n> <text>", "answer an agent's question"],
   ["/tell <T-n|@role|@all> <text>", "message agents"],
-  ["/lead <question>", "ask about the run"],
+  ["/lead <question>", "ask Claude in the chat (same as typing on the claude tab)"],
   ["/pause [T-n]", "pause the selected agent (or the whole run)"],
   ["/resume [T-n]", "resume"],
   ["/cancel [T-n]", "cancel an agent"],
@@ -40,7 +41,7 @@ const COMMANDS: [string, string][] = [
   ["/help", "show this list"],
 ];
 
-const HEX = "hexagon";
+const HEX = "claude";
 const TASK_RE = /^t-?\d+$/i;
 const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
@@ -61,7 +62,13 @@ function flag(args: string[], name: string): string | undefined {
 }
 
 const time = (ts: string) => new Date(ts).toLocaleTimeString("en-GB", { hour12: false });
-const usd = (n: number) => `$${n.toFixed(2)}`;
+const tok = (n: number) => fmtTokens(n);
+const spent = (u: { input_tokens: number; cache_read_tokens: number; output_tokens: number }) => u.input_tokens + u.cache_read_tokens + u.output_tokens;
+const sessTok = (s: SessionStatus) => (s.tokens ? s.tokens.input + s.tokens.cache_read + s.tokens.output : 0);
+const blankSession = (id: string, role: SessionStatus["role"]): SessionStatus => ({
+  id, role, agent: "", state: "running", activity: "starting", question: null, cost_usd: 0,
+  tokens: { input: 0, cache_read: 0, output: 0, steps: 0 }, result_status: null, summary: null, error: null, feed: [], session_id: "",
+});
 const dur = (ms: number) => {
   const s = Math.floor(ms / 1000);
   return s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m` : s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s` : `${s}s`;
@@ -139,7 +146,7 @@ export class App {
     this.timer = setInterval(() => {
       this.frame++;
       if (this.notice && Date.now() - this.notice.at > 10_000) { this.notice = null; this.dirty = true; }
-      if (this.dirty || this.anyActive()) this.render();
+      if (this.dirty || this.anyActive() || this.frame % 10 === 0) this.render();
     }, 100);
     await new Promise<void>((r) => (this.done = r));
   }
@@ -292,7 +299,10 @@ export class App {
   /** Selectable entries: hexagon log, live sessions, tasks. */
   private entries(): string[] {
     const out = [HEX];
-    for (const s of this.sessions.values()) if (s.state === "running" || s.state === "waiting_input" || !this.snap.run || s.id === this.selected) out.push(s.id);
+    for (const s of this.sessions.values()) {
+      if (s.id === HEX) continue;
+      if (["running", "waiting_input", "idle"].includes(s.state) || !this.snap.run || s.id === this.selected || (s.id === "planner" && this.snap.draft)) out.push(s.id);
+    }
     const plan = this.plan();
     if (this.snap.run && !this.showingDraft()) for (const t of plan?.tasks ?? this.runAgents().map((a) => ({ id: a.task_id }))) out.push(t.id);
     return out;
@@ -334,14 +344,14 @@ export class App {
 
   private placeholder(): string {
     const q = this.openQuestion();
-    if (q && (q.from === this.selected || this.selected === HEX)) return `answer ${q.id} (${q.from})…`;
-    if (this.snap.draft && !this.plannerBusy()) return "Enter = run this plan · or type what to change";
-    if (this.plannerBusy()) return "tell the planner something…";
-    const a = this.full.get(this.selected);
+    const sel = this.selected;
+    if (q && q.from === sel) return `answer ${q.id}…`;
+    if (this.snap.draft && !this.plannerBusy() && (sel === HEX || sel === "planner")) return sel === "planner" ? "Enter = run this plan · or type what to change" : "Enter = run the plan · or chat with Claude…";
+    if (sel === "planner" && this.plannerBusy()) return "tell the planner something…";
+    const a = this.full.get(sel);
     if (a && !TERMINAL_STATES.has(a.state)) return `message ${a.task_id}…`;
-    if (this.sessions.get(this.selected)?.state === "running") return `message the ${this.selected} agent…`;
-    if (this.activeRun()) return "ask about the run, @T-n to message an agent, / for commands";
-    return "describe what you want built…";
+    if (this.sessions.get(sel)?.state === "running") return `message the ${sel} agent…`;
+    return "chat with Claude — ask anything, or describe what to build · / commands · @T-n agents";
   }
 
   // ───────────── input ─────────────
@@ -462,7 +472,8 @@ export class App {
         { value: "@all", desc: "every active agent" },
         { value: "@implementers", desc: "all implementer agents" },
         { value: "@testers", desc: "all tester agents" },
-        { value: "@lead", desc: "ask a question about the run" },
+        { value: "@claude", desc: "chat with Claude" },
+        ...(this.snap.draft ? [{ value: "@planner", desc: "ask the planner to change the draft plan" }] : []),
       ].filter((i) => match(i.value));
     } else if (!first && cmd.startsWith("/")) {
       const argIdx = words.length - (token ? 1 : 0);
@@ -512,18 +523,9 @@ export class App {
     const t = this.input.trim();
     if (t.startsWith("/")) return { label: "command", style: S.gray };
     const m = /^@(\S+)/.exec(t);
-    if (m) return { label: /^lead$/i.test(m[1]!) ? "ask lead" : `to ${m[1]}`, style: S.cyan };
-    const q = this.openQuestion();
-    const sel = this.selected;
-    if (!t && this.snap.draft && !this.plannerBusy()) return { label: "Enter = run plan", style: S.orange };
-    if (q && (q.from === sel || sel === HEX)) return { label: `answer ${q.id}`, style: S.orange };
-    const sess = this.sessions.get(sel);
-    if (sess && (sess.state === "running" || sess.state === "waiting_input")) return { label: `to ${sel}`, style: S.blue };
-    if (this.plannerBusy() || (this.snap.draft && (sel === HEX || sel === "planner"))) return { label: "revise plan", style: S.orange };
-    const a = this.full.get(sel);
-    if (a && !TERMINAL_STATES.has(a.state) && this.activeRun()) return { label: `to ${sel}`, style: S.blue };
-    if (this.activeRun()) return { label: "ask lead", style: S.magenta };
-    return { label: "new goal", style: S.green };
+    if (m) return { label: /^(lead|claude)$/i.test(m[1]!) ? "chat" : `to ${m[1]}`, style: S.cyan };
+    const route = this.route(t);
+    return { label: route.label, style: route.style };
   }
 
   private async submit(raw: string): Promise<void> {
@@ -536,54 +538,61 @@ export class App {
         if (!body) return this.flash("usage: @T-2 <message> · @all <message> · @lead <question>");
         return await this.tell(to!.slice(1), body);
       }
-      const q = this.openQuestion();
-      const sel = this.selected;
-      if (!text) {
-        if (this.snap.draft && !this.plannerBusy()) return await this.command("/run");
-        return;
+      const route = this.route(text);
+      switch (route.kind) {
+        case "none": return;
+        case "run": return await this.command("/run");
+        case "answer":
+          await this.client.call("question.answer", { question_id: route.id, answer: text });
+          return;
+        case "session": await this.client.call("session.say", { id: route.id, text }); return;
+        case "revise":
+          await this.client.call("draft.revise", { feedback: text });
+          this.select("planner");
+          return;
+        case "agent": return await this.tell(route.id, text);
+        case "chat": return await this.chat(text);
       }
-      if (q && (q.from === sel || sel === HEX)) {
-        await this.client.call("question.answer", { question_id: q.id, answer: text });
-        this.log(`↳ answered ${q.id} (${q.from}): ${text}`, S.orange);
-        return;
-      }
-      const sess = this.sessions.get(sel);
-      if (sess && (sess.state === "running" || sess.state === "waiting_input")) {
-        await this.client.call("session.say", { id: sel, text });
-        return;
-      }
-      if (this.plannerBusy() || (this.snap.draft && (sel === HEX || sel === "planner"))) {
-        await this.client.call("draft.revise", { feedback: text });
-        this.log(`› you → planner: ${text}`, st(S.white, S.bold));
-        this.select("planner");
-        return;
-      }
-      const a = this.full.get(sel);
-      if (a && !TERMINAL_STATES.has(a.state) && this.activeRun()) return await this.tell(sel, text);
-      if (this.activeRun()) return await this.tell("lead", text);
-      await this.newGoal(text);
     } catch (e) {
       this.flash(e instanceof Error ? e.message : String(e), "error");
       this.log(`✖ ${e instanceof Error ? e.message : String(e)}`, S.orange);
     }
   }
 
+  /** Where plain text goes, given the selection and state. */
+  private route(text: string): { kind: "none" | "run" | "answer" | "session" | "revise" | "agent" | "chat"; id: string; label: string; style: string } {
+    const sel = this.selected;
+    const q = this.openQuestion();
+    if (!text && this.snap.draft && !this.plannerBusy() && (sel === HEX || sel === "planner")) return { kind: "run", id: "", label: "Enter = run plan", style: S.orange };
+    if (q && q.from === sel) return { kind: "answer", id: q.id, label: `answer ${q.id}`, style: S.orange };
+    if (sel !== HEX) {
+      const sess = this.sessions.get(sel);
+      if (sess && ["running", "waiting_input", "idle"].includes(sess.state)) return { kind: "session", id: sel, label: `to ${sel}`, style: S.blue };
+      if (sel === "planner" && this.snap.draft) return { kind: "revise", id: "planner", label: "revise plan", style: S.orange };
+      const a = this.full.get(sel);
+      if (a && !TERMINAL_STATES.has(a.state) && this.activeRun()) return { kind: "agent", id: sel, label: `to ${sel}`, style: S.blue };
+    }
+    if (!text) return { kind: "none", id: "", label: "chat", style: S.green };
+    return { kind: "chat", id: HEX, label: sel === HEX ? "chat" : "chat (agent idle)", style: S.green };
+  }
+
+  private async chat(text: string) {
+    this.select(HEX);
+    const cur = this.sessions.get(HEX);
+    this.sessions.set(HEX, { ...(cur ?? blankSession(HEX, "lead")), state: "running", activity: "thinking…" });
+    await this.client.call("chat.send", { text });
+  }
+
   private async newGoal(goal: string) {
     await this.client.call("goal.new", { goal });
     this.log(`› goal: ${goal}`, st(S.white, S.bold));
-    this.sessions.set("planner", { ...(this.sessions.get("planner") ?? ({} as SessionStatus)), id: "planner", role: "planner", state: "running", activity: "starting", feed: [], question: null, cost_usd: 0, summary: null, error: null, agent: "", session_id: "" });
+    this.sessions.set("planner", blankSession("planner", "planner"));
     this.select("planner");
   }
 
   private async tell(to: string, body: string) {
-    if (/^lead$/i.test(to)) {
-      this.log(`› you → lead: ${body}`, st(S.white, S.bold));
-      this.flash("asking the lead…");
-      const r = await this.client.call<{ answer?: string }>("message.send", { to: "@lead", body });
-      this.log(`lead: ${r.answer ?? ""}`, S.white);
-      this.select(HEX);
-      return;
-    }
+    if (/^(lead|claude)$/i.test(to)) return await this.chat(body);
+    if (/^planner$/i.test(to)) { await this.client.call("draft.revise", { feedback: body }); this.select("planner"); return; }
     const target = TASK_RE.test(to) ? normTask(to) : `@${to}`;
     await this.client.call("message.send", { to: target, body });
     if (!TASK_RE.test(to)) this.log(`› you → ${target}: ${body}`, st(S.white, S.bold));
@@ -613,7 +622,7 @@ export class App {
         case "/new": case "/goal": return await this.newGoal(args.join(" "));
         case "/init": {
           await c.call("init.start", { description: args.join(" ") || null });
-          this.sessions.set("init", { id: "init", role: "init", state: "running", activity: "starting", feed: [], question: null, cost_usd: 0, summary: null, error: null, agent: "", session_id: "" });
+          this.sessions.set("init", blankSession("init", "init"));
           this.select("init");
           return;
         }
@@ -760,8 +769,13 @@ export class App {
       parts.push([`${done}/${r.agents.length} done`, S.white]);
       if (need) parts.push([`${need} need${need === 1 ? "s" : ""} you`, st(S.orange, S.bold)]);
       if (failed) parts.push([`${failed} failed`, S.red]);
-      parts.push([`${usd(r.totals.cost_usd)}${r.budget_usd ? ` / ${usd(r.budget_usd)}` : ""}`, S.white]);
-      parts.push([dur(r.totals.wall_ms), S.gray]);
+      const total = spent(r.totals);
+      const ctx = r.totals.input_tokens + r.totals.cache_read_tokens;
+      parts.push([`${tok(total)}${r.budget_tokens ? ` / ${tok(r.budget_tokens)}` : ""} tokens`, S.white]);
+      parts.push([`${tok(r.totals.output_tokens)} out${ctx ? ` · ${Math.round((100 * r.totals.cache_read_tokens) / ctx)}% cached` : ""}`, S.gray]);
+      const start = Date.parse(r.started_at ?? "") || 0;
+      const end = r.state === "done" || r.state === "aborted" ? Date.parse(r.updated_at) : Date.now();
+      parts.push([`⏱ ${dur(start ? end - start : r.totals.wall_ms)}`, S.gray]);
     } else if (this.snap.draft) parts.push(["plan awaiting approval", S.orange]);
     else if (this.plannerBusy()) parts.push([`${spinner(this.frame)} planning`, S.blue]);
     for (const [t, s] of parts) {
@@ -819,14 +833,16 @@ export class App {
     const r = this.snap.run;
     for (const id of this.entries()) {
       if (id === HEX) {
-        rows.push({ id, l1: [["◆", S.cyan], [" hexagon", S.bold], [r ? ` ${r.run_id}` : "", S.gray]], l2: this.notice?.text ?? "log · lead · notices", l2s: S.gray });
+        const cs = this.sessions.get(HEX);
+        const busy = cs?.state === "running";
+        rows.push({ id, l1: [[busy ? spinner(this.frame) : "◆", S.cyan], [" claude", S.bold], ["  chat", S.gray], [cs ? `  ${tok(sessTok(cs))}` : "", S.gray]], l2: busy ? cs?.activity ?? "thinking…" : this.notice?.text ?? "talk to Claude · run notices", l2s: S.gray });
         continue;
       }
       const s = this.sessions.get(id);
       if (s) {
         const g = s.state === "running" ? spinner(this.frame) : s.state === "waiting_input" ? "?" : s.state === "done" ? "✔" : s.state === "failed" ? "✖" : "−";
         const col = s.state === "running" ? S.blue : s.state === "waiting_input" ? S.orange : s.state === "done" ? S.green : S.red;
-        rows.push({ id, l1: [[g, col], [` ${id}`, S.bold], [`  ${s.agent}`, S.gray], [`  ${usd(s.cost_usd)}`, S.gray]], l2: s.question ? `asks: ${s.question.prompt}` : s.error ?? s.activity ?? "", l2s: s.question ? S.orange : S.gray });
+        rows.push({ id, l1: [[g, col], [` ${id}`, S.bold], [`  ${s.agent}`, S.gray], [`  ${tok(sessTok(s))}`, S.gray]], l2: s.question ? `asks: ${s.question.prompt}` : s.error ?? s.activity ?? "", l2s: s.question ? S.orange : S.gray });
         continue;
       }
       const a = this.full.get(id);
@@ -839,7 +855,7 @@ export class App {
       const prog = a?.progress && a.progress.total ? ` ${a.progress.done}/${a.progress.total}` : "";
       rows.push({
         id,
-        l1: [[glyph(state, this.frame), STATE_COLOR[state]], [` ${id}`, S.bold], [` ${a?.role ?? b?.role ?? ""}`, S.gray], [prog, S.green], ...extra, [`  ${usd(a?.usage.cost_usd ?? b?.cost_usd ?? 0)}`, S.gray]],
+        l1: [[glyph(state, this.frame), STATE_COLOR[state]], [` ${id}`, S.bold], [` ${a?.role ?? b?.role ?? ""}`, S.gray], [prog, S.green], ...extra, [`  ${tok(a ? spent(a.usage) : b?.tokens ?? 0)}`, S.gray]],
         l2: state === "queued" || TERMINAL_STATES.has(state) ? `${state.replace("_", " ")}${a?.state_reason ? ` — ${a.state_reason}` : ""}` : a?.activity ?? b?.activity ?? state,
         l2s: state === "failed" || state === "blocked" ? S.orange : S.gray,
       });
@@ -869,21 +885,26 @@ export class App {
     const s = this.sessions.get(sel);
     const a = this.full.get(sel);
     if (sel === HEX) {
-      title = "Hexagon";
-      feed = this.feeds.get(HEX) ?? [];
+      const cs = this.sessions.get(HEX);
+      title = "Chat · claude";
+      const notes: ChatItem[] = (this.feeds.get(HEX) ?? []).map((f) => ({ ts: f.ts, kind: "info", text: f.text, style: f.style || S.gray }));
+      const items = [...(cs ? itemsFromSession(cs) : []), ...notes].sort((x, y) => x.ts.localeCompare(y.ts));
+      chat = chatLines(items, inner, "claude");
       const r = this.snap.run;
-      if (r) head.push([`run ${r.run_id} · ${r.state} · integration branch ${r.integration_branch} → ${r.base_branch}`, S.gray]);
+      head.push([cs ? `${cs.state === "running" ? `${spinner(this.frame)} thinking` : cs.state} · ${tokLine(cs.tokens)}` : "Ask anything about this project, or describe what to build — Claude starts the planner for you.", S.gray]);
+      if (r) head.push([`run ${r.run_id} · ${r.state} · ${r.integration_branch} → ${r.base_branch}`, S.gray]);
     } else if (s) {
       title = `Chat · ${s.id} · ${s.agent}`;
       chat = chatLines(itemsFromSession(s), inner, s.id);
-      head.push([`${s.state.replace("_", " ")} · ${usd(s.cost_usd)}${s.summary ? ` · ${s.summary}` : ""}`, s.state === "failed" ? S.red : S.gray]);
+      head.push([`${s.state.replace("_", " ")} · ${tokLine(s.tokens)}${s.summary ? ` · ${s.summary}` : ""}`, s.state === "failed" ? S.red : S.gray]);
       if (s.question) head.push([`? ${s.question.question_id} ${s.question.prompt}${s.question.options?.length ? "  " + s.question.options.map((o) => `${o.id}) ${o.label}`).join("  ") : ""}`, st(S.orange, S.bold)]);
     } else if (a) {
       title = `Chat · ${a.task_id} · ${a.role} · ${a.agent.id}${a.agent.model ? ` (${a.agent.model}${a.agent.effort ? `, ${a.agent.effort}` : ""})` : ""} · attempt ${a.attempt}`;
       const conv = itemsFromEvents(this.events.get(sel) ?? []);
       chat = chatLines(conv.items, inner, a.task_id, conv.acked, TERMINAL_STATES.has(a.state));
       const since = Date.now() - Date.parse(a.state_since);
-      head.push([`${glyph(a.state, this.frame)} ${a.state.replace("_", " ")} ${dur(since)}${a.state_reason ? ` — ${a.state_reason}` : ""} · ${usd(a.usage.cost_usd)} · ${a.usage.turns} turn(s)`, STATE_COLOR[a.state]]);
+      head.push([`${glyph(a.state, this.frame)} ${a.state.replace("_", " ")} ${dur(since)}${a.state_reason ? ` — ${a.state_reason}` : ""} · ${a.usage.turns} step(s)`, STATE_COLOR[a.state]]);
+      head.push([tokLine({ input: a.usage.input_tokens, cache_read: a.usage.cache_read_tokens, output: a.usage.output_tokens, steps: a.usage.turns }), S.gray]);
       if (a.checklist?.length) head.push([a.checklist.map((i) => `${i.status === "done" ? "✔" : i.status === "failed" ? "✖" : "○"} ${i.id}`).join("  "), S.green]);
       if (a.needs_input) head.push([`? ${a.needs_input.question_id} ${a.needs_input.prompt}${a.needs_input.options?.length ? "  " + a.needs_input.options.map((o) => `${o.id}) ${o.label}`).join("  ") : ""}`, st(S.orange, S.bold)]);
       if (a.workspace?.worktree) head.push([`${a.workspace.worktree}  (${a.workspace.branch})`, S.gray]);
@@ -980,6 +1001,13 @@ export class App {
       cv.text(x + 1, y0 + 1 + i, clip(it.desc, w - 22), st(S.gray, bg), 2 + w - 1);
     });
   }
+}
+
+/** "52.1k tokens · 48.0k in (91% cached) · 4.1k out · 12 steps" */
+function tokLine(t: SessionStatus["tokens"] | undefined): string {
+  if (!t) return "0 tokens";
+  const ctx = t.input + t.cache_read;
+  return `${tok(ctx + t.output)} tokens · ${tok(ctx)} in${ctx ? ` (${Math.round((100 * t.cache_read) / ctx)}% cached)` : ""} · ${tok(t.output)} out · ${t.steps} step(s)`;
 }
 
 function edit(file: string): Promise<void> {

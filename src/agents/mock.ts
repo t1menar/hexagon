@@ -47,10 +47,23 @@ export class MockAdapter implements AgentAdapter {
       }
       drain();
     };
-    host.emit({ type: "usage", input: 1200, output: 300, cache_read: 0, cache_write: 0, cost_usd: 0 });
+    host.emit({ type: "usage", input: 1200, output: 300, cache_read: 0, cache_write: 0, cost_usd: 0, step: true });
 
     try {
       if (ctx.role === "planner") return await this.plan(ctx, step);
+      if (ctx.role === "lead") {
+        host.emit({ type: "chat", from: "agent", text: `(mock) You said: ${ctx.prompt.replace(/<hexagon_state>[\s\S]*?<\/hexagon_state>\s*/g, "").replace(/<\/?user_message>/g, "").trim()}` });
+        host.emit({ type: "progress", text: "ready" });
+        while (!ctx.signal.aborted) {
+          await sleep(50);
+          for (const m of host.drainInbox()) {
+            host.emit({ type: "usage", input: 200, output: 20, cache_read: 0, cache_write: 0, cost_usd: 0, step: true });
+            host.emit({ type: "chat", from: "agent", text: `(mock) You said: ${m.body.replace(/<hexagon_state>[\s\S]*?<\/hexagon_state>\s*/g, "").trim()}` });
+            host.emit({ type: "progress", text: "ready" });
+          }
+        }
+        return { kind: "interrupted" };
+      }
       if (ctx.role === "init") {
         api.report({ activity: "Scanning the repository", phase: "reading" });
         await step("Writing HEXAGON.md");

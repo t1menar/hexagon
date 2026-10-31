@@ -9,13 +9,17 @@ export interface SessionStatus {
   id: string;
   role: Role;
   agent: string;
-  state: "running" | "waiting_input" | "done" | "failed" | "cancelled";
+  /** idle: a chat session waiting for your next message. */
+  state: "running" | "waiting_input" | "idle" | "done" | "failed" | "cancelled";
   activity: string | null;
   question: NeedsInput | null;
   cost_usd: number;
+  tokens: { input: number; cache_read: number; output: number; steps: number };
+  /** Status the agent finished with (`hexagon done --status …`). */
+  result_status: string | null;
   summary: string | null;
   error: string | null;
-  feed: { ts: string; text: string; kind: "tool" | "text" | "status" | "error" | "user" | "agent" }[];
+  feed: { ts: string; text: string; kind: "tool" | "text" | "status" | "error" | "user" | "agent" | "usage"; tokens?: { input: number; cache_read: number; output: number } }[];
   session_id: string;
 }
 
@@ -42,15 +46,18 @@ export class SoloSession extends EventEmitter {
       system: string;
       env: Record<string, string>;
       allowCommands: string[];
-      /** Extra validation before `hexagon done` is accepted (e.g. plan-check). */
+      /** Extra validation before `hexagon done` (status completed) is accepted (e.g. plan-check). */
       validate?: () => Reply;
+      /** Chat session (the lead): stays open between messages, never "done". */
+      conversational?: boolean;
+      readOnly?: boolean;
       nextQuestionId: () => string;
     },
   ) {
     super();
     this.status = {
       id, role, agent: adapter.id, state: "running", activity: "starting", question: null, cost_usd: 0,
-      summary: null, error: null, feed: [], session_id: randomUUID(),
+      tokens: { input: 0, cache_read: 0, output: 0, steps: 0 }, result_status: null, summary: null, error: null, feed: [], session_id: randomUUID(),
     };
   }
 
@@ -58,14 +65,20 @@ export class SoloSession extends EventEmitter {
     this.emit("status", this.status);
   }
 
-  private log(kind: SessionStatus["feed"][number]["kind"], text: string) {
-    this.status.feed.push({ ts: nowIso(), kind, text });
-    if (this.status.feed.length > 300) this.status.feed.splice(0, this.status.feed.length - 300);
+  private log(kind: SessionStatus["feed"][number]["kind"], text: string, tokens?: SessionStatus["feed"][number]["tokens"]) {
+    this.status.feed.push({ ts: nowIso(), kind, text, ...(tokens ? { tokens } : {}) });
+    if (this.status.feed.length > 400) this.status.feed.splice(0, this.status.feed.length - 400);
   }
 
   private onEvent(e: AgentEvent) {
     switch (e.type) {
-      case "progress": this.status.activity = e.text; this.log("text", e.text); break;
+      case "progress":
+        if (this.opts.conversational && e.text === "ready") {
+          if (this.status.state === "running") this.status.state = "idle";
+          this.status.activity = null;
+          break;
+        }
+        this.status.activity = e.text; this.log("text", e.text); break;
       case "chat":
         this.status.activity = e.text.split("\n").find((l) => l.trim()) ?? "";
         this.log(e.from === "agent" ? "agent" : "user", e.text);
@@ -73,7 +86,14 @@ export class SoloSession extends EventEmitter {
       case "tool_call": this.status.activity = e.summary; this.log("tool", e.summary); break;
       case "tool_result": if (!e.ok) this.log("error", e.summary); break;
       case "status_report": if (e.activity) { this.status.activity = e.activity; this.log("status", e.activity); } break;
-      case "usage": this.status.cost_usd = Math.round((this.status.cost_usd + e.cost_usd) * 1e6) / 1e6; break;
+      case "usage": {
+        this.status.cost_usd = Math.round((this.status.cost_usd + e.cost_usd) * 1e6) / 1e6;
+        if (!e.step) break;
+        const t = this.status.tokens;
+        t.input += e.input; t.cache_read += e.cache_read; t.output += e.output; t.steps += 1;
+        this.log("usage", "", { input: e.input, cache_read: e.cache_read, output: e.output });
+        break;
+      }
       default: return;
     }
     this.changed();
@@ -95,8 +115,13 @@ export class SoloSession extends EventEmitter {
       },
       note: () => ({ ok: true, message: "ok" }),
       done: (d) => {
-        const v = this.opts.validate?.();
-        if (v && !v.ok) return v;
+        // An agent may always stop as blocked/failed; only a "completed" result must validate.
+        const status = d.status ?? "completed";
+        if (status === "completed") {
+          const v = this.opts.validate?.();
+          if (v && !v.ok) return v;
+        }
+        this.status.result_status = status;
         this.status.summary = d.summary ?? "";
         this.allow = d.allow ?? [];
         this.finished = true;
@@ -109,19 +134,30 @@ export class SoloSession extends EventEmitter {
   }
 
   /** User reply: answers the open question or adds an instruction. */
-  say(text: string): void {
+  say(text: string, context = ""): void {
     const q = this.status.question;
-    let body = text;
+    let body = context ? `${context}\n${text}` : text;
     if (q) {
       const opt = q.options?.find((o) => o.id === text.trim() || o.label.toLowerCase() === text.trim().toLowerCase());
       body = `Answer to ${q.question_id} ("${q.prompt}"): ${opt ? opt.label : text}`;
       this.status.question = null;
       this.status.state = "running";
     }
+    if (this.status.state === "idle") this.status.state = "running";
     this.log("user", text);
     this.inbox.push({ id: `S-${this.nextMsg++}`, from: "user", type: q ? "answer" : "instruction", body });
     this.changed();
     this.emit("inbox");
+  }
+
+  /** Record your message in the transcript (used when it starts a new run of the session). */
+  logUser(text: string): void {
+    this.log("user", text);
+    this.changed();
+  }
+
+  get alive(): boolean {
+    return ["running", "waiting_input", "idle"].includes(this.status.state);
   }
 
   cancel(): void {
@@ -157,7 +193,8 @@ export class SoloSession extends EventEmitter {
       resume: this.started,
       env: this.opts.env,
       allowCommands: this.opts.allowCommands,
-      readOnly: false,
+      readOnly: this.opts.readOnly ?? false,
+      conversational: this.opts.conversational,
       host,
       api: this.api(),
       signal: this.abort.signal,

@@ -55,6 +55,8 @@ export interface AgentRunContext {
   /** Shell commands the agent may run (prefixes). "*" = anything. */
   allowCommands: string[];
   readOnly: boolean;
+  /** Chat session: never nudged to finish; stays open for the next message. */
+  conversational?: boolean;
   host: AgentHost;
   api: AgentApi;
   /** Aborting ends the process; the outcome is "interrupted". */

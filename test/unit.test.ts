@@ -15,6 +15,7 @@ import { StatusStore } from "../src/core/status.js";
 import { confinePath, globToRegExp, matchesAny, readJsonl } from "../src/util/fsx.js";
 import { tokenize } from "../src/tui/app.js";
 import { renderDag } from "../src/tui/dag.js";
+import { chatLines, itemsFromEvents } from "../src/tui/chat.js";
 import { allowCommands } from "../src/core/config.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "hex-test-"));
@@ -212,5 +213,17 @@ describe("git", () => {
     fs.writeFileSync(path.join(dir, "hello.sh"), "b");
     fs.writeFileSync(path.join(dir, "new file.txt"), "c");
     expect((await uncommittedFiles(dir)).sort()).toEqual(["hello.sh", "new file.txt"]);
+  });
+});
+
+describe("chat", () => {
+  it("shows tokens for each model step", () => {
+    const ts = "2026-01-01T10:00:00.000Z";
+    const { items } = itemsFromEvents([
+      { ts, seq: 1, event: { type: "chat", from: "agent", text: "Looking at the code" } },
+      { ts, seq: 2, event: { type: "usage", step: true, input: 1000, cache_read: 11300, cache_write: 0, output: 310, cost_usd: 0 } },
+    ] as never);
+    expect(items[0]!.tokens).toEqual({ input: 12300, output: 310 });
+    expect(chatLines(items, 80, "T-1").map((l) => l.text).join("\n")).toContain("12k in · 310 out");
   });
 });

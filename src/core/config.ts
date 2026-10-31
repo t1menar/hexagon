@@ -17,7 +17,7 @@ export interface AgentConfig {
 }
 
 export interface HexagonConfig {
-  run: { max_parallel: number; max_attempts: number; fix_loops: number; budget_usd: number | null; base_branch: string | null };
+  run: { max_parallel: number; max_attempts: number; fix_loops: number; budget_tokens: number | null; base_branch: string | null };
   roles: Record<Role, { agent: string; effort: Effort }>;
   agents: Record<string, AgentConfig>;
   review: { mode: "agent" | "off" };
@@ -27,7 +27,7 @@ export interface HexagonConfig {
 }
 
 export const DEFAULT_CONFIG: HexagonConfig = {
-  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, budget_usd: 20, base_branch: null },
+  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, budget_tokens: null, base_branch: null },
   roles: {
     init: { agent: "claude", effort: "medium" },
     planner: { agent: "claude", effort: "high" },
@@ -77,7 +77,8 @@ export function loadConfig(file: string): HexagonConfig {
       if (a.model?.startsWith("claude-sonnet")) a.model = "sonnet";
     }
   }
-  if (cfg.run.budget_usd !== null && cfg.run.budget_usd <= 0) cfg.run.budget_usd = null;
+  delete (cfg.run as Record<string, unknown>).budget_usd; // v0.1 setting; budgets are in tokens now
+  if (cfg.run.budget_tokens !== null && cfg.run.budget_tokens <= 0) cfg.run.budget_tokens = null;
   return cfg;
 }
 

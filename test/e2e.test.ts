@@ -65,6 +65,15 @@ describe("end to end with the mock agent", () => {
     git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "context");
   });
 
+  it("chats with Claude (persistent session, tokens per step)", async () => {
+    type Snap = { sessions: { id: string; state: string; feed: { kind: string; text: string }[]; tokens: { output: number; steps: number } }[] };
+    await client.call("chat.send", { text: "how are you doing" });
+    const s1 = await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.state === "idle" && s.feed.some((f) => f.text.includes("how are you doing") && f.kind === "agent")));
+    expect(s1.tokens.steps).toBeGreaterThan(0);
+    await client.call("chat.send", { text: "second message" });
+    await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.feed.some((f) => f.kind === "agent" && f.text.includes("second message"))));
+  });
+
   it("rejects protocol calls from unknown agents", async () => {
     const r = await client.call<{ ok: boolean }>("agent.api", { agent: "T-9-a1", op: "report", args: { activity: "x" } });
     expect(r.ok).toBe(false);

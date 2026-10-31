@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { buildId } from "../util/resources.js";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
@@ -31,8 +32,10 @@ export class HexClient extends EventEmitter {
       return c;
     }
     // A daemon from an older Hexagon build speaks another protocol: replace it.
-    const info = await c.call<{ protocol: number }>("ping").catch(() => ({ protocol: -1 }));
-    if (info.protocol !== PROTOCOL && opts.autostart !== false) {
+    // Same protocol but another build (e.g. reinstalled binary): replace it too, unless agents are mid-work.
+    const info = await c.call<{ protocol: number; build?: string; busy?: boolean }>("ping").catch(() => ({ protocol: -1, build: "", busy: false }));
+    const stale = info.protocol !== PROTOCOL || (info.build !== buildId() && !info.busy);
+    if (stale && opts.autostart !== false) {
       await c.call("shutdown").catch(() => undefined);
       c.close();
       for (let i = 0; i < 30 && fs.existsSync(c.paths.socket); i++) await sleep(100);

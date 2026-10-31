@@ -420,7 +420,7 @@ several agents quickly.
 `hexagon attach T-007`:
 
 ```
- T-007 · implementer · claude-sonnet (high) · running · testing · 2/3 · $0.19 · 2m56s
+ T-007 · implementer · claude-sonnet (high) · running · testing · 2/3 · 68k tokens · 2m56s
  ──────────────────────────────────────────────────────────────────────────────────
  ▸ read_file src/auth/login.ts
  ▸ edit src/auth/ratelimit.ts (+48 −0)

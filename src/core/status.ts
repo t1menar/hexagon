@@ -35,7 +35,7 @@ export class StatusStore extends EventEmitter {
   constructor(
     readonly paths: RunPaths,
     readonly runId: string,
-    readonly meta: { plan_path: string; integration_branch: string; base_branch: string; budget_usd: number | null },
+    readonly meta: { plan_path: string; integration_branch: string; base_branch: string; budget_tokens: number | null; started_at: string },
   ) {
     super();
   }
@@ -154,7 +154,7 @@ export class StatusStore extends EventEmitter {
         s.usage.output_tokens += event.output;
         s.usage.cache_read_tokens += event.cache_read;
         s.usage.cost_usd = round(s.usage.cost_usd + event.cost_usd);
-        s.usage.turns += 1;
+        if (event.step) s.usage.turns += 1;
         break;
       case "question":
         s.needs_input = event.question;
@@ -240,7 +240,7 @@ export class StatusStore extends EventEmitter {
       counts,
       agents: agents.map((s) => ({
         task_id: s.task_id, agent_run_id: s.agent_run_id, role: s.role, agent: s.agent.id, state: s.state,
-        activity: s.activity ?? null, needs_input: Boolean(s.needs_input), progress: s.progress ?? null, cost_usd: s.usage.cost_usd,
+        activity: s.activity ?? null, needs_input: Boolean(s.needs_input), progress: s.progress ?? null, cost_usd: s.usage.cost_usd, tokens: s.usage.input_tokens + s.usage.cache_read_tokens + s.usage.output_tokens,
       })),
       attention: [...attention, ...this.extraAttention],
     };

@@ -94,12 +94,13 @@ export class Scheduler extends EventEmitter {
 
   tick(): void {
     if (this.aborted) return;
-    const budget = this.rc.cfg.run.budget_usd;
-    if (budget !== null && this.rc.store.totals().cost_usd >= budget && !this.paused) {
+    const budget = this.rc.cfg.run.budget_tokens;
+    const t = this.rc.store.totals();
+    if (budget !== null && t.input_tokens + t.cache_read_tokens + t.output_tokens >= budget && !this.paused) {
       this.paused = true;
       this.rc.store.runState = "paused";
-      this.rc.store.setAttention([{ kind: "budget", task_id: null, text: `budget of $${budget} reached — /resume to continue or raise [run].budget_usd` }]);
-      this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `Budget $${budget} reached; scheduling paused.` });
+      this.rc.store.setAttention([{ kind: "budget", task_id: null, text: `token budget of ${budget} reached — /resume to continue or raise [run].budget_tokens` }]);
+      this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `Token budget ${budget} reached; scheduling paused.` });
     }
     let changed = false;
     for (const t of this.tasks) {

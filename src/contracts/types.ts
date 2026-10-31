@@ -77,12 +77,13 @@ export interface RunStatus {
   plan_path: string;
   integration_branch: string;
   base_branch: string;
-  budget_usd: number | null;
+  started_at: string;
+  budget_tokens: number | null;
   totals: Usage;
   counts: Partial<Record<AgentState, number>>;
   agents: {
     task_id: string; agent_run_id: string; role: Role; agent: string; state: AgentState;
-    activity: string | null; needs_input: boolean; progress: AgentStatus["progress"] | null; cost_usd: number;
+    activity: string | null; needs_input: boolean; progress: AgentStatus["progress"] | null; cost_usd: number; tokens: number;
   }[];
   attention: { kind: "question" | "failure" | "blocked" | "budget" | "stale"; task_id: string | null; text: string; ref?: string }[];
 }
@@ -164,7 +165,8 @@ export type AgentEvent =
   | { type: "status_report"; phase?: Phase; activity?: string; checklist?: { id: string; label?: string; status: ChecklistStatus }[] }
   | { type: "tool_call"; name: string; summary: string }
   | { type: "tool_result"; name: string; ok: boolean; summary: string }
-  | { type: "usage"; input: number; output: number; cache_read: number; cache_write: number; cost_usd: number }
+  /** Token usage. `step`: one model call (counts as a turn); otherwise a correction (e.g. cost only). */
+  | { type: "usage"; input: number; output: number; cache_read: number; cache_write: number; cost_usd: number; step?: boolean }
   | { type: "question"; question: NeedsInput }
   | { type: "answered"; question_id: string; answer: string }
   | { type: "message_delivered"; message_id: string }
