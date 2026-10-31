@@ -142,7 +142,9 @@ agents can build in parallel:
 
 - **Graph boxes:** each one fills a progress bar as its agent goes through work →
   verify → review → merge.
-- **Agents list:** shows each agent's current step and tokens. Tab or ↑↓ selects an
+- **Agents list:** one card per agent: its task name, progress bar, tokens, current
+  step, the task's stack (`Java · Spring Boot · Maven`) and the tools it has used
+  (`⚒ mvn×3 edit×5`). Tab or ↑↓ selects an
   agent, and the right panel shows your chat with it.
 - **Message an agent:** type while it works ("use records for DTOs"). The message
   arrives at its next step and shows `✓ received`.
@@ -170,7 +172,9 @@ into the run's integration branch, `hexagon/<run>/integration`. When the run end
 /merge                 # merge the integration branch into your branch
 ```
 
-Then run the tests once more on your branch and push. `/clean` removes the run's worktrees.
+Then run the tests once more on your branch and push. A merged run is closed and leaves
+the dashboard. `/clean` removes its worktrees, and `/close` hides a finished run without
+merging it.
 
 **The same flow without the dashboard:**
 

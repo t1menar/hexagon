@@ -49,7 +49,7 @@ export type Push =
   | { event: "status"; data: AgentStatus }
   | { event: "agent_event"; data: StampedEvent }
   | { event: "message"; data: Message }
-  | { event: "run"; data: RunStatus }
+  | { event: "run"; data: RunStatus | null }
   | { event: "notice"; data: { level: "info" | "attention" | "error"; text: string } }
   | { event: "session"; data: SessionStatus }
   | { event: "draft"; data: Draft | null }
@@ -109,6 +109,40 @@ export class Orchestrator extends EventEmitter {
     this.cfg = loadConfig(this.paths.config);
     const d = readJson<Draft>(path.join(this.paths.hex, "drafts", "current.json"));
     if (d && fs.existsSync(d.plan_path)) this.draft = d;
+    void this.autoClose();
+  }
+
+  // ───────────── closing finished runs ─────────────
+
+  private closedMarker(runId: string) {
+    return path.join(this.paths.run(runId).dir, "closed");
+  }
+
+  /** A finished run that was merged or cleaned up: no longer shown on the dashboard. */
+  private isClosed(runId: string): boolean {
+    return fs.existsSync(this.closedMarker(runId)) || !fs.existsSync(path.join(this.paths.worktrees, runId));
+  }
+
+  /** Hide the finished run from the dashboard (its records stay in .hexagon/runs/). */
+  closeRun(reason: string): boolean {
+    const r = this.current;
+    if (r && r.store.runState !== "done" && r.store.runState !== "aborted") throw new Error(`run ${r.runId} is still active; /abort it first`);
+    const id = r?.runId ?? this.latestRunDir();
+    if (!id) return false;
+    fs.writeFileSync(this.closedMarker(id), `${nowIso()} ${reason}\n`);
+    this.current = null;
+    this.push({ event: "run", data: null });
+    return true;
+  }
+
+  /** On start: a last run whose integration branch is already in its base branch was merged by hand. */
+  private async autoClose(): Promise<void> {
+    const id = this.latestRunDir();
+    if (!id) return;
+    const rs = readJson<RunStatus>(this.paths.run(id).status);
+    if (!rs || (rs.state !== "done" && rs.state !== "aborted")) return;
+    const merged = (await g.git(this.root, ["merge-base", "--is-ancestor", rs.integration_branch, rs.base_branch])).ok;
+    if (merged && !this.current) this.closeRun("integration branch already merged");
   }
 
   private push(p: Push) {
@@ -495,7 +529,8 @@ export class Orchestrator extends EventEmitter {
   private latestRunDir(): string | null {
     if (!fs.existsSync(this.paths.runs)) return null;
     const dirs = fs.readdirSync(this.paths.runs).filter((d) => d.startsWith("r-")).sort();
-    return dirs.at(-1) ?? null;
+    const last = dirs.at(-1);
+    return last && !this.isClosed(last) ? last : null;
   }
 
   // ───────────── messaging ─────────────
@@ -691,7 +726,8 @@ export class Orchestrator extends EventEmitter {
     if (!(await g.isClean(this.root, [".hexagon"]))) throw new Error(`working tree of ${r.base} has uncommitted changes; commit or stash them first`);
     const m = await g.merge(this.root, r.rc.integration.branch, `Merge Hexagon run ${r.runId}`);
     if (!m.ok) throw new Error(m.conflict ? "merge conflict — resolve manually: git merge " + r.rc.integration.branch : m.output);
-    return `Merged ${r.rc.integration.branch} into ${r.base}.`;
+    this.closeRun("merged");
+    return `Merged ${r.rc.integration.branch} into ${r.base}. The run is closed; its worktrees can go with /clean.`;
   }
 
   async cleanup(): Promise<string[]> {
@@ -707,6 +743,8 @@ export class Orchestrator extends EventEmitter {
       }
       fs.rmSync(path.join(dir, runDir), { recursive: true, force: true });
     }
+    if (this.current) this.closeRun("cleaned");
+    else this.push({ event: "run", data: null });
     return removed;
   }
 
