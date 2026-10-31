@@ -248,3 +248,13 @@ describe("stack", () => {
     expect(taskStack(g, ["Go"])).toEqual(["Go"]);
   });
 });
+
+describe("chat wrapping", () => {
+  it("shows the whole reason of a blocked state", () => {
+    const reason = "Wrote go.mod, handler.go, main.go implementing GET /helloWorld (200, text/plain), 405 for other methods; could not run go test: go is not installed";
+    const lines = chatLines([{ ts: "2026-01-01T10:00:00.000Z", kind: "state", text: `⊘ blocked — ${reason}` }], 50, "T-1").map((l) => l.text);
+    expect(lines[0]).toMatch(/^── ⊘ blocked ─+$/);
+    expect(lines.slice(1).join(" ").replace(/\s+/g, " ")).toContain("go is not installed");
+    expect(lines.every((l) => l.length <= 50)).toBe(true);
+  });
+});

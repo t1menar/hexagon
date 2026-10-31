@@ -937,7 +937,7 @@ export class App {
         title: [[glyph(state, this.frame), STATE_COLOR[state]], [` ${t?.title ?? id}`, S.bold], ...flags],
         lines: [
           [[`${id} · ${a?.role ?? b?.role ?? t?.role ?? ""} · ${tok(a ? spent(a.usage) : b?.tokens ?? 0)} tokens${ac}${model ? ` · ${model}` : ""}`, S.gray]],
-          [[now, perm || state === "failed" || state === "blocked" ? S.orange : S.white]],
+          ...wrap(now, Math.max(10, w - 7)).slice(0, state === "failed" || state === "blocked" ? 3 : 1).map((l) => [[l, perm || state === "failed" || state === "blocked" ? S.orange : S.white]] as Seg[]),
           [[stack.join(" · "), S.cyan], [tools.length ? `${stack.length ? "  " : ""}⚒ ${tools.map((u) => `${u.name}${u.n > 1 ? `×${u.n}` : ""}`).join(" ")}` : "", S.gray]],
         ],
       });

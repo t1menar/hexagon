@@ -103,7 +103,11 @@ export function chatLines(items: ChatItem[], width: number, agentName: string, a
   };
   for (const it of items) {
     if (it.kind === "tool" || it.kind === "info") {
-      if (it.kind === "info") { flushTools(); out.push({ text: `  · ${it.text}`, style: S.cyan }); continue; }
+      if (it.kind === "info") {
+        flushTools();
+        wrap(it.text, w - 2).forEach((l, i) => out.push({ text: `  ${i ? "  " : "· "}${l}`, style: it.style ?? S.cyan }));
+        continue;
+      }
       tools.push(it);
       continue;
     }
@@ -131,10 +135,14 @@ export function chatLines(items: ChatItem[], width: number, agentName: string, a
         for (const [i, l] of wrap(it.text, w - 2).entries()) out.push({ text: `${i === 0 ? "? " : "  "}${l}`, style: st(S.orange, S.bold) });
         lastSpeaker = "";
         break;
-      case "state":
-        out.push({ text: `── ${it.text} ──`.slice(0, width), style: it.style ?? S.gray });
+      case "state": {
+        // "⊘ blocked — <reason>": the state as a divider, the full reason wrapped below it.
+        const [head, ...rest] = it.text.split(" — ");
+        out.push({ text: `── ${head} ${"─".repeat(Math.max(2, w - head!.length - 4))}`.slice(0, width), style: it.style ?? S.gray });
+        if (rest.length) for (const l of wrap(rest.join(" — "), w)) out.push({ text: `  ${l}`, style: it.style ?? S.gray });
         lastSpeaker = "";
         break;
+      }
       case "error":
         for (const l of wrap(`⚠ ${it.text}`, w)) out.push({ text: `  ${l}`, style: S.orange });
         break;
