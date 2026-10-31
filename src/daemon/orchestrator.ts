@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { ClaudeCodeAdapter, askOnce } from "../agents/claude-code.js";
+import { ClaudeCodeAdapter } from "../agents/claude-code.js";
 import { ExecAdapter } from "../agents/exec.js";
 import { MockAdapter } from "../agents/mock.js";
-import { contextFile, loadRolePrompt, loadSkills, projectContext, systemPrompt } from "../agents/prompts.js";
+import { contextFile, loadSkills, projectContext, systemPrompt } from "../agents/prompts.js";
 import type { AgentAdapter, Reply } from "../agents/types.js";
 import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
@@ -180,9 +180,9 @@ export class Orchestrator extends EventEmitter {
 
   // ───────────── solo sessions: init & planner ─────────────
 
-  private solo(id: "init" | "planner", role: Role, opts: { system: string; env: Record<string, string>; allowCommands: string[]; validate?: () => Reply }): SoloSession {
+  private solo(id: "init" | "planner" | "claude", role: Role, opts: { system: string; env: Record<string, string>; allowCommands: string[]; validate?: () => Reply; conversational?: boolean; readOnly?: boolean }): SoloSession {
     const prev = this.sessions.get(id);
-    if (prev && (prev.status.state === "running" || prev.status.state === "waiting_input")) throw new Error(`the ${id} agent is already running`);
+    if (prev?.alive) throw new Error(`the ${id} agent is already running`);
     const adapter = this.adapterFor(role);
     const s = new SoloSession(id, role, adapter, {
       cwd: this.root, effort: this.cfg.roles[role].effort, ...opts, nextQuestionId: () => `Q-S${this.nextSoloQuestion++}`,
@@ -269,6 +269,10 @@ export class Orchestrator extends EventEmitter {
       if (s.status.state !== "cancelled") this.notice("error", `planner failed: ${s.status.error ?? "unknown error"}`);
       return;
     }
+    if (s.status.result_status && s.status.result_status !== "completed") {
+      this.notice("attention", `The planner stopped without a plan: ${s.status.summary ?? s.status.result_status}`);
+      return;
+    }
     try {
       this.draft = this.materialize(id, goal, out, s.status.summary ?? "");
       this.saveDraft();
@@ -340,12 +344,12 @@ export class Orchestrator extends EventEmitter {
 
   // ───────────── runs ─────────────
 
-  async startRun(opts: { plan_path: string; only?: string[]; agent?: string | null; max_parallel?: number; budget_usd?: number | null }): Promise<string> {
+  async startRun(opts: { plan_path: string; only?: string[]; agent?: string | null; max_parallel?: number; budget_tokens?: number | null }): Promise<string> {
     if (this.current && this.current.store.runState !== "done" && this.current.store.runState !== "aborted") {
       throw new Error(`run ${this.current.runId} is still active; /abort it first`);
     }
     this.reloadConfig();
-    if (opts.budget_usd !== undefined) this.cfg.run.budget_usd = opts.budget_usd && opts.budget_usd > 0 ? opts.budget_usd : null;
+    if (opts.budget_tokens !== undefined) this.cfg.run.budget_tokens = opts.budget_tokens && opts.budget_tokens > 0 ? opts.budget_tokens : null;
     const planFile = path.resolve(this.root, opts.plan_path);
     const raw = readJson<Plan>(planFile);
     if (!raw) throw new Error(`cannot read plan ${opts.plan_path}`);
@@ -370,7 +374,7 @@ export class Orchestrator extends EventEmitter {
     await g.addWorktree(this.root, integration.worktree, integration.branch, base);
 
     const store = new StatusStore(run, runId, {
-      plan_path: path.relative(this.root, planFile), integration_branch: integration.branch, base_branch: base, budget_usd: this.cfg.run.budget_usd,
+      plan_path: path.relative(this.root, planFile), integration_branch: integration.branch, base_branch: base, budget_tokens: this.cfg.run.budget_tokens, started_at: nowIso(),
     });
     let scheduler!: Scheduler;
     const router = new MessageRouter(run, runId, this.cfg.messaging, { activeTasks: (role) => scheduler.activeTaskIds(role) });
@@ -410,6 +414,13 @@ export class Orchestrator extends EventEmitter {
     this.push({ event: "run", data: store.runStatus() });
     this.notice("info", `Run ${runId} started: ${scheduler.plan.tasks.length} task(s), up to ${scheduler.maxParallel} in parallel.`);
     return runId;
+  }
+
+  /** Agents are working (a run in progress or a session mid-turn). */
+  busy(): boolean {
+    const r = this.current;
+    if (r && r.store.runState !== "done" && r.store.runState !== "aborted") return true;
+    return [...this.sessions.values()].some((s) => s.status.state === "running" || s.status.state === "waiting_input");
   }
 
   requireRun(): ActiveRun {
@@ -455,7 +466,7 @@ export class Orchestrator extends EventEmitter {
   /** `to`: "T-7" | "@implementers" | "@all" | "@lead" | "blackboard" | "planner" | "init". */
   async send(to: string, body: string): Promise<{ messages: Message[]; answer?: string }> {
     const target = to.trim();
-    if (/^@?lead$/i.test(target)) return { messages: [], answer: await this.askLead(body) };
+    if (/^@?(lead|claude)$/i.test(target)) { this.chat(body); return { messages: [] }; }
     if (/^@?planner$/i.test(target)) { this.revise(body); return { messages: [] }; }
     if (/^@?init$/i.test(target)) { this.session("init").say(body); return { messages: [] }; }
     const r = this.requireRun();
@@ -502,20 +513,44 @@ export class Orchestrator extends EventEmitter {
     return { questions: [...solo, ...questions], attention: r.store.runStatus().attention.filter((a) => a.kind !== "question"), notices };
   }
 
-  async askLead(question: string): Promise<string> {
-    const lead = this.cfg.roles.lead;
-    const conf = this.cfg.agents[lead.agent];
-    const state = this.status();
-    if (!conf || conf.adapter !== "claude-code") {
-      if (!state) return "No run yet. Describe a goal to get a plan.";
-      const c = state.counts;
-      return `Run ${state.run_id}: ${c.done ?? 0} done, ${(c.running ?? 0) + (c.verifying ?? 0) + (c.reviewing ?? 0)} active, ${c.waiting_input ?? 0} waiting for you, ${(c.failed ?? 0) + (c.blocked ?? 0)} failed/blocked. Spent $${state.totals.cost_usd.toFixed(2)}.`;
-    }
-    const recent = this.current
-      ? readJsonl<StampedEvent>(this.current.run.events).slice(-60).map((e) => `${e.ts.slice(11, 19)} ${e.task_id} ${JSON.stringify(e.event)}`).join("\n")
-      : "";
-    const system = `${loadRolePrompt(this.paths, "lead")}\n\n<run_status>\n${JSON.stringify(state, null, 2)}\n</run_status>\n\n<recent_events>\n${recent}\n</recent_events>\n\n<blackboard>\n${this.current?.router.notes() ?? ""}\n</blackboard>`;
-    return askOnce(conf.command?.length ? conf.command : ["claude"], conf.model ?? null, system, question, this.root);
+  /**
+   * Talk to Claude: a persistent Claude Code session in the project root (read-only). It
+   * answers questions about the code and the run, and starts planning (`hexagon plan`) when
+   * you ask for something to be built.
+   */
+  chat(text: string): void {
+    if (!text.trim()) return;
+    const context = `<hexagon_state>\n${this.stateSummary()}\n</hexagon_state>`;
+    const cur = this.sessions.get("claude");
+    if (cur?.alive) return cur.say(text, context);
+    this.reloadConfig();
+    const s = cur ?? this.solo("claude", "lead", {
+      system: systemPrompt(this.paths, "lead", "claude", loadSkills(this.paths), [], projectContext(this.root)),
+      env: this.agentEnv("claude"),
+      allowCommands: ["hexagon", ...PLANNER_COMMANDS, "git diff", "git show"],
+      conversational: true,
+      readOnly: true,
+    });
+    s.logUser(text);
+    const first = `${context}\n<user_message>\n${text}\n</user_message>`;
+    void s.run(first, first).then(() => {
+      if (s.status.state === "failed") this.notice("error", `chat session ended: ${s.status.error ?? "unknown error"}`);
+    });
+  }
+
+  /** Short state for the chat session: what's running, what's waiting. */
+  private stateSummary(): string {
+    const lines: string[] = [];
+    const r = this.status();
+    if (r) {
+      const t = r.totals;
+      lines.push(`Run ${r.run_id}: ${r.state}; ${r.counts.done ?? 0}/${r.agents.length} done; ${t.input_tokens + t.cache_read_tokens + t.output_tokens} tokens used.`);
+      for (const a of r.agents) lines.push(`- ${a.task_id} (${a.role}) ${a.state}${a.activity ? `: ${a.activity}` : ""}${a.needs_input ? " [waiting for the user's answer]" : ""}`);
+    } else lines.push("No run yet.");
+    if (this.draft) lines.push(`A draft plan "${this.draft.goal}" (${this.draft.plan.tasks.length} tasks) is waiting for the user's approval.`);
+    const p = this.sessions.get("planner");
+    if (p?.alive) lines.push(`The planner is working on a plan${p.status.question ? ` and asks: ${p.status.question.prompt}` : ""}.`);
+    return lines.join("\n");
   }
 
   // ───────────── controls ─────────────

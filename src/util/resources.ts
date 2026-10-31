@@ -58,3 +58,9 @@ export function listResources(dir: string): string[] {
 export function selfCommand(): string[] {
   return IS_BINARY ? [process.execPath] : [process.execPath, path.join(packageRoot(), "dist", "cli.js")];
 }
+
+/** Identifies this build (mtime of the binary or dist/cli.js): a daemon from another build gets replaced. */
+export function buildId(): string {
+  const f = selfCommand().at(-1)!;
+  try { return String(Math.floor(fs.statSync(f).mtimeMs)); } catch { return "dev"; }
+}

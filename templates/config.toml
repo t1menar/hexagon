@@ -4,7 +4,7 @@
 max_parallel = 4        # agents running at once
 max_attempts = 2        # attempts per task (a retry escalates effort one level)
 fix_loops = 2           # verify/review fix rounds within an attempt
-budget_usd = 20         # pause the run when spend reaches this (0 = no limit)
+budget_tokens = 0       # pause the run after this many tokens (input + cached + output; 0 = no limit)
 # base_branch = "main"  # default: the branch checked out when the run starts
 
 # Which agent and effort each role uses. Agents are defined below.

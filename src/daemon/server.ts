@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { buildId } from "../util/resources.js";
 import net from "node:net";
 import type { Effort } from "../contracts/types.js";
 import type { ApiOp } from "../core/registry.js";
@@ -6,6 +7,7 @@ import { atomicWriteJson, nowIso } from "../util/fsx.js";
 import { Orchestrator, type Push } from "./orchestrator.js";
 
 export const PROTOCOL_VERSION = 2;
+const BUILD = buildId();
 
 interface Request { id: number; method: string; params?: Record<string, unknown> }
 
@@ -38,12 +40,13 @@ export class DaemonServer {
     });
     const o = this.orch;
     this.handlers = {
-      ping: () => ({ pid: process.pid, protocol: PROTOCOL_VERSION, root, run_id: o.current?.runId ?? null }),
+      ping: () => ({ pid: process.pid, protocol: PROTOCOL_VERSION, build: BUILD, busy: o.busy(), root, run_id: o.current?.runId ?? null }),
       subscribe: (_p, conn) => { conn.subscribed = true; return { ok: true }; },
       "ui.snapshot": () => o.snapshot(),
       "agent.api": (p) => o.agentApi((p.agent as string) || null, (p.cwd as string) || null, str(p.op, "op") as ApiOp, (p.args as Record<string, unknown>) ?? {}),
       "init.start": (p) => o.startInit((p.description as string) || null),
       "goal.new": (p) => o.newGoal(str(p.goal, "goal")),
+      "chat.send": (p) => { o.chat(str(p.text, "text")); return { ok: true }; },
       "draft.revise": (p) => { o.revise(str(p.feedback, "feedback")); return { ok: true }; },
       "draft.reload": () => o.reloadDraft(),
       "draft.approve": async (p) => ({ run_id: await o.approve({ max_parallel: p.max_parallel as number | undefined, agent: (p.agent as string) ?? null }) }),
@@ -53,7 +56,7 @@ export class DaemonServer {
       "run.start": async (p) => ({
         run_id: await o.startRun({
           plan_path: str(p.plan_path, "plan_path"), only: p.only as string[] | undefined, agent: (p.agent as string) ?? null,
-          max_parallel: p.max_parallel as number | undefined, budget_usd: p.budget_usd as number | null | undefined,
+          max_parallel: p.max_parallel as number | undefined, budget_tokens: p.budget_tokens as number | null | undefined,
         }),
       }),
       "run.status": () => o.status(),

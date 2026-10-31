@@ -168,6 +168,25 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (cmd === "new") return newGoal(rest);
+  if (cmd === "plan") {
+    // Used by the chat agent: start the planner and return at once.
+    const goal = rest.join(" ").trim();
+    if (!goal) throw new Error('usage: hexagon plan "<goal>"');
+    const client = await HexClient.connect(process.env.HEXAGON_ROOT ?? root());
+    try {
+      await client.call("goal.new", { goal });
+      console.log("Planning started. The draft spec and task graph will appear in the dashboard for the user to approve.");
+    } finally {
+      client.close();
+    }
+    return;
+  }
+  if (cmd === "chat") {
+    const client = await HexClient.connect(root());
+    await client.call("chat.send", { text: rest.join(" ") });
+    client.close();
+    return void console.log("sent — the reply appears in the dashboard chat (`hexagon`)");
+  }
 
   const r = root();
   const client = await HexClient.connect(r);
@@ -182,7 +201,7 @@ async function main(argv: string[]): Promise<void> {
         const snap = await client.call<{ draft: Draft | null }>("ui.snapshot");
         if (follow) await followRun(client);
         const res = rest[0]
-          ? await client.call<{ run_id: string }>("run.start", { plan_path: rest[0], agent, only, max_parallel: j ? Number(j) : undefined, budget_usd: budget ? Number(budget) : undefined })
+          ? await client.call<{ run_id: string }>("run.start", { plan_path: rest[0], agent, only, max_parallel: j ? Number(j) : undefined, budget_tokens: budget ? parseTokens(budget) : undefined })
           : snap.draft
             ? await client.call<{ run_id: string }>("draft.approve", { agent, max_parallel: j ? Number(j) : undefined })
             : (() => { throw new Error("no plan to run — `hexagon new \"<goal>\"` first, or pass a plan file"); })();
@@ -267,7 +286,7 @@ async function init(args: string[]): Promise<void> {
   const st = await followSession(client, "init");
   client.close();
   if (st.state !== "done") { process.exitCode = 1; return; }
-  console.log(`\n${c.blue("✔")} HEXAGON.md written${st.summary ? ` — ${st.summary}` : ""} · ${fmtCost(st.cost_usd)}`);
+  console.log(`\n${c.blue("✔")} HEXAGON.md written${st.summary ? ` — ${st.summary}` : ""} · ${st.tokens.input + st.tokens.cache_read + st.tokens.output} tokens`);
   console.log(`Next: run ${c.cyan("hexagon")} and describe what you want built.`);
 }
 
@@ -410,8 +429,11 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
   }
 }
 
-function fmtCost(n: number): string {
-  return `$${n.toFixed(2)}`;
+/** "2m", "500k", "1200000" → tokens. */
+function parseTokens(s: string): number {
+  const m = /^([\d.]+)\s*([km]?)$/i.exec(s.trim());
+  if (!m) throw new Error(`invalid token budget: ${s}`);
+  return Math.round(Number(m[1]) * (m[2]!.toLowerCase() === "m" ? 1e6 : m[2]!.toLowerCase() === "k" ? 1e3 : 1));
 }
 
 function latestRunStatus(paths: ProjectPaths): RunStatus | null {

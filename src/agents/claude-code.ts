@@ -72,6 +72,21 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       let nudges = 0;
       let lastCost = 0;
       let lastError: AdapterOutcome["error"];
+      // Usage arrives on every assistant event of a model call; report each call once.
+      let step: { id: string; usage: Record<string, number> } | null = null;
+      const flushStep = () => {
+        if (!step) return;
+        const u = step.usage;
+        host.emit({
+          type: "usage", step: true,
+          input: Number(u.input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0),
+          output: Number(u.output_tokens ?? 0),
+          cache_read: Number(u.cache_read_input_tokens ?? 0),
+          cache_write: Number(u.cache_creation_input_tokens ?? 0),
+          cost_usd: 0,
+        });
+        step = null;
+      };
       let stdinOpen = true;
       const host = ctx.host;
 
@@ -103,6 +118,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         if (host.isFinished()) return close();
         if (deliverInbox()) return;
         if (host.hasBlockingQuestion()) return; // wait; the answer arrives through the inbox
+        if (ctx.conversational) return host.emit({ type: "progress", text: "ready" }); // chat: wait for the next message
         if (nudges++ < MAX_NUDGES) {
           write("You ended your turn without reporting a result. If you are finished, run `hexagon done ...` (see the Hexagon protocol); otherwise continue the task.");
           return;
@@ -129,7 +145,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             }
             break;
           }
-          case "assistant":
+          case "assistant": {
+            const id = String(e.message?.id ?? "");
+            if (step && step.id !== id) flushStep();
+            if (e.message?.usage) step = { id, usage: e.message.usage };
             for (const c of asArray(e.message?.content)) {
               if (c.type === "tool_use") {
                 const summary = toolSummary(c.name, c.input ?? {});
@@ -139,17 +158,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
               }
             }
             break;
+          }
           case "result": {
+            flushStep();
             const total = Number(e.total_cost_usd ?? 0);
-            const u = e.usage ?? {};
-            host.emit({
-              type: "usage",
-              input: Number(u.input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0),
-              output: Number(u.output_tokens ?? 0),
-              cache_read: Number(u.cache_read_input_tokens ?? 0),
-              cache_write: Number(u.cache_creation_input_tokens ?? 0),
-              cost_usd: Math.max(0, total - lastCost),
-            });
+            // Tokens were counted per step; keep the CLI's cost estimate for local records only.
+            host.emit({ type: "usage", input: 0, output: 0, cache_read: 0, cache_write: 0, cost_usd: Math.max(0, total - lastCost) });
             lastCost = Math.max(lastCost, total);
             if (e.is_error) {
               const msg = String(e.result ?? e.subtype ?? "error");

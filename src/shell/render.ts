@@ -1,15 +1,16 @@
 import type { AgentStatus, Message, RunStatus, StampedEvent } from "../contracts/types.js";
-import { c, fmtTokens, fmtUsd, pad, STATE_STYLE, stateLabel } from "../util/term.js";
+import { c, fmtTokens, pad, STATE_STYLE, stateLabel } from "../util/term.js";
 
 export function runHeader(rs: RunStatus): string {
   const counts = rs.counts;
   const active = (counts.running ?? 0) + (counts.starting ?? 0) + (counts.verifying ?? 0) + (counts.reviewing ?? 0) + (counts.merging ?? 0);
   const waiting = rs.attention.filter((a) => a.kind === "question").length;
-  const budget = rs.budget_usd ? ` / ${fmtUsd(rs.budget_usd)}` : "";
+  const spent = rs.totals.input_tokens + rs.totals.cache_read_tokens + rs.totals.output_tokens;
+  const budget = rs.budget_tokens ? ` / ${fmtTokens(rs.budget_tokens)}` : "";
   const cache = rs.totals.input_tokens + rs.totals.cache_read_tokens > 0
     ? ` · cache ${Math.round((100 * rs.totals.cache_read_tokens) / (rs.totals.input_tokens + rs.totals.cache_read_tokens))}%`
     : "";
-  return `${c.bold("HEXAGON")} ${rs.run_id} · ${rs.state} · ${counts.done ?? 0}/${rs.agents.length} done · ${active} active${waiting ? ` · ${c.orange(`${waiting} need${waiting === 1 ? "s" : ""} you`)}` : ""} · ${fmtUsd(rs.totals.cost_usd)}${budget}${cache}`;
+  return `${c.bold("HEXAGON")} ${rs.run_id} · ${rs.state} · ${counts.done ?? 0}/${rs.agents.length} done · ${active} active${waiting ? ` · ${c.orange(`${waiting} need${waiting === 1 ? "s" : ""} you`)}` : ""} · ${fmtTokens(spent)}${budget} tokens (${fmtTokens(rs.totals.output_tokens)} out)${cache}`;
 }
 
 export function progressBar(done: number, total: number, width = 24): string {
@@ -22,11 +23,11 @@ export function runTable(rs: RunStatus, focus?: string | null): string {
   const lines = [runHeader(rs)];
   const done = rs.counts.done ?? 0;
   lines.push(`Progress  ${progressBar(done, rs.agents.length)}  ${done}/${rs.agents.length} tasks`);
-  lines.push(c.dim(`  ${pad("TASK", 6)} ${pad("ROLE", 11)} ${pad("AGENT", 10)} ${pad("STATE", 15)} ${pad("ACTIVITY", 44)} COST`));
+  lines.push(c.dim(`  ${pad("TASK", 6)} ${pad("ROLE", 11)} ${pad("AGENT", 10)} ${pad("STATE", 15)} ${pad("ACTIVITY", 44)} TOKENS`));
   for (const a of rs.agents) {
     const mark = focus && a.task_id === focus ? c.inverse("▸") : " ";
     const activity = a.needs_input ? c.orange("needs an answer — /inbox") : (a.activity ?? "");
-    lines.push(`${mark} ${pad(a.task_id, 6)} ${pad(a.role, 11)} ${pad(a.agent, 10)} ${pad(stateLabel(a.state), 15)} ${pad(truncate(activity, 44), 44)} ${fmtUsd(a.cost_usd)}`);
+    lines.push(`${mark} ${pad(a.task_id, 6)} ${pad(a.role, 11)} ${pad(a.agent, 10)} ${pad(stateLabel(a.state), 15)} ${pad(truncate(activity, 44), 44)} ${fmtTokens(a.tokens)}`);
   }
   for (const at of rs.attention.filter((x) => x.kind !== "question")) {
     lines.push(c.orange(`  ! ${at.task_id ?? "run"} ${at.kind}: ${truncate(at.text, 100)}`));
@@ -50,7 +51,7 @@ export function agentDetail(s: AgentStatus): string {
   if (s.workspace?.worktree) lines.push(c.dim(`worktree: ${s.workspace.worktree} · branch ${s.workspace.branch}`));
   if (s.files_touched?.length) lines.push(c.dim(`files: ${s.files_touched.join(", ")}`));
   const u = s.usage;
-  lines.push(c.dim(`usage: ${fmtTokens(u.input_tokens)} in · ${fmtTokens(u.output_tokens)} out · ${fmtTokens(u.cache_read_tokens)} cached · ${u.turns} turns · ${fmtUsd(u.cost_usd)} · ${Math.round(u.wall_ms / 1000)}s`));
+  lines.push(c.dim(`usage: ${fmtTokens(u.input_tokens)} in · ${fmtTokens(u.output_tokens)} out · ${fmtTokens(u.cache_read_tokens)} cached · ${u.turns} steps · ${Math.round(u.wall_ms / 1000)}s`));
   if (s.last_error) lines.push(c.orange(`last error (${s.last_error.kind}): ${truncate(s.last_error.message, 200)}`));
   return lines.join("\n");
 }

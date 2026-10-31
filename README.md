@@ -14,7 +14,7 @@ Claude Code (or any other coding CLI), each in its own git worktree.
   non-interactive CLI can be plugged in with `adapter = "exec"`.
 - **See everything.** A full-screen dashboard shows:
   - a live task graph (boxes and arrows, state per task);
-  - the active agents, with what each is doing and what it costs;
+  - the active agents, with what each is doing and the tokens it has used;
   - a **chat with the selected agent**: its replies, your messages (✓ once received),
     Hexagon's instructions, and its tool steps folded into compact lines.
 - **Steer and take over.** Message any agent mid-task, answer its questions, pause it, or
@@ -40,7 +40,7 @@ hexagon                                      # dashboard: type a goal, press Ent
 ```
 
 ```
-⬡ HEXAGON  your-repo │ ⠙ running │ 1/3 done │ $0.21 / $20.00 │ 2m10s
+⬡ HEXAGON  your-repo │ ⠙ running │ 1/3 done │ 412k tokens │ 18k out · 87% cached │ ⏱ 2m10s
 ╭─ Task graph ────────────────────────────────────────────────────────────────╮
 │  ╭──────────────────────╮     ╭──────────────────────╮                      │
 │  │ ✔ T-1 implementer    │     │ ⠙ T-2 tester         │                      │
@@ -51,18 +51,21 @@ hexagon                                      # dashboard: type a goal, press Ent
 │                               │ README run section   │                      │
 ╰─────────────────────────────────────────────────────────────────────────────╯
 ╭─ Agents ───────────────────╮╭─ Chat · T-2 · tester · claude (sonnet) ────────╮
-│  ◆ hexagon                 ││ ⬡ hexagon  14:02                               │
-│  ✔ T-1 implementer  $0.09  ││   Task T-2: Smoke test script (AC-1)            │
-│▌ ⠙ T-2 tester       $0.07  ││ ◆ T-2  14:03                                    │
+│  ◆ claude  chat            ││ ⬡ hexagon  14:02                               │
+│  ✔ T-1 implementer  161k   ││   Task T-2: Smoke test script (AC-1)            │
+│▌ ⠙ T-2 tester       128k   ││ ◆ T-2  14:03                                    │
 │▌   $ sh scripts/smoke.sh   ││   The jar builds; now starting the server…      │
-│  ? T-3 implementer  $0.05  ││   ▸ $ mvn -q package                            │
+│  ? T-3 implementer   97k   ││   ▸ $ mvn -q package                            │
 ╰────────────────────────────╯╰─────────────────────────────────────────────────╯
   to T-2  › also check /hello?name=Ann▏
 ```
 
 **Keys:**
-- **Typing** goes to whoever the chip before the input names: a new goal, plan feedback,
-  the selected agent, an answer to a question, or the lead (`@lead`).
+- **Typing** goes to whoever the chip before the input names. On the `claude` tab it is a
+  chat with Claude: ask about the project or the run, or describe what to build and it
+  starts the planner. On an agent's tab it goes to that agent (or answers its question).
+- Metrics are tokens, not money: per run, per agent, and per model step in each chat
+  (`⌁ 12k in · 310 out`).
 - `/` opens commands and `@` mentions, with suggestions as you type (Tab or → to
   complete).
 - **Tab** or **↑↓** switches agents.
@@ -93,7 +96,7 @@ goal ─▶ planner agent ─▶ specs/<name>.spec.md + task graph ─▶ you ap
 
 - Failed attempts are retried with more effort.
 - A failed verify or review sends the agent back into the same session with the output.
-- The run pauses when spending reaches `budget_usd`.
+- The run pauses when its token use reaches `[run].budget_tokens` (0 = no limit).
 
 **Agent permissions:**
 - Edits are auto-accepted inside the worktree.
