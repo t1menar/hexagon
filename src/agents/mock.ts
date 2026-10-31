@@ -96,6 +96,12 @@ export class MockAdapter implements AgentAdapter {
         api.done({ status: "blocked", summary: `needs \`${needs[1]!.trim()}\``, blockers: [`\`${needs[1]!.trim()}\` was denied`] });
         return { kind: "finished" };
       }
+      // `@return: T-1 <issue>`: send a defect back to T-1, then continue once its fix is merged.
+      const ret = /@return:\s*(T-\d+)\s+(.+)$/m.exec(task.description ?? "");
+      if (ret && !(ctx.followUp ?? "").includes("fixed what you returned")) {
+        const r = api.return?.({ task: ret[1]!, issue: ret[2]!.trim() });
+        if (r?.ok) return { kind: "finished" };
+      }
       const block = /@block:\s*(.+)$/m.exec(task.description ?? "");
       if (block && !ctx.resume) {
         host.emit({ type: "chat", from: "agent", text: `I can't finish: ${block[1]!.trim()}` });

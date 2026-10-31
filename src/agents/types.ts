@@ -19,6 +19,8 @@ export interface AgentApi {
   note(body: string): Reply;
   done(r: Partial<ResultEnvelope> & { allow?: string[] }): Reply;
   review(v: ReviewVerdict): Reply;
+  /** Send a defect back to the task that owns the code (`hexagon return T-1 "…"`). */
+  return?(r: { task: string; issue: string }): Reply;
 }
 
 export interface Reply { ok: boolean; message: string }

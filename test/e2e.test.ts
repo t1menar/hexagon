@@ -198,4 +198,24 @@ describe("end to end with the mock agent", () => {
     await until(async () => (await client.call<AgentStatus>("agent.status", { task: "T-1" })).state === "done");
     expect((await client.call<{ permissions: unknown[] }>("ui.snapshot")).permissions).toEqual([]);
   });
+  it("an agent returns a defect to the task that owns the code, then continues with the fix", async () => {
+    const planFile = path.join(root, ".hexagon/return-plan.json");
+    fs.writeFileSync(planFile, JSON.stringify({
+      tasks: [
+        { id: "T-1", title: "Greeting", role: "implementer", acceptance: ["AC-1"], files: { write: ["hexagon-mock/ret-1.md"] }, verify: ["test -f hexagon-mock/ret-1.md"] },
+        { id: "T-2", title: "Test greeting", role: "tester", depends_on: ["T-1"], description: "@return: T-1 the greeting has a typo", acceptance: ["AC-1"], files: { write: ["hexagon-mock/ret-2.md"] }, verify: ["test -f hexagon-mock/ret-2.md"] },
+      ],
+    }));
+    const pushes: Message[] = [];
+    client.on("push", (p) => { if (p.event === "message") pushes.push(p.data); });
+    await client.call("run.start", { plan_path: planFile });
+    const rs = await until(async () => { const r = await client.call<RunStatus>("run.status"); return r.state === "done" ? r : null; }, 40000);
+    expect(rs.agents.map((a) => [a.agent_run_id, a.state])).toEqual([["T-1-a1", "done"], ["T-2-a1", "done"]]);
+    expect(pushes.some((m) => m.body.includes("T-2 returned T-1"))).toBe(true);
+    const ev = await client.call<{ event: { type: string; text?: string } }[]>("agent.events", { task: "T-1" });
+    expect(ev.some((e) => e.event.type === "chat" && e.event.text?.includes("the greeting has a typo"))).toBe(true);
+    // T-2 got T-1's (re-merged) file in its worktree.
+    const integ = path.join(root, ".hexagon/worktrees", rs.run_id, "integration");
+    expect(fs.readFileSync(path.join(integ, "hexagon-mock/ret-1.md"), "utf8")).toContain("the greeting has a typo");
+  });
 });

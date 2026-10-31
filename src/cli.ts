@@ -33,17 +33,20 @@ ${c.bold("Watch & steer")}
   hexagon pause|resume|cancel <T-n>  ·  hexagon retry <T-n> [--agent X] [--effort E]
   hexagon takeover <T-n>           continue the agent's own session yourself (claude --resume)
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
+  hexagon model [role model]       show/set the model per role (e.g. model planner opus)
+  hexagon install [go|node|java|maven]   install a toolchain for agents (official release, no Homebrew)
 
 ${c.bold("Agent protocol")} (run by agents inside their sessions)
   hexagon report "<activity>" [--phase P] [--done AC-1 …]
   hexagon ask "<question>" [--option "…" …] [--default "…"]
   hexagon note "<fact for other agents>"
+  hexagon return <T-n> "<defect in that task's code, with evidence>"
   hexagon done --summary "…" [--evidence "AC-1: …" …] [--status completed|blocked|failed|needs_spec_change]
                [--issue "…" …] [--assume "…" …] [--allow <cmd> …]
   hexagon review approve|changes --summary "…" [--finding "high: file:line issue -> fix" …]
   hexagon plan-check`;
 
-const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check"]);
+const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "return"]);
 const TASK_RE = /^t-?\d+$/i;
 const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
@@ -261,6 +264,25 @@ async function main(argv: string[]): Promise<void> {
       case "inbox": console.log(JSON.stringify(await client.call("inbox.list"), null, 2)); break;
       case "merge": console.log((await client.call<{ text: string }>("merge.base")).text); break;
       case "close": await client.call("run.close"); console.log("run closed"); break;
+      case "model": case "models": {
+        type M = { role: string; agent: string; model: string; effort: string }[];
+        const list = rest.length >= 2
+          ? await client.call<M>("models.set", { role: rest[0]!.toLowerCase(), model: rest[1] === "default" ? null : rest[1] })
+          : await client.call<M>("models.list");
+        for (const m of list) console.log(`${m.role.padEnd(12)} ${m.model.padEnd(10)} effort ${m.effort}`);
+        break;
+      }
+      case "install": {
+        if (!rest[0]) {
+          for (const t of await client.call<{ name: string; installed: string | null; on_path: boolean }[]>("toolchain.list")) {
+            console.log(`${t.name.padEnd(8)} ${t.installed ? `installed by Hexagon (${t.installed})` : t.on_path ? "on your PATH" : "not installed"}`);
+          }
+          break;
+        }
+        console.log(`installing ${rest[0]}…`);
+        console.log((await client.call<{ text: string }>("toolchain.install", { name: rest[0] })).text);
+        break;
+      }
       case "abort": await client.call("run.abort"); console.log("run aborted"); break;
       case "clean": console.log(`removed ${(await client.call<{ removed: string[] }>("worktrees.clean")).removed.length} worktree(s)`); break;
       default:
@@ -395,6 +417,12 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
       break;
     }
     case "note": params = { body: a.join(" ") }; break;
+    case "return": {
+      const task = a.shift();
+      if (!task || !a.length) { console.error('usage: hexagon return <T-n> "<what is wrong, with evidence>"'); process.exit(2); }
+      params = { task, issue: a.join(" ") };
+      break;
+    }
     case "done": {
       const summary = one(a, "--summary") ?? a.join(" ");
       const status = one(a, "--status");

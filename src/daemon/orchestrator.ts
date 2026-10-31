@@ -10,7 +10,8 @@ import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "
 import { TERMINAL_STATES } from "../contracts/types.js";
 import { atomicWriteJson, nowIso, readJson, readJsonl } from "../util/fsx.js";
 import { selfCommand } from "../util/resources.js";
-import { allowCommands, loadConfig, type HexagonConfig } from "../core/config.js";
+import { allowCommands, loadConfig, setRoleModel, type HexagonConfig } from "../core/config.js";
+import { applyToolchainEnv, install as installToolchain, installed as installedToolchains, onPath, toolchainFor, TOOLCHAINS } from "../core/toolchains.js";
 import * as g from "../core/git.js";
 import { checkPlan, normalizePlan, type PlanCheck } from "../core/plan.js";
 import { ProjectPaths, type RunPaths } from "../core/project.js";
@@ -107,6 +108,7 @@ export class Orchestrator extends EventEmitter {
     super();
     this.paths = new ProjectPaths(root);
     this.cfg = loadConfig(this.paths.config);
+    applyToolchainEnv();
     const d = readJson<Draft>(path.join(this.paths.hex, "drafts", "current.json"));
     if (d && fs.existsSync(d.plan_path)) this.draft = d;
     void this.autoClose();
@@ -155,8 +157,9 @@ export class Orchestrator extends EventEmitter {
 
   // ───────────── adapters & agent environment ─────────────
 
-  adapter(agentId: string): AgentAdapter {
-    let a = this.adapters.get(agentId);
+  adapter(agentId: string, model?: string | null): AgentAdapter {
+    const key = `${agentId}@${model ?? ""}`;
+    let a = this.adapters.get(key);
     if (a) return a;
     const conf = this.cfg.agents[agentId];
     if (!conf) throw new Error(`unknown agent "${agentId}" (configured: ${Object.keys(this.cfg.agents).join(", ")})`);
@@ -167,15 +170,31 @@ export class Orchestrator extends EventEmitter {
         a = new ExecAdapter(agentId, conf.command, conf.interactive ?? null);
         break;
       default:
-        a = new ClaudeCodeAdapter(agentId, { command: conf.command?.length ? conf.command : ["claude"], model: conf.model ?? null, args: conf.args ?? [] });
+        a = new ClaudeCodeAdapter(agentId, { command: conf.command?.length ? conf.command : ["claude"], model: model || conf.model || null, args: conf.args ?? [] });
     }
-    this.adapters.set(agentId, a);
+    this.adapters.set(key, a);
     return a;
   }
 
   adapterFor(role: Role, override?: string | null): AgentAdapter {
-    const id = override && this.cfg.agents[override] ? override : this.cfg.roles[role].agent;
-    return this.adapter(id);
+    if (override && this.cfg.agents[override]) return this.adapter(override);
+    return this.adapter(this.cfg.roles[role].agent, this.cfg.roles[role].model);
+  }
+
+  /** Role → agent/model/effort, for /model. */
+  models(): { role: Role; agent: string; model: string; effort: string }[] {
+    return (Object.keys(this.cfg.roles) as Role[]).map((role) => {
+      const r = this.cfg.roles[role];
+      return { role, agent: r.agent, model: r.model ?? this.cfg.agents[r.agent]?.model ?? "default", effort: r.effort };
+    });
+  }
+
+  setModel(role: string, model: string | null): void {
+    const roles = Object.keys(this.cfg.roles);
+    if (!roles.includes(role)) throw new Error(`unknown role "${role}" (roles: ${roles.join(", ")})`);
+    setRoleModel(this.paths.config, role as Role, model);
+    this.reloadConfig();
+    this.notice("info", `${role} now uses ${model ?? "its agent's default model"} (new sessions; running agents keep theirs).`);
   }
 
   private reloadConfig() {
@@ -250,6 +269,7 @@ export class Orchestrator extends EventEmitter {
     });
     s.on("status", (st: SessionStatus) => this.push({ event: "session", data: st }));
     s.on("permission", (command: string) => this.requestPermission(id, "session", command));
+    s.on("missing", (command: string) => this.toolMissing(command));
     this.sessions.set(id, s);
     this.registry.register(id, s.api());
     return s;
@@ -428,6 +448,8 @@ export class Orchestrator extends EventEmitter {
     if (check.errors.length) throw new Error(`invalid plan: ${check.errors.join("; ")}`);
     if (opts.agent) this.adapter(opts.agent);
 
+    const missing = this.missingForPlan(plan);
+    if (missing.length) this.notice("attention", `Verify commands need ${missing.join(", ")}, which ${missing.length > 1 ? "aren't" : "isn't"} installed. Agents will report blocked until then: ${missing.map((m) => `/install ${m}`).join(" · ")}`);
     // Agents work in git worktrees: a new project gets a repository and an initial commit.
     const setup = await g.ensureRepo(this.root);
     if (setup) this.notice("info", `This folder wasn't ready for agents yet: Hexagon ${setup}.`);
@@ -451,6 +473,8 @@ export class Orchestrator extends EventEmitter {
       skills: loadSkills(this.paths), context: projectContext(this.root), integration,
       adapterFor: (role, override) => this.adapterFor(role, override),
       agentEnv: (id) => this.agentEnv(id),
+      tasks: plan.tasks,
+      returnTask: (from, to, issue) => scheduler.returnTask(from, to, issue),
     };
     scheduler = new Scheduler(rc, plan, { only: opts.only, agentOverride: opts.agent ?? null, maxParallel: opts.max_parallel });
 
@@ -458,6 +482,7 @@ export class Orchestrator extends EventEmitter {
     store.on("event", (e: StampedEvent) => {
       this.push({ event: "agent_event", data: e });
       if (e.event.type === "permission_denied") this.requestPermission(e.task_id, "task", e.event.command);
+      if (e.event.type === "tool_missing") this.toolMissing(e.event.command);
     });
     const counted = new Set<string>();
     router.on("message", (m: Message) => {
@@ -563,6 +588,58 @@ export class Orchestrator extends EventEmitter {
       if (s && m.delivery.state === "queued") r.store.apply(s.agent_run_id, { type: "chat", from: "user", text: body, message_id: m.id });
     }
     return { messages };
+  }
+
+  // ───────────── toolchains ─────────────
+
+  private missingNoticed = new Set<string>();
+
+  private toolMissing(command: string): void {
+    const tc = toolchainFor(command);
+    if (!tc || this.missingNoticed.has(tc) || installedToolchains()[tc]) return;
+    this.missingNoticed.add(tc);
+    this.notice("attention", `\`${command}\` isn't installed on this machine. /install ${tc} downloads the official ${tc} release for Hexagon's agents (into ~/.hexagon/toolchains, no Homebrew or sudo).`);
+  }
+
+  /** Verify commands whose tool isn't installed, as toolchain names. */
+  private missingForPlan(plan: Plan): string[] {
+    const need = new Set<string>();
+    for (const t of plan.tasks) for (const v of t.verify) {
+      const cmd = v.trim().split(/\s+/)[0] ?? "";
+      const tc = toolchainFor(cmd);
+      if (tc && !onPath(cmd)) need.add(tc);
+    }
+    return [...need];
+  }
+
+  toolchains(): { name: string; installed: string | null; on_path: boolean }[] {
+    const inst = installedToolchains();
+    return Object.entries(TOOLCHAINS).map(([name, s]) => ({ name, installed: inst[name]?.version ?? null, on_path: s.commands.some((c) => onPath(c)) }));
+  }
+
+  /** Download a toolchain, then resume agents that were blocked on it and restart the chat with the new PATH. */
+  async installToolchain(name: string): Promise<string> {
+    const key = toolchainFor(name);
+    if (!key) throw new Error(`Hexagon can install: ${Object.keys(TOOLCHAINS).join(", ")}`);
+    this.notice("info", `Installing ${key}…`);
+    const t = await installToolchain(key, (l) => this.notice("info", l));
+    this.missingNoticed.delete(key);
+    const words = [key, ...TOOLCHAINS[key]!.commands];
+    const note = `${key} ${t.version} is now installed (on PATH: ${t.bin}). Run what needed it again and continue.`;
+    const r = this.current;
+    if (r) {
+      for (const s of r.store.all()) {
+        const why = `${s.state_reason ?? ""} ${s.last_error?.message ?? ""} ${s.activity ?? ""}`.toLowerCase();
+        if (!words.some((w) => why.includes(w))) continue;
+        if (r.scheduler.canContinue(s.task_id)) r.scheduler.continueTask(s.task_id, note);
+        else r.scheduler.run(s.task_id)?.restart(note);
+      }
+    }
+    const chat = this.sessions.get("claude");
+    if (chat?.alive) chat.restart(note, chat.allowCommands);
+    const msg = `${key} ${t.version} installed for agents.`;
+    this.notice("info", msg);
+    return msg;
   }
 
   // ───────────── permissions ─────────────

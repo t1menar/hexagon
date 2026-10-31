@@ -1,6 +1,6 @@
 import type { AgentApi, Reply } from "../agents/types.js";
 
-export type ApiOp = "report" | "ask" | "note" | "done" | "review" | "plan_check";
+export type ApiOp = "report" | "ask" | "note" | "done" | "review" | "plan_check" | "return";
 
 /** Routes `hexagon report|ask|note|done|review` calls from agent processes to the right supervisor. */
 export class ApiRegistry {
@@ -28,6 +28,7 @@ export class ApiRegistry {
       case "note": return api.note(String(args.body ?? ""));
       case "done": return api.done(args as never);
       case "review": return api.review(args as never);
+      case "return": return api.return ? api.return(args as never) : { ok: false, message: "`hexagon return` is only for task agents in a run." };
       case "plan_check": return api.plan_check ? api.plan_check() : { ok: false, message: "plan-check is only for the planner" };
     }
   }

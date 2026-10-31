@@ -18,7 +18,7 @@ export interface AgentConfig {
 
 export interface HexagonConfig {
   run: { max_parallel: number; max_attempts: number; fix_loops: number; budget_tokens: number | null; base_branch: string | null };
-  roles: Record<Role, { agent: string; effort: Effort }>;
+  roles: Record<Role, { agent: string; effort: Effort; model?: string }>;
   agents: Record<string, AgentConfig>;
   review: { mode: "agent" | "off" };
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
@@ -30,13 +30,13 @@ export const DEFAULT_CONFIG: HexagonConfig = {
   run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, budget_tokens: null, base_branch: null },
   roles: {
     init: { agent: "claude", effort: "medium" },
-    planner: { agent: "claude", effort: "high" },
+    planner: { agent: "claude", effort: "high", model: "opus" },
     implementer: { agent: "claude", effort: "medium" },
     tester: { agent: "claude", effort: "medium" },
-    reviewer: { agent: "claude", effort: "high" },
+    reviewer: { agent: "claude", effort: "high", model: "opus" },
     integrator: { agent: "claude", effort: "high" },
     resolver: { agent: "claude", effort: "high" },
-    lead: { agent: "claude", effort: "low" },
+    lead: { agent: "claude", effort: "medium", model: "opus" },
   },
   agents: {
     claude: { id: "claude", adapter: "claude-code", command: ["claude"], model: "sonnet" },
@@ -94,4 +94,19 @@ export function allowCommands(file: string, add: string[]): string[] {
     : text.replace(/^\[sandbox\]\s*$/m, `[sandbox]\nallow_commands = ${list}`);
   fs.writeFileSync(file, next);
   return fresh;
+}
+
+/** Set (or with `model` = null, remove) the model of a role in config.toml, keeping the rest of the file. */
+export function setRoleModel(file: string, role: Role, model: string | null): void {
+  let text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  const head = new RegExp(`^\\[roles\\.${role}\\]\\s*$`, "m");
+  if (!head.test(text)) text += `${text.endsWith("\n") || !text ? "" : "\n"}[roles.${role}]\n`;
+  const start = text.search(head);
+  const bodyStart = text.indexOf("\n", start) + 1;
+  const next = text.slice(bodyStart).search(/^\[/m);
+  const end = next < 0 ? text.length : bodyStart + next;
+  let body = text.slice(bodyStart, end).replace(/^model\s*=.*\n?/m, "");
+  if (model) body = body.replace(/^(agent\s*=.*\n)/m, `$1model = "${model}"\n`) || body;
+  if (model && !/^model\s*=/m.test(body)) body = `model = "${model}"\n${body}`;
+  fs.writeFileSync(file, text.slice(0, bodyStart) + body + text.slice(end));
 }

@@ -162,6 +162,8 @@ export type AgentEvent =
   | { type: "progress"; text: string }
   /** The agent CLI refused a tool call that needs approval (e.g. a command outside allow_commands). */
   | { type: "permission_denied"; tool: string; command: string }
+  /** A command the agent ran isn't installed (exit 127 / "command not found"). */
+  | { type: "tool_missing"; command: string }
   /** Conversation: what the agent said, what you sent it, what Hexagon told it. */
   | { type: "chat"; from: "agent" | "user" | "hexagon"; text: string; message_id?: string }
   | { type: "status_report"; phase?: Phase; activity?: string; checklist?: { id: string; label?: string; status: ChecklistStatus }[] }

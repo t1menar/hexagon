@@ -7,24 +7,32 @@ fix_loops = 2           # verify/review fix rounds within an attempt
 budget_tokens = 0       # pause the run after this many tokens (input + cached + output; 0 = no limit)
 # base_branch = "main"  # default: the branch checked out when the run starts
 
-# Which agent and effort each role uses. Agents are defined below.
+# Which agent, model and effort each role uses. Agents are defined below. `model` overrides the
+# agent's default model for that role (any value `claude --model` accepts: opus, sonnet, haiku, a full id).
+# Change it from the dashboard with /model <role> <model>, e.g. /model planner opus.
 [roles.init]
 agent = "claude"
+model = "sonnet"
 effort = "medium"
 [roles.planner]
 agent = "claude"
+model = "opus"
 effort = "high"
 [roles.implementer]
 agent = "claude"
+model = "sonnet"
 effort = "medium"
 [roles.tester]
 agent = "claude"
+model = "sonnet"
 effort = "medium"
 [roles.reviewer]
 agent = "claude"
+model = "opus"
 effort = "high"
 [roles.lead]
 agent = "claude"
+model = "opus"
 effort = "low"
 
 # Agents are coding CLIs that Hexagon wraps; each runs in its own git worktree.

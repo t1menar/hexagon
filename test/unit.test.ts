@@ -17,7 +17,8 @@ import { tokenize } from "../src/tui/app.js";
 import { renderDag } from "../src/tui/dag.js";
 import { chatLines, itemsFromEvents } from "../src/tui/chat.js";
 import { taskStack } from "../src/tui/stack.js";
-import { allowCommands } from "../src/core/config.js";
+import { allowCommands, loadConfig, setRoleModel } from "../src/core/config.js";
+import { toolchainFor } from "../src/core/toolchains.js";
 import { commandPrefix } from "../src/daemon/orchestrator.js";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "hex-test-"));
@@ -256,5 +257,25 @@ describe("chat wrapping", () => {
     expect(lines[0]).toMatch(/^── ⊘ blocked ─+$/);
     expect(lines.slice(1).join(" ").replace(/\s+/g, " ")).toContain("go is not installed");
     expect(lines.every((l) => l.length <= 50)).toBe(true);
+  });
+});
+
+describe("models and toolchains", () => {
+  it("sets the model of a role in config.toml", () => {
+    const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hx-")), "config.toml");
+    fs.writeFileSync(f, '[roles.planner]\nagent = "claude"\neffort = "high"\n[roles.implementer]\nagent = "claude"\n');
+    setRoleModel(f, "planner", "opus");
+    setRoleModel(f, "implementer", "sonnet");
+    setRoleModel(f, "planner", "haiku");
+    const cfg = loadConfig(f);
+    expect(cfg.roles.planner.model).toBe("haiku");
+    expect(cfg.roles.implementer.model).toBe("sonnet");
+    expect(fs.readFileSync(f, "utf8").match(/model =/g)).toHaveLength(2);
+  });
+  it("maps commands to installable toolchains", () => {
+    expect(toolchainFor("golang")).toBe("go");
+    expect(toolchainFor("mvn")).toBe("maven");
+    expect(toolchainFor("javac")).toBe("java");
+    expect(toolchainFor("brew")).toBeNull();
   });
 });
