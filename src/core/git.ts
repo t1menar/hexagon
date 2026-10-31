@@ -92,8 +92,9 @@ export async function diff(cwd: string, base: string, stat = false): Promise<str
 }
 
 /** No staged/unstaged changes to tracked files (untracked files don't block a merge). */
-export async function isClean(cwd: string): Promise<boolean> {
-  const out = await must(cwd, ["status", "--porcelain", "--untracked-files=no"]);
+/** No uncommitted changes to tracked files (outside `exclude` pathspecs, e.g. ".hexagon"). */
+export async function isClean(cwd: string, exclude: string[] = []): Promise<boolean> {
+  const out = await must(cwd, ["status", "--porcelain", "--untracked-files=no", "--", ".", ...exclude.map((e) => `:(exclude)${e}`)]);
   return out.length === 0;
 }
 

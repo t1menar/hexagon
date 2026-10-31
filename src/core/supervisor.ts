@@ -46,6 +46,7 @@ export class AgentRun {
   private abort = new AbortController();
   private gate: Gate | null = null;
   private resumeNote: string | null = null;
+  private restarting = false;
   private questions = new Map<string, { q: NeedsInput; messageId: string }>();
   private blockingAsked = 0;
   private finished = false;
@@ -247,8 +248,9 @@ export class AgentRun {
       }));
       if (out.kind !== "error") this.started = true;
       if (this.cancelled || this.userDone) return out;
-      if (out.kind === "interrupted" && this.gate) {
-        await this.gate.promise;
+      if (out.kind === "interrupted" && (this.gate || this.restarting)) {
+        this.restarting = false;
+        await this.gate?.promise;
         if (this.cancelled || this.userDone) return out;
         fu = this.resumeNote ?? "You were paused by the user. Continue the task where you left off.";
         this.resumeNote = null;
@@ -531,12 +533,20 @@ export class AgentRun {
     return true;
   }
 
-  resume(): boolean {
+  resume(silent = false): boolean {
     if (!this.gate) return false;
     this.gate.resolve();
     this.gate = null;
-    this.ev({ type: "controller", controller: "agent" });
+    if (!silent) this.ev({ type: "controller", controller: "agent" });
     return true;
+  }
+
+  /** Restart the agent CLI in the same session (picks up new permissions), with `note` as its next message. */
+  restart(note: string): boolean {
+    if (!this.pause("applying new permissions")) return false;
+    this.restarting = true;
+    this.resumeNote = note;
+    return this.resume(true);
   }
 
   cancel(): void {

@@ -35,6 +35,7 @@ export class SoloSession extends EventEmitter {
   private abort = new AbortController();
   private started = false;
   allow: string[] = [];
+  private restartNote: string | null = null;
 
   constructor(
     readonly id: string,
@@ -85,6 +86,7 @@ export class SoloSession extends EventEmitter {
         break;
       case "tool_call": this.status.activity = e.summary; this.log("tool", e.summary); break;
       case "tool_result": if (!e.ok) this.log("error", e.summary); break;
+      case "permission_denied": this.emit("permission", e.command); return;
       case "status_report": if (e.activity) { this.status.activity = e.activity; this.log("status", e.activity); } break;
       case "usage": {
         this.status.cost_usd = Math.round((this.status.cost_usd + e.cost_usd) * 1e6) / 1e6;
@@ -160,6 +162,27 @@ export class SoloSession extends EventEmitter {
     return ["running", "waiting_input", "idle"].includes(this.status.state);
   }
 
+  get allowCommands(): string[] {
+    return this.opts.allowCommands;
+  }
+
+  /** Restart the CLI process in the same session (new permissions apply), with `note` as the next message. */
+  restart(note: string, allowCommands: string[]): boolean {
+    this.opts.allowCommands = allowCommands;
+    if (!this.alive) return false;
+    this.restartNote = note;
+    if (this.status.state === "idle") this.status.state = "running";
+    this.abort.abort();
+    this.changed();
+    return true;
+  }
+
+  /** A message from Hexagon (not shown as the user's). */
+  inject(body: string): void {
+    this.inbox.push({ id: `S-${this.nextMsg++}`, from: "orchestrator", type: "instruction", body });
+    this.emit("inbox");
+  }
+
   cancel(): void {
     this.status.state = "cancelled";
     this.abort.abort();
@@ -181,14 +204,17 @@ export class SoloSession extends EventEmitter {
       isFinished: () => this.finished,
       hasBlockingQuestion: () => this.status.question !== null,
     };
-    const out = await this.adapter.run({
+    let fu = followUp;
+    let out: AdapterOutcome;
+    for (;;) {
+    out = await this.adapter.run({
       agentRunId: this.id,
       role: this.role,
       effort: this.opts.effort,
       cwd: this.opts.cwd,
       system: this.opts.system,
       prompt,
-      followUp,
+      followUp: fu,
       sessionId: this.status.session_id,
       resume: this.started,
       env: this.opts.env,
@@ -200,6 +226,14 @@ export class SoloSession extends EventEmitter {
       signal: this.abort.signal,
     });
     if (out.kind !== "error") this.started = true;
+    if (this.restartNote !== null && (this.status.state as SessionStatus["state"]) !== "cancelled") {
+      fu = this.restartNote;
+      this.restartNote = null;
+      this.abort = new AbortController();
+      continue;
+    }
+    break;
+    }
     if ((this.status.state as SessionStatus["state"]) === "cancelled") return out;
     if (out.kind === "error") {
       this.status.state = "failed";

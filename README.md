@@ -204,6 +204,14 @@ goal ─▶ planner agent ─▶ specs/<name>.spec.md + task graph ─▶ you ap
 - Shell commands are limited to `[sandbox].allow_commands` (Claude Code
   `--allowedTools "Bash(<prefix>:*)"`). `hexagon init` adds what your project needs.
 - `["*"]` allows everything (bypass mode).
+- **Approvals:** when an agent (or Claude in the chat) is refused a command, you get a
+  request (`⚠ P-1 T-2 wants to run \`brew install go\``) on its tab. Answer `1` to
+  allow that command prefix for this project, `2` to allow all commands, or `3` to deny.
+  The agent restarts in the same session with the new rule and runs it again. A blocked
+  agent continues too. CLI: `hexagon answer P-1 1`.
+- Agents use the tools installed on your machine (`go`, `mvn`, `node`…). They don't
+  install toolchains behind your back. Install a missing one yourself, or approve the
+  agent's install command.
 
 ## Docs
 

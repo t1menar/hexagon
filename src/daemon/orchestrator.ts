@@ -52,7 +52,8 @@ export type Push =
   | { event: "run"; data: RunStatus }
   | { event: "notice"; data: { level: "info" | "attention" | "error"; text: string } }
   | { event: "session"; data: SessionStatus }
-  | { event: "draft"; data: Draft | null };
+  | { event: "draft"; data: Draft | null }
+  | { event: "permissions"; data: PermissionRequest[] };
 
 export interface Snapshot {
   root: string;
@@ -62,6 +63,29 @@ export interface Snapshot {
   sessions: SessionStatus[];
   draft: Draft | null;
   has_context: boolean;
+  permissions: PermissionRequest[];
+}
+
+/** An agent was refused a command; the user decides. */
+export interface PermissionRequest {
+  id: string;
+  /** Task id (T-2) or session id (claude, planner, init). */
+  agent: string;
+  kind: "task" | "session";
+  command: string;
+  /** Rule to allow (e.g. "brew", "git push"); null for compound commands, which only "allow all" covers. */
+  prefix: string | null;
+  asked_at: string;
+}
+
+const SUBCOMMAND_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "go", "cargo", "docker", "kubectl", "gh"]);
+
+/** The allow rule for a command: "brew", "git push", or null when Claude Code can't match it by prefix. */
+export function commandPrefix(command: string): string | null {
+  const c = command.trim();
+  if (!c || /[;&|`$<>()\n]/.test(c) || /^\w+=/.test(c)) return null;
+  const w = c.split(/\s+/);
+  return SUBCOMMAND_TOOLS.has(w[0]!) && w[1] && !w[1].startsWith("-") ? `${w[0]} ${w[1]}` : w[0]!;
 }
 
 const PLANNER_COMMANDS = ["ls", "cat", "find", "grep", "rg", "head", "wc", "git log", "git status", "git ls-files", "mkdir"];
@@ -76,6 +100,8 @@ export class Orchestrator extends EventEmitter {
   private adapters = new Map<string, AgentAdapter>();
   private sessions = new Map<string, SoloSession>();
   private nextSoloQuestion = 1;
+  private permissions = new Map<string, PermissionRequest>();
+  private nextPermission = 1;
 
   constructor(readonly root: string) {
     super();
@@ -170,6 +196,7 @@ export class Orchestrator extends EventEmitter {
       sessions: [...this.sessions.values()].map((s) => s.status),
       draft: this.draft,
       has_context: contextFile(this.root) !== null,
+      permissions: [...this.permissions.values()],
     };
   }
 
@@ -188,6 +215,7 @@ export class Orchestrator extends EventEmitter {
       cwd: this.root, effort: this.cfg.roles[role].effort, ...opts, nextQuestionId: () => `Q-S${this.nextSoloQuestion++}`,
     });
     s.on("status", (st: SessionStatus) => this.push({ event: "session", data: st }));
+    s.on("permission", (command: string) => this.requestPermission(id, "session", command));
     this.sessions.set(id, s);
     this.registry.register(id, s.api());
     return s;
@@ -393,7 +421,10 @@ export class Orchestrator extends EventEmitter {
     scheduler = new Scheduler(rc, plan, { only: opts.only, agentOverride: opts.agent ?? null, maxParallel: opts.max_parallel });
 
     store.on("status", (s: AgentStatus) => this.push({ event: "status", data: s }));
-    store.on("event", (e: StampedEvent) => this.push({ event: "agent_event", data: e }));
+    store.on("event", (e: StampedEvent) => {
+      this.push({ event: "agent_event", data: e });
+      if (e.event.type === "permission_denied") this.requestPermission(e.task_id, "task", e.event.command);
+    });
     const counted = new Set<string>();
     router.on("message", (m: Message) => {
       if (m.to.kind === "agent" && m.to.id && m.delivery.state === "queued" && !counted.has(m.id)) {
@@ -499,8 +530,74 @@ export class Orchestrator extends EventEmitter {
     return { messages };
   }
 
+  // ───────────── permissions ─────────────
+
+  private pushPermissions() {
+    this.push({ event: "permissions", data: [...this.permissions.values()] });
+  }
+
+  private requestPermission(agent: string, kind: PermissionRequest["kind"], command: string): void {
+    const allowed = this.cfg.sandbox.allow_commands;
+    if (allowed.includes("*")) return;
+    const prefix = commandPrefix(command);
+    if (prefix && allowed.includes(prefix)) return; // already allowed: the agent's next process has it
+    for (const p of this.permissions.values()) if (p.agent === agent && (p.prefix ?? p.command) === (prefix ?? command)) return;
+    const req: PermissionRequest = { id: `P-${this.nextPermission++}`, agent, kind, command, prefix, asked_at: nowIso() };
+    this.permissions.set(req.id, req);
+    this.pushPermissions();
+    const text = `${agent} needs approval to run \`${command}\` (${req.id}). Select ${agent} and answer: 1 allow ${prefix ? `\`${prefix}\` commands` : "it"} · 2 allow all commands · 3 deny`;
+    if (kind === "task") this.current?.store.apply(this.current.store.byTask(agent)!.agent_run_id, { type: "chat", from: "hexagon", text: `Needs your approval: \`${command}\`` });
+    this.notice("attention", text);
+  }
+
+  /** "1"/"allow" → the command's prefix · "2"/"all" → every command · "3"/"deny". */
+  answerPermission(id: string, answer: string): string {
+    const req = this.permissions.get(id.toUpperCase());
+    if (!req) throw new Error(`no permission request ${id}`);
+    const a = answer.trim().toLowerCase();
+    const all = a === "2" || /^(all|allow all|everything|\*)/.test(a);
+    const deny = a === "3" || /^(no|deny|n)\b/.test(a);
+    const allow = !deny && (all || a === "1" || /^(y|yes|ok|allow|approve)/.test(a));
+    if (!allow && !deny) throw new Error("answer 1 (allow), 2 (allow all commands) or 3 (deny)");
+    this.permissions.delete(req.id);
+    this.pushPermissions();
+    let note: string;
+    if (allow) {
+      const rule = all || !req.prefix ? "*" : req.prefix;
+      allowCommands(this.paths.config, [rule]);
+      this.reloadConfig();
+      if (this.current) this.current.rc.cfg.sandbox.allow_commands = this.cfg.sandbox.allow_commands;
+      // Same command again from another agent: nothing more to ask.
+      for (const p of [...this.permissions.values()]) if (rule === "*" || p.prefix === rule) this.permissions.delete(p.id);
+      this.pushPermissions();
+      note = `The user approved \`${req.command}\`: Hexagon now allows ${rule === "*" ? "every command" : `\`${rule}\` commands`}. Run it again and continue.`;
+      this.notice("info", `${rule === "*" ? "All commands" : `\`${rule}\``} allowed for agents in this project (.hexagon/config.toml).`);
+    } else {
+      note = `The user denied \`${req.command}\`. Don't retry it or work around it; continue without it, and say what is left undone.`;
+    }
+    if (req.kind === "session") {
+      const s = this.sessions.get(req.agent);
+      if (s) {
+        const list = allow ? [...new Set([...s.allowCommands, all || !req.prefix ? "*" : req.prefix])] : s.allowCommands;
+        if (allow) s.restart(note, list);
+        else if (s.alive) s.inject(note);
+      }
+      return req.agent;
+    }
+    const r = this.current;
+    if (!r) return req.agent;
+    const run = r.scheduler.run(req.agent);
+    if (run) {
+      if (!allow || !run.restart(note)) r.router.send({ from: { kind: "orchestrator" }, to: { kind: "agent", id: req.agent }, type: "instruction", body: note });
+    } else if (allow && r.scheduler.canContinue(req.agent)) {
+      r.scheduler.continueTask(req.agent, note);
+    }
+    return req.agent;
+  }
+
   answer(questionId: string, answer: string): string {
     const qid = questionId.toUpperCase();
+    if (qid.startsWith("P-")) return this.answerPermission(qid, answer);
     for (const s of this.sessions.values()) {
       if (s.status.question?.question_id.toUpperCase() === qid) { s.say(answer); return s.id; }
     }
@@ -590,7 +687,8 @@ export class Orchestrator extends EventEmitter {
     if (active) throw new Error(`${active} agent(s) still active; wait for the run to finish or /abort`);
     const cur = await g.currentBranch(this.root);
     if (cur !== r.base) throw new Error(`check out ${r.base} first (currently on ${cur})`);
-    if (!(await g.isClean(this.root))) throw new Error(`working tree of ${r.base} has uncommitted changes; commit or stash them first`);
+    // Hexagon's own config (e.g. commands you approved) doesn't conflict with the merge.
+    if (!(await g.isClean(this.root, [".hexagon"]))) throw new Error(`working tree of ${r.base} has uncommitted changes; commit or stash them first`);
     const m = await g.merge(this.root, r.rc.integration.branch, `Merge Hexagon run ${r.runId}`);
     if (!m.ok) throw new Error(m.conflict ? "merge conflict — resolve manually: git merge " + r.rc.integration.branch : m.output);
     return `Merged ${r.rc.integration.branch} into ${r.base}.`;
