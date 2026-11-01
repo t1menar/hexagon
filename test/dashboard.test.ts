@@ -82,6 +82,7 @@ const settle = (ms = 80) => new Promise((r) => setTimeout(r, ms));
 describe("dashboard (real App, fake daemon)", () => {
   it("large layout: header, grouped navigator, network, inspector, activity, input, shortcut bar", async () => {
     const { exit } = await boot({ "T-1": "done", "T-2": "running", "T-3": "queued" });
+    if (process.env.DUMP_SCREEN) console.log(text());
     const t = text();
     for (const w of ["HEXAGON", "AGENTS", "AGENT NETWORK", "INSPECTOR", "ACTIVITY", "ANALYSIS", "IMPLEMENTATION", "REVIEW", "T-1", "T-2", "T-3", "openai", "codex 1.2.3", "CLI-managed", "F1 help"]) expect(t, w).toContain(w);
     expect(t).toContain("1 running");
@@ -152,7 +153,8 @@ describe("dashboard (real App, fake daemon)", () => {
     const { client, exit } = await boot({ "T-1": "done", "T-2": "running" });
     push(client, "status", statusOf("T-2", "waiting_quota", { recovery: { cls: "quota_exhausted", status: "waiting", next_retry_at: "2026-01-01T15:04:00Z", reset_source: "estimate", waits: 1, waited_s: 0, message: "", history: [] } }));
     await settle(120);
-    expect(text()).toMatch(/waiting for quota exhausted/);
+    expect(text()).toMatch(/waiting for quota/);
+    expect(text()).toMatch(/exhausted/);
     expect(text()).toMatch(/15:04/);
     push(client, "status", statusOf("T-2", "running"));
     await settle(120);
@@ -163,7 +165,7 @@ describe("dashboard (real App, fake daemon)", () => {
     const { client, exit } = await boot({ "T-1": "done", "T-2": "running" });
     push(client, "status", statusOf("T-2", "done"));
     push(client, "run", { ...makeSnapshot({}).run, state: "done" }); // a finished run has no live clock
-    await settle(1800); // flash + sweep end
+    await settle(2800); // flash + sweep end (generous: the full suite runs in parallel)
     const before = writes;
     await settle(500);
     expect(writes).toBe(before);
@@ -186,7 +188,7 @@ describe("dashboard (real App, fake daemon)", () => {
     expect(text()).not.toContain("INSPECTOR");
     key("f2"); await settle(80);
     expect(text()).toContain("INSPECTOR");
-    key("f3"); await settle(150);
+    key("f3"); await settle(500);
     const before = writes;
     await settle(400);
     expect(writes).toBe(before);

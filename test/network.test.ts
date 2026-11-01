@@ -145,3 +145,46 @@ describe("square cards", () => {
     }
   });
 });
+
+describe("edge routing", () => {
+  const g5 = [
+    node({ id: "T-1" }),
+    node({ id: "T-2", deps: ["T-1"] }), node({ id: "T-3", deps: ["T-1"] }), node({ id: "T-4", deps: ["T-1"] }),
+    node({ id: "T-5", deps: ["T-2", "T-3"] }), node({ id: "T-6", deps: ["T-1", "T-4"] }),
+  ];
+  it("fan-out shares one trunk; different sources never share a trunk column in the same gap", () => {
+    const g = render({ still: true }, g5);
+    const trunks = new Map<string, Set<number>>();
+    for (const e of g.edges) {
+      const p = e.path.pts;
+      if (p.length === 4 && p[1]![1] !== p[2]![1]) { // an edge that changes rows: [exit, trunk@exit row, trunk@target row, entry]
+        const set = trunks.get(e.from) ?? new Set<number>(); set.add(p[1]![0]); trunks.set(e.from, set);
+      }
+    }
+    for (const [from, set] of trunks) expect(set.size, `trunk of ${from}`).toBe(1);
+    const all = [...trunks.entries()];
+    for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
+      const a = [...all[i]![1]][0]!, b = [...all[j]![1]][0]!;
+      if (a === b) { // same column is only legal in different gaps: their exit x differs
+        const xa = g.edges.find((e) => e.from === all[i]![0])!.path.pts[0]![0], xb = g.edges.find((e) => e.from === all[j]![0])!.path.pts[0]![0];
+        expect(xa).not.toBe(xb);
+      }
+    }
+  });
+  it("every edge starts at its source's right side, ends at the target's left side, and moves only orthogonally", () => {
+    const g = render({ still: true }, g5);
+    for (const e of g.edges) {
+      const from = g.nodes.get(e.from)!, to = g.nodes.get(e.to)!;
+      const pts = e.path.pts;
+      expect(pts[0]![0]).toBe(from.x + from.w);
+      expect(pts.at(-1)![0]).toBe(to.x - 1);
+      for (let i = 1; i < pts.length; i++) expect(pts[i]![0] === pts[i - 1]![0] || pts[i]![1] === pts[i - 1]![1], `${e.from}->${e.to} step ${i}`).toBe(true);
+    }
+  });
+  it("gaps widen with the number of trunks and the graph still fits", () => {
+    for (const [w, h] of [[200, 60], [120, 34]] as const) {
+      const g = render({ maxW: w, maxH: h, still: true }, g5);
+      expect(g.canvas.w).toBeLessThanOrEqual(w);
+    }
+  });
+});

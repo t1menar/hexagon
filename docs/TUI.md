@@ -19,11 +19,11 @@ over cells, which regular hexagon geometry and particle paths need, and avoids a
 
 | Mode | Terminal | Regions |
 |---|---|---|
-| large | ≥124×30 | header · navigator (32) · network · inspector (38) · activity ‖ chat · input · shortcut bar |
-| medium | ≥90×22 | header · navigator (28) · network · optional inspector (F2) · activity ‖ chat |
+| large | ≥150×30 | header · navigator (40) · network · inspector (38) · activity ‖ chat · input · shortcut bar |
+| medium | ≥100×22 | header · navigator (36) · network · optional inspector (F2) · activity ‖ chat |
 | small | smaller | header · one-line selected-agent strip · network · activity ‖ chat |
 
-`computeLayout` is pure; tests assert that regions never overlap and always fit, from 200×60 down to 40×16.
+The inspector only opens while the network keeps at least 60 columns. `computeLayout` is pure; tests assert that regions never overlap and always fit, from 200×60 down to 40×16.
 
 The **navigator** groups agents by role (ANALYSIS, IMPLEMENTATION, REVIEW, INTEGRATION). It degrades gracefully when
 height is short: 4 lines per agent → 3 → 2, scrolling to keep the selection visible. Tab / ↑↓ follow the visual order.
@@ -44,8 +44,20 @@ process reported, or "unknown (CLI-managed)"). Models are never hardcoded; they 
 └────────────────────────────┘
 ```
 
-Three sizes (30×9, 26×7, 20×5) are chosen to fit the panel; the compact card drops model and bar first and keeps id, state and review.
+Four sizes (30×9, 26×7, 23×7, 20×5) are chosen to fit the panel; the compact card drops model and bar first and keeps id, state and review.
 Graphs that still do not fit are clipped without malformed shapes: only fully visible cards are reported and a "+N more" hint is shown.
+
+### Edge routing
+
+Orthogonal, with fixed ports: edges leave a card at its right-middle (`├`) and enter the target at its left-middle (`▸`).
+
+- A source that has to change rows draws **one vertical trunk** in its own track column inside the gap; all its outgoing edges
+  share it (fan-out). Different sources never share a column, so every crossing and junction in the picture is real.
+- Track order avoids needless crossings: lower sources take the left tracks for downward edges, higher sources for upward ones.
+- Gaps grow by one column per trunk (minimum 5), so dense graphs stay readable and sparse ones stay compact.
+- Edges that skip layers pass through a one-row lane between cards instead of reserving a full card slot, which also keeps the graph short.
+- Style carries state: dim for waiting, state colour for active, double line (`═ ║`) once the source task is done.
+- The geometry (`Geometry.edges`) is exactly what is drawn, so particles follow the visible lines.
 
 ### Review design
 

@@ -65,17 +65,12 @@ const LINE: Record<number, string> = {
 };
 const DOUBLE: Record<string, string> = { "─": "═", "│": "║", "╭": "╔", "╮": "╗", "╰": "╚", "╯": "╝", "├": "╠", "┤": "╣", "┬": "╦", "┴": "╩", "┼": "╬" };
 
-const G = 6; // columns between layers (room for bonds)
+/** Minimum columns between layers; each gap grows by one column per trunk line that has to run through it. */
+const MIN_GAP = 5;
 
 export interface CardSize { w: number; h: number; level: 0 | 1 | 2 }
-const CARD_SIZES: CardSize[] = [{ w: 30, h: 9, level: 0 }, { w: 26, h: 7, level: 1 }, { w: 20, h: 5, level: 2 }];
+const CARD_SIZES: CardSize[] = [{ w: 30, h: 9, level: 0 }, { w: 26, h: 7, level: 1 }, { w: 23, h: 7, level: 1 }, { w: 20, h: 5, level: 2 }];
 const ROW_GAP = 1;
-
-/** Pick the largest card size that lets the whole graph fit. */
-export function fitCard(layers: number, rows: number, maxW: number, maxH: number): CardSize | null {
-  for (const c of CARD_SIZES) if (layers * c.w + (layers - 1) * G <= maxW && rows * (c.h + ROW_GAP) - ROW_GAP <= maxH) return c;
-  return null;
-}
 
 export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
   const withHub = (o.hub ?? true) && input.length > 0;
@@ -88,19 +83,39 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
 
   const { layers, edges } = layout(nodes);
   const nL = layers.length;
-  const rows = Math.max(...layers.map((l) => l.length));
-  const fit = fitCard(nL, rows, o.maxW, o.maxH);
-  const card = fit ?? CARD_SIZES[2]!; // too small even for the smallest card: clipped, never malformed
+  const layerIdx = new Map<string, number>();
+  layers.forEach((l, li) => l.forEach((n) => layerIdx.set(n.key, li)));
+  const realMap = new Map(layers.flat().map((n) => [n.key, n.real]));
+  const realOf = (key: string) => realMap.get(key) ?? null;
+
+  // Positions depend on the card size: real cards are tall, pass-through lanes of long edges are a single row thin, so
+  // a skip-layer edge squeezes between cards instead of reserving a whole card slot.
+  const planFor = (cs: CardSize) => {
+    const hubH = 4;
+    const hOf = (key: string) => (!realOf(key) ? 1 : key === INTEGRATION ? hubH : cs.h);
+    const layerH = layers.map((l) => l.reduce((a, n, i) => a + hOf(n.key) + (i ? ROW_GAP : 0), 0));
+    const height = Math.max(...layerH);
+    const y = new Map<string, number>();
+    layers.forEach((l, li) => { let yy = Math.floor((height - layerH[li]!) / 2); for (const n of l) { y.set(n.key, yy); yy += hOf(n.key) + ROW_GAP; } });
+    const midOf = (key: string) => y.get(key)! + Math.floor(hOf(key) / 2);
+    // One track column per source that has to change row inside its gap (fan-out shares a single trunk).
+    const movers: Set<string>[] = Array.from({ length: Math.max(0, nL - 1) }, () => new Set());
+    for (const [a, b] of edges) if (midOf(a) !== midOf(b)) movers[layerIdx.get(a)!]?.add(a);
+    const gapW = movers.map((set) => Math.max(MIN_GAP, set.size + 4));
+    const gapSum = gapW.reduce((a, b) => a + b, 0);
+    return { cs, hubH, hOf, y, midOf, gapW, gapSum, height, width: nL * cs.w + gapSum };
+  };
+  let plan = planFor(CARD_SIZES[2]!); // too small even for the smallest card: clipped, never malformed
+  for (const cs of CARD_SIZES) { const pl = planFor(cs); if (pl.width <= o.maxW && pl.height <= o.maxH) { plan = pl; break; } }
+  const { gapW, gapSum, midOf: midY } = plan;
+  const card = plan.cs;
   const compact = card.level === 2;
   geom.card = card;
   geom.compact = compact;
-  const hubH = card.level === 2 ? 3 : 4;
-  const boxOf = (id: string) => ({ w: card.w, h: id === INTEGRATION ? hubH : card.h });
+  const hubH = plan.hubH;
+  const boxOf = (id: string) => ({ w: card.w, h: plan.hOf(id) });
   const colW = card.w;
-  const slot = card.h + ROW_GAP;
-  const width = Math.min(o.maxW, nL * colW + (nL - 1) * G);
-  const height = Math.min(o.maxH, rows * slot - ROW_GAP);
-  const c = new Canvas(Math.max(1, width), Math.max(1, height));
+  const c = new Canvas(Math.max(1, Math.min(o.maxW, plan.width)), Math.max(1, Math.min(o.maxH, plan.height)));
   geom.canvas = c;
   const depth = o.caps.color;
   const colorOf = (t: Token) => sgr(TOKENS[t], depth);
@@ -108,13 +123,14 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
 
   const pos = new Map<string, { x: number; y: number }>();
   layers.forEach((layer, li) => {
-    const offset = Math.floor(((rows - layer.length) * slot) / 2);
-    layer.forEach((n, i) => pos.set(n.key, { x: li * (colW + G), y: offset + i * slot + (n.real && n.key === INTEGRATION ? Math.floor((card.h - hubH) / 2) : 0) }));
+    const lx = li * colW + gapW.slice(0, li).reduce((a, b) => a + b, 0);
+    for (const n of layer) pos.set(n.key, { x: lx, y: plan.y.get(n.key)! });
   });
-  const realOf = (key: string) => layers.flat().find((n) => n.key === key)?.real ?? null;
-  const midY = (key: string) => { const p = pos.get(key)!; const h = boxOf(key).h; return p.y + Math.floor(h / 2); };
 
-  // ── bonds ──
+  // ── edges: orthogonal routing ──
+  // Every edge leaves its card at the right-middle port and enters the target at its left-middle port. A source that has
+  // to change rows runs ONE vertical trunk in its own track column inside the gap (fan-out shares it); different sources
+  // never share a column, so a crossing is a real crossing and a junction is a real junction.
   const mask = new Map<string, number>();
   const rank = new Map<string, number>();
   const styleAt = new Map<string, string>();
@@ -127,14 +143,32 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
   const segV = (x: number, y1: number, y2: number, s: string, r: number) => { const [a, b] = y1 <= y2 ? [y1, y2] : [y2, y1]; for (let y = a; y <= b; y++) mark(x, y, (y < b ? D : 0) | (y > a ? U : 0), s, r); };
   const stateOf = new Map(nodes.map((n) => [n.id, n.state]));
   const arrows: { x: number; y: number; s: string }[] = [];
+  const colX = (li: number) => li * colW + gapW.slice(0, li).reduce((a, b) => a + b, 0);
 
+  // 1. track columns per gap
+  const trackOf = new Map<string, number>(); // source key -> x of its trunk
+  for (let g = 0; g < gapW.length; g++) {
+    const sx = colX(g) + colW;
+    const hops = edges.filter(([a]) => layerIdx.get(a) === g);
+    const bySource = new Map<string, number[]>();
+    for (const [a, b] of hops) {
+      if (midY(a) === midY(b)) continue;
+      bySource.set(a, [...(bySource.get(a) ?? []), midY(b)]);
+    }
+    const down: string[] = [], up: string[] = [];
+    for (const [a, ys] of bySource) (ys.reduce((x, y) => x + y, 0) / ys.length > midY(a) ? down : up).push(a);
+    down.sort((p, q) => midY(q) - midY(p)); // the lower the source, the further left (no needless crossings)
+    up.sort((p, q) => midY(p) - midY(q));  // the higher the source, the further left
+    [...down, ...up].forEach((a, i) => trackOf.set(a, sx + 1 + i));
+  }
+
+  // 2. draw every edge (source -> ... -> target) along its chain of hops
   for (const n of nodes) {
     for (const d of n.deps) {
       if (!pos.has(d)) continue;
-      // chain d → dummies → n (same keys as layout())
-      const chain: string[] = [d];
       const from = layers.findIndex((l) => l.some((x) => x.key === d));
       const to = layers.findIndex((l) => l.some((x) => x.key === n.id));
+      const chain: string[] = [d];
       for (let l = from + 1; l < to; l++) chain.push(`${d}>${n.id}#${l}`);
       chain.push(n.id);
       const dst = stateOf.get(n.id)!;
@@ -145,17 +179,15 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
       for (let i = 0; i < chain.length - 1; i++) {
         const a = chain[i]!, b = chain[i + 1]!;
         const pa = pos.get(a)!, pb = pos.get(b)!;
-        const aw = realOf(a) ? boxOf(a).w : colW;
-        const sx = realOf(a) ? pa.x + aw : pa.x + colW;
+        const sx = pa.x + colW;
         const ya = midY(a), yb = midY(b);
-        const bus = sx + Math.floor(G / 2);
         const tx = realOf(b) ? pb.x - 1 : pb.x;
         if (!realOf(a)) { segH(pa.x, sx, ya, style, rk); pts.push([pa.x, ya]); }
-        if (ya === yb) { segH(sx, tx, ya, style, rk); pts.push([sx, ya], [tx, yb]); }
+        const trunk = trackOf.get(a);
+        if (ya === yb || trunk === undefined) { segH(sx, tx, ya, style, rk); pts.push([sx, ya], [tx, yb]); }
         else {
-          segH(sx, bus, ya, style, rk); segV(bus, ya, yb, style, rk); segH(bus, tx, yb, style, rk);
-          mark(bus, ya, L | (yb > ya ? D : U), style, rk); mark(bus, yb, R | (yb > ya ? U : D), style, rk);
-          pts.push([sx, ya], [bus, ya], [bus, yb], [tx, yb]);
+          segH(sx, trunk, ya, style, rk); segV(trunk, ya, yb, style, rk); segH(trunk, tx, yb, style, rk);
+          pts.push([sx, ya], [trunk, ya], [trunk, yb], [tx, yb]);
         }
         if (realOf(b) && i === chain.length - 2) arrows.push({ x: tx, y: yb, s: style });
         if (!realOf(b)) { segH(pb.x, pb.x + colW - 1, yb, style, rk); pts.push([pb.x + colW - 1, yb]); }
@@ -252,6 +284,7 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
         : node.state === "merging" || node.state === "done" ? { sym: uni ? "✔" : "+", text: "approved", tok: "success" }
         : node.fixCycle ? { sym: uni ? "↩" : "<", text: `changes requested (fix ${node.fixCycle})`, tok: "warning" }
         : { sym: uni ? "○" : "o", text: "not reviewed yet", tok: "muted" };
+      if (inner < 20) verdict.text = verdict.text.replace("not reviewed yet", "not reviewed").replace("REJECTED → developer", "REJECTED").replace("APPROVED → integration", "APPROVED").replace(/changes requested \(fix (\d+)\)/, "fix $1 requested");
       const vcol = rv ? mix(TOKENS[verdict.tok], rv.color, rv.k) : TOKENS[verdict.tok];
       if (sepY >= 0) {
         c.set(x0, sepY, "├", outline); c.set(x1, sepY, "┤", outline);
@@ -294,6 +327,14 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
         if (fx?.sweep != null) arc(Math.floor(fx.sweep * ring.length), Math.max(5, Math.round(ring.length / 4)), TOKENS.text, true);
       }
     }
+  }
+  // Ports: where edges attach to a card, the border turns into a junction (├ leaving, ┤ entering).
+  for (const n of nodes) {
+    const pp = pos.get(n.id);
+    if (!pp) continue;
+    const ya = midY(n.id);
+    const out = geom.edges.find((e) => e.from === n.id);
+    if (out) c.set(pp.x + colW - 1, ya, "├", colorOf(n.state === "done" ? "success" : stateOf.get(n.id) && ACTIVE.has(n.state) ? STATE_LOOK[n.state].token : "border"));
   }
   if (!o.caps.unicode) for (let y = 0; y < c.h; y++) for (let x = 0; x < c.w; x++) c.chars[y]![x] = asciiFold(c.chars[y]![x]!);
   // Graphs too large for the box are clipped, never malformed: only fully visible nodes stay in the geometry, and a
