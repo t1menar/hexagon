@@ -12,7 +12,7 @@ Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true
 const { App } = await import("../src/tui/app.js");
 
 const task = (id: string, title: string, role: string, deps: string[] = []) => ({ id, title, role, requirements: [], acceptance: [], depends_on: deps, files: { write: [], read: [] }, skills: [], definition_of_done: [], verify: [] });
-const tasks = [task("T-1", "Parse the spec", "tester"), task("T-2", "Build the API", "implementer", ["T-1"]), task("T-3", "Build the UI", "implementer", ["T-1"])];
+const tasks = [task("T-1", "Parse the spec", "qa"), task("T-2", "Build the API", "developer", ["T-1"]), task("T-3", "Build the UI", "developer", ["T-1"])];
 const agent = (id: string, state: string, extra: Record<string, unknown> = {}) => ({
   schema: "hexagon.agent-status/v1", seq: 1, updated_at: "", heartbeat_at: "", run_id: "R1", agent_run_id: `${id}-1`, task_id: id, attempt: 1, role: tasks.find((t) => t.id === id)!.role,
   agent: { id: id === "T-3" ? "codex" : "claude", provider: id === "T-3" ? "openai" : "anthropic", adapter: id === "T-3" ? "codex" : "claude-code", cli_version: "2.1.0", model: null, model_mode: "cli-default", runtime_model: null },

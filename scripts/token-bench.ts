@@ -31,7 +31,7 @@ git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hexagon
 const plan: Plan = {
   schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [],
   tasks: Array.from({ length: 4 }, (_, i) => ({
-    id: `T-${i + 1}`, title: `Add module ${i + 1}`, role: "implementer" as const, requirements: [], acceptance: ["AC-1", "AC-2"],
+    id: `T-${i + 1}`, title: `Add module ${i + 1}`, role: "developer" as const, requirements: [], acceptance: ["AC-1", "AC-2"],
     depends_on: i ? [`T-${i}`] : [], files: { write: [`src/new${i + 1}.ts`], read: [] }, skills: [], definition_of_done: ["works"], verify: [],
   })),
 };

@@ -98,7 +98,7 @@ export function redact(text: string): string {
 
 /** Bus content is data. It cannot close or forge the wrappers Hexagon puts around messages. */
 export function neutralize(text: string): string {
-  return text.replace(/<(\/?)(hexagon_message|user_message|hexagon_state|task|implementer_report|upstream_handoffs)\b/gi, "‹$1$2");
+  return text.replace(/<(\/?)(hexagon_message|user_message|hexagon_state|task|developer_report|implementer_report|upstream_handoffs)\b/gi, "‹$1$2");
 }
 
 const key = (r: SendRequest, body: string) =>

@@ -143,9 +143,9 @@ export const GROUPS: { id: Group; title: string }[] = [
 ];
 export function groupOfRole(role: string): Group {
   switch (role) {
-    case "planner": case "init": case "lead": return "analysis";
+    case "analyst": case "architect": case "bootstrap": case "control": return "analysis";
     case "reviewer": return "review";
-    case "integrator": case "resolver": return "integration";
+    case "release": return "integration";
     default: return "implementation";
   }
 }

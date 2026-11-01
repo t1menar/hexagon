@@ -44,7 +44,7 @@ if (process.env.FAKE_HANG) setInterval(() => {}, 1000);
 
 function ctx(over: Partial<AgentRunContext> = {}, events: unknown[] = []): AgentRunContext {
   return {
-    agentRunId: "T-1-a1", role: "implementer", effort: "medium", cwd: os.tmpdir(), system: "SYS", prompt: "do the thing $(rm -rf /) `x`",
+    agentRunId: "T-1-a1", role: "developer", effort: "medium", cwd: os.tmpdir(), system: "SYS", prompt: "do the thing $(rm -rf /) `x`",
     sessionId: "s-1", resume: false, env: {}, allowCommands: [], readOnly: false,
     host: { emit: (e) => events.push(e), drainInbox: () => [], onInbox: () => () => {}, received: () => {}, isFinished: () => false, hasBlockingQuestion: () => false },
     api: {} as never, signal: new AbortController().signal, ...over,
@@ -108,7 +108,7 @@ describe("retry planning and the persistent wait store", () => {
   it("is idempotent: one record per run, claimed once, survives reload, cancelled waits stay cancelled", () => {
     const file = path.join(tmp(), "waits.json");
     const s = new WaitStore(file);
-    const base = { key: "T-1-a1", run_id: "r", task_id: "T-1", agent_run_id: "T-1-a1", role: "implementer", agent: "a", provider: "p", adapter: "x", execution_id: "e1", cls: "quota_exhausted" as const, error: "e", detected_at: now.toISOString(), next_retry_at: "2026-01-01T09:59:00Z", reset_source: "provider" as const };
+    const base = { key: "T-1-a1", run_id: "r", task_id: "T-1", agent_run_id: "T-1-a1", role: "developer", agent: "a", provider: "p", adapter: "x", execution_id: "e1", cls: "quota_exhausted" as const, error: "e", detected_at: now.toISOString(), next_retry_at: "2026-01-01T09:59:00Z", reset_source: "provider" as const };
     s.schedule(base); s.schedule({ ...base, execution_id: "e2" });
     expect(s.all()).toHaveLength(1);
     expect(s.get("T-1-a1")!.waits).toBe(2);
@@ -175,7 +175,7 @@ describe("registry and config", () => {
     const f = path.join(tmp(), "c.toml");
     fs.writeFileSync(f, '[agents.z]\nadapter = "nope"\n');
     expect(() => loadConfig(f)).toThrow(/unknown adapter "nope"/);
-    fs.writeFileSync(f, '[roles.planner]\nagent = "ghost"\n');
+    fs.writeFileSync(f, '[roles.analyst]\nagent = "ghost"\n');
     expect(() => loadConfig(f)).toThrow(/ghost/);
   });
   it("a third-party adapter registers without touching core code", async () => {
@@ -187,10 +187,10 @@ describe("registry and config", () => {
   });
   it("different roles may use different providers, several roles the same one", () => {
     const f = path.join(tmp(), "c.toml");
-    fs.writeFileSync(f, `[agents.cx]\nadapter="codex"\nprovider="openai"\n[agents.gk]\nadapter="grok"\n[roles.planner]\nagent="cx"\n[roles.implementer]\nagent="claude"\n[roles.reviewer]\nagent="gk"\n[roles.tester]\nagent="cx"\n`);
+    fs.writeFileSync(f, `[agents.cx]\nadapter="codex"\nprovider="openai"\n[agents.gk]\nadapter="grok"\n[roles.analyst]\nagent="cx"\n[roles.developer]\nagent="claude"\n[roles.reviewer]\nagent="gk"\n[roles.qa]\nagent="cx"\n`);
     const cfg = loadConfig(f);
     const prov = (r: keyof typeof cfg.roles) => createAdapter(cfg.roles[r].agent, cfg.agents[cfg.roles[r].agent]!).provider;
-    expect([prov("planner"), prov("implementer"), prov("reviewer"), prov("tester")]).toEqual(["openai", "anthropic", "xai", "openai"]);
+    expect([prov("analyst"), prov("developer"), prov("reviewer"), prov("qa")]).toEqual(["openai", "anthropic", "xai", "openai"]);
   });
   it("legacy fix_loops still bounds repair cycles; absent, cycles are unlimited", () => {
     const f = path.join(tmp(), "c.toml");

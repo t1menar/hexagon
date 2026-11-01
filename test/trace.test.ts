@@ -4,7 +4,7 @@ import { parseSpec } from "../src/core/spec.js";
 import { formatTrace, trace, type TaskEvidence } from "../src/core/trace.js";
 
 const spec = parseSpec("s.md", "# S\n\n## REQ-A-001: Greets\nSays hello.\n- AC-1: prints hello\n\n## REQ-A-002: Farewell\nSays bye.\n- AC-1: prints bye\n\n## REQ-A-003: Nobody plans me\n- AC-1: x\n");
-const task = (id: string, reqs: string[], verify: string[] = ["npm test"]): Task => ({ id, title: id, role: "implementer", requirements: reqs, acceptance: ["AC-1"], depends_on: [], files: { write: [`${id}.ts`], read: [] }, skills: [], definition_of_done: [], verify });
+const task = (id: string, reqs: string[], verify: string[] = ["npm test"]): Task => ({ id, title: id, role: "developer", requirements: reqs, acceptance: ["AC-1"], depends_on: [], files: { write: [`${id}.ts`], read: [] }, skills: [], definition_of_done: [], verify });
 const plan: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: "", specs: [], spec_issues: [], tasks: [task("T-1", ["REQ-A-001"]), task("T-2", ["REQ-A-002"]), task("T-3", [])] };
 
 describe("traceability", () => {

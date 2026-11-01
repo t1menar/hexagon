@@ -14,7 +14,7 @@ import { DiscoveryCache, type ModelDiscoveryResult } from "../agents/contracts/m
 import type { AdapterDiagnostics } from "../agents/contracts/adapter.js";
 import type { AgentCapabilities, SecurityCapabilities as AdapterSecurity } from "../agents/contracts/capabilities.js";
 import type { ModelSelection } from "../agents/contracts/model-selection.js";
-import { addAgent, allowCommands, allowLocal, loadConfig, setRoleAgent, setRoleModel, type HexagonConfig } from "../core/config.js";
+import { addAgent, allowCommands, allowLocal, loadConfig, migrateConfigFile, roleConfig, setRoleAgent, setRoleModel, type HexagonConfig } from "../core/config.js";
 import { applyToolchainEnv, install as installToolchain, installed as installedToolchains, onPath, toolchainFor, TOOLCHAINS } from "../core/toolchains.js";
 import * as g from "../core/git.js";
 import { checkPlan, normalizePlan, type PlanCheck } from "../core/plan.js";
@@ -24,6 +24,7 @@ import { MessageRouter } from "../core/router.js";
 import { formatTrace, trace, type TaskEvidence } from "../core/trace.js";
 import { WaitStore } from "../core/recovery.js";
 import { AgentBus, type BusActivity, type Envelope } from "../core/bus.js";
+import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
 import { Scheduler, type PriorTask } from "../core/scheduler.js";
 import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
@@ -151,6 +152,7 @@ export class Orchestrator extends EventEmitter {
   constructor(readonly root: string) {
     super();
     this.paths = new ProjectPaths(root);
+    migrateConfigFile(this.paths.config);
     this.cfg = loadConfig(this.paths.config);
     this.agentSessions = new SessionRegistry(this.paths.sessions);
     this.pool = new IdentityPool(this.agentSessions);
@@ -216,13 +218,13 @@ export class Orchestrator extends EventEmitter {
 
   adapterFor(role: Role, override?: string | null): AgentAdapter {
     if (override && this.cfg.agents[override]) return this.adapter(override);
-    return this.adapter(this.cfg.roles[role].agent, this.cfg.roles[role].model);
+    return this.adapter(roleConfig(this.cfg, role).agent, roleConfig(this.cfg, role).model);
   }
 
   /** Role → agent/model/effort, for /model. */
   models(): { role: Role; agent: string; model: string; effort: string }[] {
     return (Object.keys(this.cfg.roles) as Role[]).map((role) => {
-      const r = this.cfg.roles[role];
+      const r = roleConfig(this.cfg, role);
       return { role, agent: r.agent, model: r.model ?? this.cfg.agents[r.agent]?.model ?? "cli-default", effort: r.effort };
     });
   }
@@ -271,7 +273,8 @@ export class Orchestrator extends EventEmitter {
     return { text: formatTrace(out), rows: out.rows };
   }
 
-  setRoleAgent(role: string, agent: string): void {
+  setRoleAgent(roleName: string, agent: string): void {
+    const role = canonicalRole(roleName);
     if (!Object.keys(this.cfg.roles).includes(role)) throw new Error(`unknown role "${role}" (roles: ${Object.keys(this.cfg.roles).join(", ")})`);
     if (!this.cfg.agents[agent]) throw new Error(`unknown agent "${agent}" (configured: ${Object.keys(this.cfg.agents).join(", ")})`);
     setRoleAgent(this.paths.config, role as Role, agent);
@@ -285,7 +288,8 @@ export class Orchestrator extends EventEmitter {
     this.reloadConfig();
   }
 
-  setModel(role: string, model: string | null): void {
+  setModel(roleName: string, model: string | null): void {
+    const role = canonicalRole(roleName);
     const roles = Object.keys(this.cfg.roles);
     if (!roles.includes(role)) throw new Error(`unknown role "${role}" (roles: ${roles.join(", ")})`);
     setRoleModel(this.paths.config, role as Role, model);
@@ -362,8 +366,8 @@ export class Orchestrator extends EventEmitter {
     if (prev?.alive) throw new Error(`the ${id} agent is already running`);
     const adapter = this.adapterFor(role);
     const s = new SoloSession(id, role, adapter, {
-      cwd: this.root, effort: this.cfg.roles[role].effort, ...opts,
-      sessions: this.agentSessions, promptHash: identityHash(this.paths, role, loadSkills(this.paths)), windowTokens: this.cfg.context.assumed_window_tokens,
+      cwd: this.root, effort: roleConfig(this.cfg, role).effort, ...opts,
+      sessions: this.agentSessions, promptHash: identityHash(this.paths, role, loadSkills(this.paths), this.cfg.roles[role]), windowTokens: this.cfg.context.assumed_window_tokens,
       nextQuestionId: () => `Q-S${this.nextSoloQuestion++}`,
     });
     s.on("status", (st: SessionStatus) => this.push({ event: "session", data: st }));
@@ -372,6 +376,21 @@ export class Orchestrator extends EventEmitter {
     this.sessions.set(id, s);
     this.registry.register(id, s.api());
     return s;
+  }
+
+  /** "@developers" / "@qa" / "@devops" / "@implementers" (old name) → role id. */
+  private roleOf(word: string): string {
+    const w = word.toLowerCase();
+    for (const cand of [w, w.replace(/s$/, "")]) {
+      const c = canonicalRole(cand);
+      if (this.cfg.roles[c]) return c;
+    }
+    throw new Error(`unknown role "${word}" (roles: ${Object.keys(this.cfg.roles).join(", ")})`);
+  }
+
+  /** System prompt of a solo role (custom prompt/skills from config.toml honoured). */
+  private roleSystem(role: Role): string {
+    return systemPrompt(this.paths, role, loadSkills(this.paths), projectContext(this.root), this.cfg.roles[role]);
   }
 
   session(id: string): SoloSession {
@@ -389,8 +408,8 @@ export class Orchestrator extends EventEmitter {
       this.notice("info", "Empty repository: wrote a stub HEXAGON.md. Tell Claude what to build in the chat (or /sdd <goal>); the stack gets filled in as code lands.");
       return { id: "init", skipped: true };
     }
-    const s = this.solo("init", "init", {
-      system: systemPrompt(this.paths, "init", loadSkills(this.paths), projectContext(this.root)),
+    const s = this.solo("init", "bootstrap", {
+      system: this.roleSystem("bootstrap"),
       env: this.agentEnv("init"),
       allowCommands: [...new Set([...PLANNER_COMMANDS, ...this.cfg.sandbox.allow_commands])],
       validate: () => (contextFile(this.root) ? { ok: true, message: "ok" } : { ok: false, message: "HEXAGON.md does not exist yet. Write it in the repository root, then run `hexagon done` again." }),
@@ -417,8 +436,8 @@ export class Orchestrator extends EventEmitter {
     const id = `p-${stamp()}`;
     const out = path.join(this.paths.hex, "drafts", id);
     fs.mkdirSync(out, { recursive: true });
-    const s = this.solo("planner", "planner", {
-      system: systemPrompt(this.paths, "planner", loadSkills(this.paths), projectContext(this.root)),
+    const s = this.solo("planner", "analyst", {
+      system: this.roleSystem("analyst"),
       env: this.agentEnv("planner", { HEXAGON_OUT: out }),
       allowCommands: [...new Set([...PLANNER_COMMANDS, ...this.cfg.sandbox.allow_commands])],
       validate: () => draftCheck(this.root, out).reply,
@@ -715,7 +734,7 @@ export class Orchestrator extends EventEmitter {
     let party: Message["to"];
     if (/^@?(all|everyone)$/i.test(target)) party = { kind: "broadcast" };
     else if (/^@?blackboard$/i.test(target)) party = { kind: "blackboard" };
-    else if (target.startsWith("@")) party = { kind: "role", id: target.slice(1).toLowerCase().replace(/s$/, "") };
+    else if (target.startsWith("@")) party = { kind: "role", id: this.roleOf(target.slice(1)) };
     else {
       const id = target.toUpperCase();
       const s = r.store.byTask(id);
@@ -1039,8 +1058,8 @@ export class Orchestrator extends EventEmitter {
     const cur = this.sessions.get("claude");
     if (cur?.alive) return cur.say(text, context);
     this.reloadConfig();
-    const s = cur ?? this.solo("claude", "lead", {
-      system: systemPrompt(this.paths, "lead", loadSkills(this.paths), projectContext(this.root)),
+    const s = cur ?? this.solo("claude", "control", {
+      system: this.roleSystem("control"),
       env: this.agentEnv("claude"),
       allowCommands: ["hexagon", ...new Set([...this.cfg.sandbox.allow_commands, ...PLANNER_COMMANDS, "git diff", "git show", "git status", "git log", "git add", "git commit"])],
       conversational: true,

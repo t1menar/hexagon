@@ -29,7 +29,7 @@ function project(maxCycles = 0): string {
 }
 function plan(root: string, description: string): string {
   const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [],
-    tasks: [{ id: "T-1", title: "Write", role: "implementer", requirements: [], acceptance: ["AC-1"], depends_on: [], files: { write: ["src/a.txt"], read: [] }, skills: [], definition_of_done: ["done"], verify: [], description }] };
+    tasks: [{ id: "T-1", title: "Write", role: "developer", requirements: [], acceptance: ["AC-1"], depends_on: [], files: { write: ["src/a.txt"], read: [] }, skills: [], definition_of_done: ["done"], verify: [], description }] };
   const f = path.join(root, "plan.json"); fs.writeFileSync(f, JSON.stringify(p)); return f;
 }
 

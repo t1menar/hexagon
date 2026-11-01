@@ -5,7 +5,7 @@ import { AnimationManager, FakeClock, Path } from "../src/tui/motion.js";
 import type { Geometry } from "../src/tui/network.js";
 
 const st = (task_id: string, state: AgentState, extra: Record<string, unknown> = {}) =>
-  ({ task_id, role: "implementer", state, attempt: 1, agent: { id: "a", provider: "p", adapter: "cli" }, ...extra }) as unknown as AgentStatus;
+  ({ task_id, role: "developer", state, attempt: 1, agent: { id: "a", provider: "p", adapter: "cli" }, ...extra }) as unknown as AgentStatus;
 const ev = (task_id: string, event: Record<string, unknown>) => ({ task_id, ts: new Date().toISOString(), event }) as unknown as StampedEvent;
 
 const geom = (): Geometry => ({

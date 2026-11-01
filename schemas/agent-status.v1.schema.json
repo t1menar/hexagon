@@ -21,7 +21,7 @@
     "agent_run_id": { "type": "string", "pattern": "^T-[0-9]+-a[0-9]+$" },
     "task_id": { "type": "string", "pattern": "^T-[0-9]+$" },
     "attempt": { "type": "integer", "minimum": 1 },
-    "role": { "enum": ["planner", "implementer", "tester", "reviewer", "integrator", "resolver", "lead", "init"] },
+    "role": { "type": "string", "minLength": 1, "description": "Role id from the registry or a custom role. Statuses written before the rename carry the old names (implementer, tester, …)." },
     "agent": {
       "type": "object",
       "additionalProperties": false,

@@ -14,24 +14,40 @@ budget_tokens = 0       # pause the run after this many tokens (input + cached +
 # handed to that CLI as-is; `hexagon agents models <agent>` lists what the CLI reports, when it can).
 # Optional `fallback_agent = "<agent>"` is used only when [recovery].allow_provider_failover = true.
 # Change from the dashboard with /model <role> <model|default>, or `hexagon agents configure`.
-[roles.init]
+# Project Onboarding: studies a repo, writes HEXAGON.md
+[roles.bootstrap]
 agent = "claude"
 effort = "low"
-[roles.planner]
+# Business & Systems Analyst: analysis, spec, task graph
+[roles.analyst]
 agent = "claude"
 effort = "high"
-[roles.implementer]
+# Software Development Engineer
+[roles.developer]
 agent = "claude"
 effort = "medium"
-[roles.tester]
+# QA Engineer (SDET)
+[roles.qa]
 agent = "claude"
 effort = "medium"
+# Code Reviewer (read-only)
 [roles.reviewer]
 agent = "claude"
 effort = "high"
-[roles.lead]
+# Hexagon Assistant: the main chat that operates Hexagon
+[roles.control]
 agent = "claude"
 effort = "low"
+# Also built in, same keys: architect, devops, security, release. Old names (planner, implementer, tester,
+# integrator, resolver, lead, init) still load and are renamed in this file on first start.
+#
+# Your own role: give it a prompt (a file in .hexagon/roles/ or in the project) and, optionally, skills.
+# [roles.docs]
+# agent = "claude"
+# prompt = "docs.md"
+# title = "Technical Writer"
+# skills = ["commit-conventions"]
+# group = "implementation"        # analysis | implementation | review | integration
 
 # Agents are coding CLIs that Hexagon wraps; each runs in its own git worktree.
 # claude-code: the Claude Code CLI (streams events, takes live messages, takeover = `claude --resume`).

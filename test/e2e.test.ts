@@ -166,7 +166,7 @@ describe("end to end with the mock agent", () => {
   it("a blocked agent continues its own session when the user replies", async () => {
     const planFile = path.join(root, ".hexagon/blocked-plan.json");
     fs.writeFileSync(planFile, JSON.stringify({
-      tasks: [{ id: "T-1", title: "Build it", role: "implementer", description: "@block: mvn is not installed", acceptance: ["AC-1"], files: { write: ["hexagon-mock/blk.md"] }, verify: ["test -f hexagon-mock/blk.md"] }],
+      tasks: [{ id: "T-1", title: "Build it", role: "developer", description: "@block: mvn is not installed", acceptance: ["AC-1"], files: { write: ["hexagon-mock/blk.md"] }, verify: ["test -f hexagon-mock/blk.md"] }],
     }));
     await client.call("run.start", { plan_path: planFile });
     const blocked = await until(async () => {
@@ -187,7 +187,7 @@ describe("end to end with the mock agent", () => {
   it("asks the user to approve a denied command, then the agent continues", async () => {
     const planFile = path.join(root, ".hexagon/perm-plan.json");
     fs.writeFileSync(planFile, JSON.stringify({
-      tasks: [{ id: "T-1", title: "Use go", role: "implementer", description: "@needs: brew install go", acceptance: ["AC-1"], files: { write: ["hexagon-mock/go.md"] }, verify: ["test -f hexagon-mock/go.md"] }],
+      tasks: [{ id: "T-1", title: "Use go", role: "developer", description: "@needs: brew install go", acceptance: ["AC-1"], files: { write: ["hexagon-mock/go.md"] }, verify: ["test -f hexagon-mock/go.md"] }],
     }));
     await client.call("run.start", { plan_path: planFile });
     const perm = await until(async () => (await client.call<{ permissions: { id: string; agent: string; prefix: string }[] }>("ui.snapshot")).permissions[0]);
@@ -202,8 +202,8 @@ describe("end to end with the mock agent", () => {
     const planFile = path.join(root, ".hexagon/dep-plan.json");
     fs.writeFileSync(planFile, JSON.stringify({
       tasks: [
-        { id: "T-1", title: "Needs go", role: "implementer", description: "@needs: zip -r out.zip .", acceptance: ["AC-1"], files: { write: ["hexagon-mock/dep-1.md"] }, verify: ["test -f hexagon-mock/dep-1.md"] },
-        { id: "T-2", title: "After", role: "implementer", depends_on: ["T-1"], acceptance: ["AC-1"], files: { write: ["hexagon-mock/dep-2.md"] }, verify: ["test -f hexagon-mock/dep-2.md"] },
+        { id: "T-1", title: "Needs go", role: "developer", description: "@needs: zip -r out.zip .", acceptance: ["AC-1"], files: { write: ["hexagon-mock/dep-1.md"] }, verify: ["test -f hexagon-mock/dep-1.md"] },
+        { id: "T-2", title: "After", role: "developer", depends_on: ["T-1"], acceptance: ["AC-1"], files: { write: ["hexagon-mock/dep-2.md"] }, verify: ["test -f hexagon-mock/dep-2.md"] },
       ],
     }));
     await client.call("run.start", { plan_path: planFile });
@@ -235,8 +235,8 @@ describe("end to end with the mock agent", () => {
     const planFile = path.join(root, ".hexagon/return-plan.json");
     fs.writeFileSync(planFile, JSON.stringify({
       tasks: [
-        { id: "T-1", title: "Greeting", role: "implementer", acceptance: ["AC-1"], files: { write: ["hexagon-mock/ret-1.md"] }, verify: ["test -f hexagon-mock/ret-1.md"] },
-        { id: "T-2", title: "Test greeting", role: "tester", depends_on: ["T-1"], description: "@return: T-1 the greeting has a typo", acceptance: ["AC-1"], files: { write: ["hexagon-mock/ret-2.md"] }, verify: ["test -f hexagon-mock/ret-2.md"] },
+        { id: "T-1", title: "Greeting", role: "developer", acceptance: ["AC-1"], files: { write: ["hexagon-mock/ret-1.md"] }, verify: ["test -f hexagon-mock/ret-1.md"] },
+        { id: "T-2", title: "Test greeting", role: "qa", depends_on: ["T-1"], description: "@return: T-1 the greeting has a typo", acceptance: ["AC-1"], files: { write: ["hexagon-mock/ret-2.md"] }, verify: ["test -f hexagon-mock/ret-2.md"] },
       ],
     }));
     const pushes: Message[] = [];

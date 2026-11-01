@@ -39,7 +39,7 @@ function chain(root: string, n: number): string {
   const p: Plan = {
     schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [],
     tasks: Array.from({ length: n }, (_, i) => ({
-      id: `T-${i + 1}`, title: `Write file ${i + 1}`, role: "implementer" as const, requirements: [], acceptance: ["AC-1"],
+      id: `T-${i + 1}`, title: `Write file ${i + 1}`, role: "developer" as const, requirements: [], acceptance: ["AC-1"],
       depends_on: i ? [`T-${i}`] : [], files: { write: [`src/f${i + 1}.txt`], read: [] }, skills: [], definition_of_done: ["done"], verify: [],
     })),
   };
@@ -50,7 +50,7 @@ function chain(root: string, n: number): string {
 
 describe("session registry (pure)", () => {
   const spec = (over: Partial<SessionSpec> = {}): SessionSpec => ({
-    agentId: "implementer-1", role: "implementer", adapterId: "mock", model: null, promptHash: "h1", cwd: "/w/a",
+    agentId: "developer-1", role: "developer", adapterId: "mock", model: null, promptHash: "h1", cwd: "/w/a",
     resumeAcrossCwd: true, supportsResume: true, ...over,
   });
   const reg = () => new SessionRegistry(fs.mkdtempSync(path.join("/tmp", "hsr-")));
@@ -59,7 +59,7 @@ describe("session registry (pure)", () => {
     const r = reg();
     const a = r.resolve(spec());
     expect(a).toMatchObject({ mode: "new", resume: false, reason: "first use of this agent" });
-    r.confirm("implementer-1");
+    r.confirm("developer-1");
     const b = r.resolve(spec({ cwd: "/w/b" }));
     expect(b).toMatchObject({ mode: "resumed", resume: true, sessionId: a.sessionId });
   });
@@ -74,14 +74,14 @@ describe("session registry (pure)", () => {
   it("starts a new session only for a real reason, and logs it", () => {
     const r = reg();
     const a = r.resolve(spec());
-    r.confirm("implementer-1");
+    r.confirm("developer-1");
     expect(r.resolve(spec({ promptHash: "h2" })).reason).toMatch(/prompt/);
-    r.confirm("implementer-1");
+    r.confirm("developer-1");
     expect(r.resolve(spec({ promptHash: "h2", model: "m" })).reason).toMatch(/model/);
-    r.confirm("implementer-1");
+    r.confirm("developer-1");
     expect(r.resolve(spec({ promptHash: "h2", model: "m", adapterId: "other" })).reason).toMatch(/agent changed/);
-    r.confirm("implementer-1");
-    r.reset("implementer-1", "reset by the user");
+    r.confirm("developer-1");
+    r.reset("developer-1", "reset by the user");
     const c = r.resolve(spec({ promptHash: "h2", model: "m", adapterId: "other" }));
     expect(c.reason).toBe("reset by the user");
     expect(c.sessionId).not.toBe(a.sessionId);
@@ -91,7 +91,7 @@ describe("session registry (pure)", () => {
   it("adapters that cannot resume across directories get one session per directory (stated, never silent)", () => {
     const r = reg();
     r.resolve(spec({ resumeAcrossCwd: false }));
-    r.confirm("implementer-1");
+    r.confirm("developer-1");
     expect(r.resolve(spec({ resumeAcrossCwd: false, cwd: "/w/a" })).mode).toBe("resumed");
     const moved = r.resolve(spec({ resumeAcrossCwd: false, cwd: "/w/b" }));
     expect(moved.mode).toBe("new");
@@ -102,11 +102,11 @@ describe("session registry (pure)", () => {
     const dir = fs.mkdtempSync(path.join("/tmp", "hsr-"));
     const r = new SessionRegistry(dir);
     const a = r.resolve(spec());
-    r.confirm("implementer-1");
-    r.recordUsage("implementer-1", { input: 100, cache_read: 500, output: 20, cause: "prompt", step: true });
-    r.recordUsage("implementer-1", { input: 10, cache_read: 620, output: 30, cause: "fix_loop", step: true });
+    r.confirm("developer-1");
+    r.recordUsage("developer-1", { input: 100, cache_read: 500, output: 20, cause: "prompt", step: true });
+    r.recordUsage("developer-1", { input: 10, cache_read: 620, output: 30, cause: "fix_loop", step: true });
     const again = new SessionRegistry(dir);
-    const rec = again.get("implementer-1")!;
+    const rec = again.get("developer-1")!;
     expect(rec).toMatchObject({ turns: 2, contextTokens: 660, nativeSessionId: a.sessionId });
     expect(rec.ledger.fix_loop).toEqual({ input: 10, cache_read: 620, output: 30 });
     expect(again.resolve(spec()).mode).toBe("resumed");
@@ -115,24 +115,24 @@ describe("session registry (pure)", () => {
   it("compaction keeps the identity, replaces the native session and counts it", () => {
     const r = reg();
     const a = r.resolve(spec());
-    r.confirm("implementer-1");
-    const next = r.compacted("implementer-1");
+    r.confirm("developer-1");
+    const next = r.compacted("developer-1");
     expect(next).not.toBe(a.sessionId);
     const b = r.resolve(spec());
     expect(b).toMatchObject({ mode: "new", resume: false, reason: "compacted", sessionId: next });
-    expect(r.get("implementer-1")!.compactions).toBe(1);
+    expect(r.get("developer-1")!.compactions).toBe(1);
   });
 
   it("the pool hands out one identity per concurrent task and reuses free ones", () => {
     const pool = new IdentityPool(reg());
-    const a = pool.acquire("implementer");
-    const b = pool.acquire("implementer");
-    expect([a.agentId, b.agentId]).toEqual(["implementer-1", "implementer-2"]);
+    const a = pool.acquire("developer");
+    const b = pool.acquire("developer");
+    expect([a.agentId, b.agentId]).toEqual(["developer-1", "developer-2"]);
     a.release();
-    expect(pool.acquire("implementer").agentId).toBe("implementer-1");
-    expect(pool.acquire("implementer", "implementer-2").agentId).toBe("implementer-3"); // preferred one is busy
+    expect(pool.acquire("developer").agentId).toBe("developer-1");
+    expect(pool.acquire("developer", "developer-2").agentId).toBe("developer-3"); // preferred one is busy
     b.release();
-    expect(pool.acquire("implementer", "implementer-2").agentId).toBe("implementer-2");
+    expect(pool.acquire("developer", "developer-2").agentId).toBe("developer-2");
   });
 });
 
@@ -173,14 +173,14 @@ describe("one session per agent identity (mock agent)", () => {
     const run = await finished(client);
     expect(run.agents.map((a) => a.state)).toEqual(["done", "done", "done"]);
     const events = server.orch.agentSessions.events();
-    const dev = events.filter((e) => e.agent === "implementer-1");
+    const dev = events.filter((e) => e.agent === "developer-1");
     expect(dev.map((e) => e.kind)).toEqual(["created", "resumed", "resumed"]);
     const rev = events.filter((e) => e.agent === "reviewer-1");
     expect(rev.map((e) => e.kind)).toEqual(["created", "resumed", "resumed"]);
-    expect(events.some((e) => e.agent === "implementer-2")).toBe(false);
+    expect(events.some((e) => e.agent === "developer-2")).toBe(false);
     const t3 = await client.call<AgentStatus>("agent.status", { task: "T-3" });
-    expect(t3.session).toMatchObject({ agent: "implementer-1", mode: "resumed" });
-    expect(fs.existsSync(path.join(root, ".hexagon/sessions/implementer-1.json"))).toBe(true);
+    expect(t3.session).toMatchObject({ agent: "developer-1", mode: "resumed" });
+    expect(fs.existsSync(path.join(root, ".hexagon/sessions/developer-1.json"))).toBe(true);
     // the ledger separates what the tokens were spent on
     expect(run.ledger?.prompt?.input).toBeGreaterThan(0);
     expect(run.ledger?.review?.input).toBeGreaterThan(0);

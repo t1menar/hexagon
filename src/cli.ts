@@ -25,7 +25,7 @@ const USAGE = `${c.bold("hexagon")} ${VERSION} — run several coding agents (Cl
 ${c.bold("Start")}
   hexagon init ["what you're building"]   set up .hexagon/ and let an agent write HEXAGON.md
   hexagon                                 open the dashboard: chat with Claude; /sdd for parallel agents
-  hexagon sdd "<goal>"                    spec-driven: planner writes spec + task graph (alias: new)
+  hexagon sdd "<goal>"                    spec-driven: the analyst writes spec + task graph (alias: new)
   hexagon chat "<message>"                talk to Claude (works directly in the repo)
   hexagon run [plan.json] [-j N] [--agent X] [--follow]   run the approved draft (or a plan file)
 
@@ -376,7 +376,7 @@ async function init(args: string[]): Promise<void> {
   if (bare) return;
   if (agent) {
     const cfgFile = path.join(dir, ".hexagon", "config.toml");
-    fs.writeFileSync(cfgFile, fs.readFileSync(cfgFile, "utf8").replace(/(\[roles\.init\]\nagent = )"[^"]*"/, `$1"${agent}"`));
+    fs.writeFileSync(cfgFile, fs.readFileSync(cfgFile, "utf8").replace(/(\[roles\.bootstrap\]\nagent = )"[^"]*"/, `$1"${agent}"`));
   }
   const client = await HexClient.connect(dir);
   await client.subscribe();

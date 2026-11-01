@@ -3,6 +3,7 @@ import path from "node:path";
 import { parse } from "smol-toml";
 import type { Effort, Role } from "../contracts/types.js";
 import { adapterNames } from "../agents/registry.js";
+import { BUILTIN_ROLES, ROLE_ALIASES } from "./roles.js";
 import { DEFAULT_RECOVERY, type RecoveryConfig } from "./recovery.js";
 
 export interface AgentConfig {
@@ -35,9 +36,22 @@ export interface ContextConfig {
   assumed_window_tokens: number;
 }
 
+export interface RoleConfig {
+  agent: string;
+  effort: Effort;
+  model?: string;
+  /** used only when recovery.allow_provider_failover is true */
+  fallback_agent?: string;
+  /** Custom roles: prompt file (relative to .hexagon/roles/ or the project root), display title, extra skills, UI group. */
+  prompt?: string;
+  title?: string;
+  skills?: string[];
+  group?: "analysis" | "implementation" | "review" | "integration";
+}
+
 export interface HexagonConfig {
   run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null };
-  roles: Record<Role, { agent: string; effort: Effort; model?: string; /** used only when recovery.allow_provider_failover is true */ fallback_agent?: string }>;
+  roles: Record<Role, RoleConfig>;
   agents: Record<string, AgentConfig>;
   recovery: RecoveryConfig;
   review: { mode: "agent" | "off" };
@@ -49,16 +63,7 @@ export interface HexagonConfig {
 
 export const DEFAULT_CONFIG: HexagonConfig = {
   run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 0, max_identical_failures: 3, budget_tokens: null, base_branch: null },
-  roles: {
-    init: { agent: "claude", effort: "low" },
-    planner: { agent: "claude", effort: "high" },
-    implementer: { agent: "claude", effort: "medium" },
-    tester: { agent: "claude", effort: "medium" },
-    reviewer: { agent: "claude", effort: "high" },
-    integrator: { agent: "claude", effort: "high" },
-    resolver: { agent: "claude", effort: "high" },
-    lead: { agent: "claude", effort: "low" },
-  },
+  roles: Object.fromEntries(BUILTIN_ROLES.map((r) => [r.id, { agent: "claude", effort: r.effort }])),
   agents: {
     claude: { id: "claude", adapter: "claude-code", provider: "anthropic", command: ["claude"] },
     mock: { id: "mock", adapter: "mock", step_ms: 600 },
@@ -85,6 +90,37 @@ export const SAFE_COMMANDS = [
   "go version", "go env", "node --version", "npm --version", "python3 --version", "java -version", "mvn -v", "mvn --version",
 ];
 
+/** Old role names in [roles.*] map onto the current ones; a section written under the new name wins. */
+export function migrateRoles(roles: unknown): unknown {
+  if (!roles || typeof roles !== "object") return roles;
+  const out: Record<string, unknown> = {};
+  const entries = Object.entries(roles as Record<string, unknown>);
+  for (const [k, v] of entries) if (!(k in ROLE_ALIASES)) out[k] = v;
+  for (const [k, v] of entries) if (k in ROLE_ALIASES && !(ROLE_ALIASES[k]! in out)) out[ROLE_ALIASES[k]!] = v;
+  return out;
+}
+
+/**
+ * Rewrite old role section names in config.toml in place ([roles.planner] → [roles.analyst]), keeping every other
+ * byte. Both integrator and resolver map to release: the first one found is renamed, the other is left for you.
+ * Returns the renames made.
+ */
+export function migrateConfigFile(file: string): string[] {
+  if (!fs.existsSync(file)) return [];
+  let text = fs.readFileSync(file, "utf8");
+  const done: string[] = [];
+  for (const [old, now] of Object.entries(ROLE_ALIASES)) {
+    const oldHead = new RegExp(`^\\[roles\\.${old}\\]`, "m");
+    const newHead = new RegExp(`^\\[roles\\.${now}\\]`, "m");
+    if (oldHead.test(text) && !newHead.test(text)) {
+      text = text.replace(oldHead, `[roles.${now}]`);
+      done.push(`${old} → ${now}`);
+    }
+  }
+  if (done.length) fs.writeFileSync(file, text);
+  return done;
+}
+
 function merge<T>(base: T, over: unknown): T {
   if (over === null || typeof over !== "object" || Array.isArray(over)) return (over ?? base) as T;
   const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
@@ -94,9 +130,17 @@ function merge<T>(base: T, over: unknown): T {
   return out as T;
 }
 
+/** Config of a role; an unknown id is an error with the list of defined roles (never a crash on undefined). */
+export function roleConfig(cfg: HexagonConfig, role: string): RoleConfig {
+  const r = cfg.roles[role];
+  if (!r) throw new Error(`unknown role "${role}" (roles: ${Object.keys(cfg.roles).join(", ")}); define it under [roles.${role}] in config.toml`);
+  return r;
+}
+
 export function loadConfig(file: string): HexagonConfig {
   if (!fs.existsSync(file)) return structuredClone(DEFAULT_CONFIG);
   const raw = parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+  raw.roles = migrateRoles(raw.roles);
   const cfg = merge(structuredClone(DEFAULT_CONFIG), raw);
   for (const [id, a] of Object.entries(cfg.agents)) {
     a.id = id;
@@ -111,6 +155,9 @@ export function loadConfig(file: string): HexagonConfig {
     if (!adapterNames().includes(a.adapter)) throw new Error(`[agents.${id}] unknown adapter "${a.adapter}" (available: ${adapterNames().join(", ")}). No fallback is used.`);
   }
   for (const [role, r] of Object.entries(cfg.roles)) {
+    // A custom role only has to say what is different: the rest comes from the developer role.
+    r.agent ??= cfg.roles.developer!.agent;
+    r.effort ??= cfg.roles.developer!.effort;
     if (!cfg.agents[r.agent]) throw new Error(`[roles.${role}] uses agent "${r.agent}", which is not defined under [agents] (defined: ${Object.keys(cfg.agents).join(", ")})`);
   }
   const cx = cfg.context;

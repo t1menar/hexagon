@@ -1,7 +1,7 @@
 ---
 name: tdd
 version: 1
-applies_to: [implementer, tester]
+applies_to: [developer, qa]
 summary: Write failing tests first, then the minimal code to pass.
 ---
 ## Workflow

@@ -14,7 +14,7 @@ const agent = (id: string, state: string, extra: Record<string, unknown> = {}) =
 });
 
 function makeSnapshot(states: Record<string, string>) {
-  const tasks = [task("T-1", "Analyse the API", "tester"), task("T-2", "Build endpoints", "implementer", ["T-1"]), task("T-3", "Build the UI", "reviewer", ["T-1"])];
+  const tasks = [task("T-1", "Analyse the API", "qa"), task("T-2", "Build endpoints", "developer", ["T-1"]), task("T-3", "Build the UI", "reviewer", ["T-1"])];
   const agents = tasks.map((t) => agent(t.id, states[t.id] ?? "queued"));
   return {
     root: "", has_context: true, draft: null, permissions: [], sessions: [], agents,
