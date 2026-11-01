@@ -36,6 +36,7 @@ ${c.bold("Watch & steer")}
   hexagon takeover <T-n>           continue the agent's own session yourself (claude --resume)
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
   hexagon compact [agent|T-n]      compact an agent's session at its next safe point  ·  hexagon stats [--json]  tokens by cause
+  hexagon bus send|read|subscribe  agents: structured messages between agents (handoff, decision, finding, question …)
   hexagon trace                    requirement → task → agent → verification → review → completion
   hexagon allow <cmd…> | all       let agents run these commands (e.g. allow brew curl) or everything
   hexagon model [role model|default]  show/set a model override per role (default = the CLI's own)
@@ -52,7 +53,7 @@ ${c.bold("Agent protocol")} (run by agents inside their sessions)
   hexagon review approve|changes --summary "…" [--finding "high: file:line issue -> fix" …]
   hexagon plan-check`;
 
-const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "return", "exec", "install", "sudo"]);
+const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "return", "bus", "exec", "install", "sudo"]);
 const TASK_RE = /^t-?\d+$/i;
 const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
@@ -485,6 +486,25 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
       break;
     }
     case "note": params = { body: a.join(" ") }; break;
+    case "bus": {
+      const action = a.shift();
+      if (action === "send") {
+        const fields: Record<string, string> = {};
+        for (const f of multi(a, "--field")) { const i = f.indexOf("="); if (i > 0) fields[f.slice(0, i)] = f.slice(i + 1); }
+        const kind = one(a, "--kind") ?? "broadcast", to = one(a, "--to"), role = one(a, "--role"), topic = one(a, "--topic");
+        const subject = one(a, "--subject"), artifact = one(a, "--artifact"), reply_to = one(a, "--reply-to"), timeout = one(a, "--timeout");
+        params = { action, kind, to, role, topic, subject, artifact, reply_to, blocking: bool(a, "--blocking"), timeout_s: timeout ? Number(timeout) : undefined, fields, body: a.join(" ") };
+      } else if (action === "read") {
+        const kind = one(a, "--kind"), since = one(a, "--since"), limit = one(a, "--limit");
+        params = { action, kind, since: since ? Number(since) : undefined, limit: limit ? Number(limit) : undefined };
+      } else if (action === "subscribe") {
+        params = { action, topic: a[0] };
+      } else {
+        console.error('usage: hexagon bus send --kind handoff|decision|question|answer|finding|request|broadcast (--to T-n | --role R | --topic X) [--subject S] [--field k=v] [--artifact path] [--reply-to B-n] [--blocking [--timeout s]] "<text>"\n       hexagon bus read [--kind K] [--since SEQ] [--limit N]\n       hexagon bus subscribe <topic>');
+        process.exit(2);
+      }
+      break;
+    }
     case "exec": case "sudo": {
       // Flags come before `--`; everything after it is the command, verbatim.
       const cut = a.indexOf("--");

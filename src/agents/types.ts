@@ -22,6 +22,8 @@ export interface AgentApi {
   review(v: ReviewVerdict): Reply;
   /** Send a defect back to the task that owns the code (`hexagon return T-1 "…"`). */
   return?(r: { task: string; issue: string }): Reply;
+  /** `hexagon bus send|read|subscribe` (task agents in a run). */
+  bus?(r: Record<string, unknown>): Reply;
 }
 
 export interface Reply { ok: boolean; message: string }

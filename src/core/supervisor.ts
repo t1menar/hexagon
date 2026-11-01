@@ -15,6 +15,7 @@ import * as g from "./git.js";
 import type { ProjectPaths, RunPaths } from "./project.js";
 import type { ApiRegistry } from "./registry.js";
 import type { MessageRouter } from "./router.js";
+import { BUS_KINDS, type AgentBus, type BusKind } from "./bus.js";
 import { compactRequest, shouldCompact } from "./compaction.js";
 import type { IdentityPool, Lease, Resolution, SessionRegistry } from "./sessions.js";
 import type { Spec } from "./spec.js";
@@ -43,6 +44,7 @@ export interface RunContext {
   /** One session per agent identity, kept for the whole project. */
   sessions: SessionRegistry;
   pool: IdentityPool;
+  bus: AgentBus;
   /** Environment for agent processes: lets them run `hexagon report|ask|…`. */
   agentEnv(agentId: string): Record<string, string>;
 }
@@ -317,6 +319,11 @@ export class AgentRun {
         if (!rv) return this.final("failed", "review did not complete");
         this.review = rv;
         if (rv.verdict === "request_changes") {
+          this.rc.bus.send({
+            kind: "finding", from: "reviewer", to: { agent: this.task.id }, subject: rv.summary.slice(0, 120),
+            fields: { high: String(rv.findings.filter((f) => f.severity === "high").length), medium: String(rv.findings.filter((f) => f.severity === "medium").length) },
+            body: rv.findings.map((f) => `[${f.severity}] ${f.file ?? ""}${f.line ? `:${f.line}` : ""} ${f.issue}`).join("\n"), record_only: true,
+          });
           const stuck = this.noProgress(`review:${rv.summary}:${rv.findings.map((f) => f.issue).join("|")}`);
           if (stuck) return this.final("failed", stuck);
           if (this.mayFix(++fixLoops)) {
@@ -339,6 +346,7 @@ export class AgentRun {
         this.notify(m.conflict ? "merge conflict with the integration branch — resolve manually or /retry" : `merge failed: ${m.output}`);
         return this.final("blocked", m.conflict ? "merge conflict with integration branch" : "merge failed");
       }
+      this.publishHandoff();
       return this.final("done");
     }
   }
@@ -434,9 +442,16 @@ export class AgentRun {
     const othersKey = others.map((o) => `${o.id}:${o.role}:${o.files.write.join(",")}`).join("|");
     const noteLines = this.rc.router.notes().split("\n").filter(Boolean);
     const cursor = seen.notes?.run === this.rc.runId ? seen.notes.lines : 0;
+    const upstream = this.upstream();
+    const fresh_notes = noteLines.slice(cursor);
+    const relevant = fresh_notes.filter((l) => { const from = /^- \[[^\]]*\] (T-\d+):/.exec(l)?.[1]; return !from || upstream.includes(from); });
+    const omitted = fresh_notes.length - relevant.length;
+    const notesText = [...relevant, omitted ? `(${omitted} note(s) from unrelated tasks omitted; \`hexagon bus read\` lists everything)` : ""].filter(Boolean).join("\n");
+    const digest = this.started ? "" : this.rc.bus.digestFor(this.task.id, upstream);
     const newSkills = this.task.skills.filter((n) => !seen.skills.includes(n));
     const card = [
-      taskCard(this.task, this.rc.specs, noteLines.slice(cursor).join("\n"), seen.others === othersKey ? [] : others),
+      taskCard(this.task, this.rc.specs, notesText, seen.others === othersKey ? [] : others),
+      digest,
       newSkills.length ? skillsBlock(this.rc.skills, this.task.role, newSkills) : "",
     ].filter(Boolean).join("\n\n");
     this.rc.sessions.markSeen(rec.agentId, {
@@ -613,6 +628,68 @@ export class AgentRun {
       return `no progress: identical failure ${n} times`;
     }
     return null;
+  }
+
+  /** Transitive dependencies of this task (the agents whose work it builds on). */
+  private upstream(): string[] {
+    const out = new Set<string>();
+    const walk = (id: string) => {
+      for (const d of this.rc.tasks.find((t) => t.id === id)?.depends_on ?? []) if (!out.has(d)) { out.add(d); walk(d); }
+    };
+    walk(this.task.id);
+    return [...out];
+  }
+
+  /** Tell the dependents what this task delivered: a bounded handoff, with the result file for the details. */
+  private publishHandoff(): void {
+    const dependents = this.rc.tasks.filter((t) => t.depends_on.includes(this.task.id));
+    const r = this.result;
+    if (!r) return;
+    const artifact = path.relative(this.rc.root, this.rc.run.agentResult(this.agentRunId));
+    for (const d of dependents) {
+      this.rc.bus.send({
+        kind: "handoff", from: this.task.id, to: { agent: d.id }, subject: `${this.task.id} done: ${r.summary.split("\n")[0]}`.slice(0, 120),
+        fields: { files: r.files_changed.slice(0, 8).join(", ") + (r.files_changed.length > 8 ? ` (+${r.files_changed.length - 8})` : ""), acceptance: r.acceptance_evidence.map((e) => e.ac).join(", "), branch: this.branch },
+        body: [r.summary, r.assumptions.length ? `Assumptions: ${r.assumptions.map((a) => a.text).join("; ")}` : "", r.follow_ups.length ? `Follow-ups: ${r.follow_ups.join("; ")}` : ""].filter(Boolean).join("\n"),
+        artifact, refs: this.task.requirements, record_only: true,
+      });
+    }
+  }
+
+  /** `hexagon bus send|read|subscribe` from the agent. */
+  private busCall(a: Record<string, unknown>): Reply {
+    const me = this.task.id;
+    const bus = this.rc.bus;
+    switch (a.action) {
+      case "subscribe": {
+        const topic = String(a.topic ?? "").trim();
+        if (!topic) return { ok: false, message: "usage: hexagon bus subscribe <topic>" };
+        bus.subscribe(me, topic);
+        return ok(`Subscribed to "${topic}".`);
+      }
+      case "read": {
+        const items = bus.read(me, { role: this.task.role, sinceSeq: a.since as number | undefined, kind: a.kind as BusKind | undefined, limit: (a.limit as number | undefined) ?? 20 });
+        if (!items.length) return ok("No messages for you.");
+        return ok(items.map((e) => `${e.id} [${e.kind}] from ${e.from}: ${e.subject}${Object.keys(e.fields).length ? ` (${Object.entries(e.fields).map(([k, v]) => `${k}=${v}`).join("; ")})` : ""}${e.body && e.body !== e.subject ? `\n  ${e.body.replace(/\n+/g, "\n  ")}` : ""}${e.artifact ? `\n  full: ${e.artifact}` : ""}`).join("\n"));
+      }
+      case "send": {
+        const kind = String(a.kind ?? "broadcast") as BusKind;
+        if (!BUS_KINDS.includes(kind)) return { ok: false, message: `unknown kind "${kind}" (use ${BUS_KINDS.join(", ")})` };
+        const to = a.to ? normTaskId(String(a.to)) : undefined;
+        if (to && !this.rc.tasks.some((t) => t.id === to)) return { ok: false, message: `there is no task ${to} in this run` };
+        const r = bus.send({
+          kind, from: me, to: { agent: to, role: a.role ? String(a.role) : undefined, topic: a.topic ? String(a.topic) : undefined },
+          subject: a.subject ? String(a.subject) : undefined, fields: (a.fields as Record<string, string> | undefined) ?? {}, body: String(a.body ?? ""),
+          artifact: a.artifact ? String(a.artifact) : undefined, reply_to: a.reply_to ? String(a.reply_to) : null, blocking: Boolean(a.blocking), timeout_s: a.timeout_s as number | undefined,
+        });
+        if (!r.ok) return { ok: false, message: r.reason };
+        const e = r.envelope;
+        const tail = e.blocking ? ` You wait for the answer: end your turn; it arrives as your next message (or a timeout notice after ${e.timeout_s}s).` : "";
+        return ok(`${r.duplicate ? "Already sent as" : "Sent as"} ${e.id} (${e.state}${e.truncated ? ", text shortened to the size limit" : ""}).${tail}`);
+      }
+      default:
+        return { ok: false, message: "usage: hexagon bus send|read|subscribe" };
+    }
   }
 
   /**
@@ -875,6 +952,7 @@ export class AgentRun {
       ask: (a) => this.ask(a),
       note: (body) => {
         this.rc.router.send({ from: { kind: "agent", id: this.task.id }, to: { kind: "blackboard" }, type: "note", body });
+        this.rc.bus.send({ kind: "broadcast", from: this.task.id, to: {}, body, record_only: true });
         return ok("Note shared with the other agents.");
       },
       done: (d) => {
@@ -901,6 +979,7 @@ export class AgentRun {
         return ok("Result recorded. Hexagon will now verify, review and merge your work. End your turn now.");
       },
       review: () => ({ ok: false, message: "Only the reviewer can run `hexagon review`." }),
+      bus: (a) => this.busCall(a),
       return: (x) => {
         const to = String(x.task ?? "").toUpperCase().replace(/^T(\d)/, "T-$1");
         const issue = String(x.issue ?? "").trim();
@@ -908,6 +987,7 @@ export class AgentRun {
         if (this.waiting) return { ok: false, message: `You already returned work to ${this.waiting.task}. End your turn and wait.` };
         const r = this.rc.returnTask(this.task.id, to, issue);
         if (!r.ok) return { ok: false, message: r.message };
+        this.rc.bus.send({ kind: "request", from: this.task.id, to: { agent: to }, subject: issue.split("\n")[0]!.slice(0, 120), body: issue, record_only: true });
         this.waiting = { task: to, issue, done: r.done };
         this.finished = true; // ends this turn; the pipeline then waits for the fix
         this.ev({ type: "chat", from: "hexagon", text: `↩ Returned to ${to}: ${issue}` });
@@ -1032,6 +1112,7 @@ export class AgentRun {
 }
 
 const ok = (message: string): Reply => ({ ok: true, message });
+const normTaskId = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
 /** Largest piece of failure output / feedback sent back to an agent (head + tail). */
 const FIX_EXCERPT = 6000;

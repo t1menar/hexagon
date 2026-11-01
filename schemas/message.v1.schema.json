@@ -25,7 +25,8 @@
     "thread_id": { "type": ["string", "null"], "description": "Usually the task id." },
     "from": { "$ref": "#/$defs/party" },
     "to": { "$ref": "#/$defs/party" },
-    "type": { "enum": ["instruction", "question", "answer", "note", "request", "handoff", "notify", "ack"] },
+    "type": { "enum": ["instruction", "question", "answer", "note", "request", "handoff", "notify", "ack", "decision", "finding"] },
+    "bus_id": { "type": "string", "pattern": "^B-[0-9]+$", "description": "Envelope on the agent bus (bus.jsonl) carried by this message." },
     "body": { "type": "string" },
     "question": {
       "type": ["object", "null"],

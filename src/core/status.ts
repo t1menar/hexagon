@@ -270,6 +270,9 @@ export class StatusStore extends EventEmitter {
     return out;
   }
 
+  /** Extra run-level fields from outside the store (the agent bus). */
+  runExtra: () => Partial<RunStatus> = () => ({});
+
   runStatus(): RunStatus {
     const latest = new Map<string, AgentStatus>();
     for (const s of this.agents.values()) {
@@ -297,6 +300,7 @@ export class StatusStore extends EventEmitter {
       ...this.meta,
       totals: this.totals(),
       ledger: this.ledger(),
+      ...this.runExtra(),
       counts,
       agents: agents.map((s) => ({
         task_id: s.task_id, agent_run_id: s.agent_run_id, role: s.role, agent: s.agent.id, state: s.state,

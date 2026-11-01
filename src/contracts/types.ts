@@ -119,6 +119,12 @@ export interface RunStatus {
   totals: Usage;
   /** Tokens of the whole run by cause (prompt, fix loop, review, compaction). */
   ledger?: Partial<Record<TokenCause, TokenCounts>>;
+  /** Agent bus: counts, who waits for whom, the latest messages. */
+  bus?: {
+    total: number; by_kind: Record<string, number>; by_state: Record<string, number>;
+    waiting: { from: string; for: string }[];
+    recent: { id: string; kind: string; from: string; to: string; subject: string; state: string; size: number }[];
+  };
   counts: Partial<Record<AgentState, number>>;
   agents: {
     task_id: string; agent_run_id: string; role: Role; agent: string; state: AgentState;
@@ -130,7 +136,7 @@ export interface RunStatus {
 export type PartyKind = "user" | "agent" | "role" | "orchestrator" | "blackboard" | "broadcast" | "lead";
 export interface Party { kind: PartyKind; id?: string | null }
 
-export type MessageType = "instruction" | "question" | "answer" | "note" | "request" | "handoff" | "notify" | "ack";
+export type MessageType = "instruction" | "question" | "answer" | "note" | "request" | "handoff" | "notify" | "ack" | "decision" | "finding";
 export type DeliveryState = "queued" | "delivered" | "acked" | "expired" | "rejected";
 
 export interface Message {
@@ -148,6 +154,8 @@ export interface Message {
   reply_to?: string | null;
   priority?: "low" | "normal" | "urgent";
   requires_ack?: boolean;
+  /** Envelope on the agent bus (bus.jsonl) this message carries. */
+  bus_id?: string;
   delivery: { state: DeliveryState; delivered_at?: string | null; acked_at?: string | null; reason?: string | null };
 }
 
