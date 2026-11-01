@@ -38,6 +38,11 @@ export interface NetOptions {
   aspect?: number;
   still?: boolean;
   fx?: ReadonlyMap<string, NodeFx>;
+  /**
+   * Graph restructuring animation. `from` holds the previous canvas position of every node that existed before;
+   * k runs 0→1. Nodes glide to their new place, new nodes and edges fade in, edges of moving nodes wait until they settle.
+   */
+  morph?: { from: ReadonlyMap<string, { x: number; y: number }>; k: number; prevEdges: ReadonlySet<string> } | null;
   /** Integration hub is shown when there is more than one node or the run is active. */
   hub?: boolean;
 }
@@ -127,6 +132,19 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
     for (const n of layer) pos.set(n.key, { x: lx, y: plan.y.get(n.key)! });
   });
 
+  // Restructuring animation: nodes move from where they were to where they belong.
+  const mo = o.morph && o.morph.k < 1 && !o.still ? o.morph : null;
+  const moved = (key: string) => {
+    const f = mo?.from.get(key), q = pos.get(key);
+    return Boolean(mo && (!f || (q && (f.x !== q.x || f.y !== q.y))));
+  };
+  const dpos = (key: string): { x: number; y: number } => {
+    const q = pos.get(key)!;
+    const f = mo?.from.get(key);
+    if (!mo || !f) return q;
+    return { x: Math.round(f.x + (q.x - f.x) * mo.k), y: Math.round(f.y + (q.y - f.y) * mo.k) };
+  };
+
   // ── edges: orthogonal routing ──
   // Every edge leaves its card at the right-middle port and enters the target at its left-middle port. A source that has
   // to change rows runs ONE vertical trunk in its own track column inside the gap (fan-out shares it); different sources
@@ -139,8 +157,9 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
     mask.set(k, (mask.get(k) ?? 0) | bits);
     if ((rank.get(k) ?? -1) < r) { rank.set(k, r); styleAt.set(k, style); }
   };
-  const segH = (x1: number, x2: number, y: number, s: string, r: number) => { const [a, b] = x1 <= x2 ? [x1, x2] : [x2, x1]; for (let x = a; x <= b; x++) mark(x, y, (x < b ? R : 0) | (x > a ? L : 0) || (R | L), s, r); };
-  const segV = (x: number, y1: number, y2: number, s: string, r: number) => { const [a, b] = y1 <= y2 ? [y1, y2] : [y2, y1]; for (let y = a; y <= b; y++) mark(x, y, (y < b ? D : 0) | (y > a ? U : 0), s, r); };
+  let drawEdges = true;
+  const segH = (x1: number, x2: number, y: number, s: string, r: number) => { if (!drawEdges) return; const [a, b] = x1 <= x2 ? [x1, x2] : [x2, x1]; for (let x = a; x <= b; x++) mark(x, y, (x < b ? R : 0) | (x > a ? L : 0) || (R | L), s, r); };
+  const segV = (x: number, y1: number, y2: number, s: string, r: number) => { if (!drawEdges) return; const [a, b] = y1 <= y2 ? [y1, y2] : [y2, y1]; for (let y = a; y <= b; y++) mark(x, y, (y < b ? D : 0) | (y > a ? U : 0), s, r); };
   const stateOf = new Map(nodes.map((n) => [n.id, n.state]));
   const arrows: { x: number; y: number; s: string }[] = [];
   const colX = (li: number) => li * colW + gapW.slice(0, li).reduce((a, b) => a + b, 0);
@@ -172,9 +191,20 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
       for (let l = from + 1; l < to; l++) chain.push(`${d}>${n.id}#${l}`);
       chain.push(n.id);
       const dst = stateOf.get(n.id)!;
-      const rk = ACTIVE.has(dst) || dst === "waiting_quota" ? 2 : stateOf.get(d) === "done" ? 1 : 0;
-      const tok: Token = rk === 2 ? STATE_LOOK[dst].token : rk === 1 ? "success" : "border";
-      const style = colorOf(tok);
+      const src = stateOf.get(d)!;
+      const failed = src === "failed" || dst === "failed";
+      const blockedEdge = !failed && (src === "blocked" || dst === "blocked");
+      const rk = failed || blockedEdge || ACTIVE.has(dst) || dst === "waiting_quota" ? 2 : src === "done" ? 1 : 0;
+      const tok: Token = failed ? "error" : blockedEdge ? "warning" : rk === 2 ? STATE_LOOK[dst].token : rk === 1 ? "success" : "border";
+      // During a restructure, edges of moving nodes wait for them; brand-new edges fade in.
+      let fade = 1;
+      if (mo) {
+        if (moved(d) || moved(n.id)) fade = Math.max(0, (mo.k - 0.7) / 0.3);
+        else if (!mo.prevEdges.has(`${d}>${n.id}`)) fade = mo.k;
+      }
+      const style = fade >= 1 ? colorOf(tok) : sgr(mix(TOKENS.surface2, TOKENS[tok], fade), depth);
+      const hide = fade < 0.08;
+      drawEdges = !hide;
       const pts: Pt[] = [];
       for (let i = 0; i < chain.length - 1; i++) {
         const a = chain[i]!, b = chain[i + 1]!;
@@ -189,9 +219,10 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
           segH(sx, trunk, ya, style, rk); segV(trunk, ya, yb, style, rk); segH(trunk, tx, yb, style, rk);
           pts.push([sx, ya], [trunk, ya], [trunk, yb], [tx, yb]);
         }
-        if (realOf(b) && i === chain.length - 2) arrows.push({ x: tx, y: yb, s: style });
+        if (realOf(b) && i === chain.length - 2 && !hide) arrows.push({ x: tx, y: yb, s: style });
         if (!realOf(b)) { segH(pb.x, pb.x + colW - 1, yb, style, rk); pts.push([pb.x + colW - 1, yb]); }
       }
+      drawEdges = true;
       geom.edges.push({ from: d, to: n.id, path: new Path(pts) });
     }
   }
@@ -209,16 +240,19 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
     for (const ln of layer) {
       if (!ln.real) continue;
       const node = ln.real as NetNode;
-      const p = pos.get(ln.key)!;
+      const pf = pos.get(ln.key)!;
+      const p = dpos(ln.key);
       const m = boxOf(node.id);
       const isHub = node.id === INTEGRATION;
+      const appearing = Boolean(mo && !mo.from.has(node.id));
+      if (appearing && mo!.k < 0.3) { geom.nodes.set(node.id, { x: pf.x, y: pf.y, w: m.w, h: m.h, cx: pf.x + Math.floor(m.w / 2), cy: pf.y + Math.floor(m.h / 2) }); continue; }
       const look = STATE_LOOK[node.state];
       const fx = o.fx?.get(node.id);
       const sel = o.selected === node.id;
       let base: Rgb = TOKENS[look.token];
       if (fx?.flash) base = mix(base, fx.flash.color, fx.flash.k);
       const bg = sel ? sgr(TOKENS.surface, depth, true) : "";
-      const outline = sel ? st(sgr(TOKENS.text, depth), "1", bg) : st(sgr(base, depth), isHub || node.state === "queued" ? "2" : "", bg);
+      const outline = sel ? st(sgr(TOKENS.text, depth), "1", bg) : st(sgr(base, depth), isHub || appearing || node.state === "queued" ? "2" : "", bg);
       const sty = (...x: string[]) => st(...x, bg);
       const x0 = p.x, y0 = p.y, x1 = p.x + m.w - 1, y1 = p.y + m.h - 1;
       const dashed = node.state === "queued";
@@ -231,7 +265,7 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
       for (let x = x1 - 1; x >= x0; x--) { c.set(x, y1, dashed ? "┄" : "─", outline); ring.push([x, y1]); }
       for (let y = y1 - 1; y > y0; y--) { c.set(x0, y, dashed ? "┆" : "│", outline); ring.push([x0, y]); }
       c.set(x0, y0, "┌", outline); c.set(x1, y0, "┐", outline); c.set(x0, y1, "└", outline); c.set(x1, y1, "┘", outline);
-      geom.nodes.set(node.id, { x: x0, y: y0, w: m.w, h: m.h, cx: x0 + Math.floor(m.w / 2), cy: y0 + Math.floor(m.h / 2) });
+      geom.nodes.set(node.id, { x: pf.x, y: pf.y, w: m.w, h: m.h, cx: pf.x + Math.floor(m.w / 2), cy: pf.y + Math.floor(m.h / 2) });
 
       const glyph = uni ? look.symbol : look.ascii;
       const inner = m.w - 4; // text columns between the rail gutter and the right border
@@ -330,7 +364,7 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
   }
   // Ports: where edges attach to a card, the border turns into a junction (├ leaving, ┤ entering).
   for (const n of nodes) {
-    const pp = pos.get(n.id);
+    const pp = pos.has(n.id) ? dpos(n.id) : undefined;
     if (!pp) continue;
     const ya = midY(n.id);
     const out = geom.edges.find((e) => e.from === n.id);

@@ -31,7 +31,7 @@ export interface HexagonConfig {
   review: { mode: "agent" | "off" };
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
   sandbox: { allow_commands: string[]; command_timeout_s: number };
-  ui: { open_with: "auto" | "tmux" | "iterm" | "terminal" | "print"; /** auto | full | reduced | off */ animation: string; startup_animation: boolean; inspector: boolean };
+  ui: { open_with: "auto" | "tmux" | "iterm" | "terminal" | "print"; /** auto | full | reduced | off */ animation: string; startup_animation: boolean; inspector: boolean; /** faint ambient hexagons behind the network (full motion only) */ ambient: boolean };
 }
 
 export const DEFAULT_CONFIG: HexagonConfig = {
@@ -61,7 +61,7 @@ export const DEFAULT_CONFIG: HexagonConfig = {
     ],
     command_timeout_s: 600,
   },
-  ui: { open_with: "auto", animation: "auto", startup_animation: true, inspector: true },
+  ui: { open_with: "auto", animation: "auto", startup_animation: true, inspector: true, ambient: true },
 };
 
 /** Read-only probes every agent may always run (checking what's installed, looking around). */

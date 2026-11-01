@@ -40,7 +40,7 @@ let screen: string[];
 let writes = 0;
 const saved: Record<string, unknown> = {};
 function setTerm(cols: number, rows: number, env: Record<string, string | undefined> = {}) {
-  Object.assign(process.env, { TERM: "xterm-256color", COLORTERM: "truecolor", LANG: "en_US.UTF-8", HEXAGON_STARTUP: "off", HEXAGON_ANIMATION: "auto" }, env);
+  Object.assign(process.env, { TERM: "xterm-256color", COLORTERM: "truecolor", LANG: "en_US.UTF-8", HEXAGON_STARTUP: "off", HEXAGON_ANIMATION: "auto", HEXAGON_AMBIENT: "off" }, env);
   for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
   Object.defineProperty(process.stdout, "columns", { value: cols, configurable: true });
   Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true });
@@ -52,7 +52,7 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tmp, ".hexagon"));
   screen = [];
   writes = 0;
-  for (const k of ["TERM", "COLORTERM", "LANG", "HEXAGON_STARTUP", "HEXAGON_ANIMATION", "NO_MOTION", "NO_COLOR", "HEXAGON_ASCII", "SSH_CONNECTION"]) saved[k] = process.env[k];
+  for (const k of ["TERM", "COLORTERM", "LANG", "HEXAGON_STARTUP", "HEXAGON_ANIMATION", "HEXAGON_AMBIENT", "NO_MOTION", "NO_COLOR", "HEXAGON_ASCII", "SSH_CONNECTION"]) saved[k] = process.env[k];
   saved.isTTY = process.stdout.isTTY;
   Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
   vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string) => {
@@ -207,5 +207,43 @@ describe("dashboard (real App, fake daemon)", () => {
     await settle(100);
     expect(text()).toContain("AGENT NETWORK");
     client.emit("close");
+  });
+
+  it("ambient hexagons: only in full motion, never over content, and they stop when motion is off", async () => {
+    const { app, exit } = await boot({ "T-1": "done", "T-2": "running" }, 160, 45, { HEXAGON_AMBIENT: undefined });
+    const level = () => (app as never as { ambientLevel(): number }).ambientLevel();
+    expect(level()).toBe(1);
+    await settle(400);
+    expect(text()).toContain("T-2"); // content intact
+    const key = (name: string) => (app as never as { onKey(s: undefined, k: { name: string }): void }).onKey(undefined, { name });
+    key("f3"); // motion off
+    await settle(100);
+    expect(level()).toBe(0);
+    const before = writes;
+    await settle(400);
+    expect(writes).toBe(before);
+    exit();
+  });
+  it("ambient is reduced after 60 s of inactivity and gone after 5 min", async () => {
+    const { app, exit } = await boot({ "T-1": "done" }, 160, 45, { HEXAGON_AMBIENT: undefined });
+    const a = app as never as { ambientLevel(): number; lastInput: number };
+    a.lastInput = Date.now() - 90_000;
+    expect(a.ambientLevel()).toBeLessThan(1);
+    expect(a.ambientLevel()).toBeGreaterThan(0);
+    a.lastInput = Date.now() - 400_000;
+    expect(a.ambientLevel()).toBe(0);
+    exit();
+  });
+  it("adding a task to the plan animates the graph and settles back to idle", async () => {
+    const { client, exit } = await boot({ "T-1": "done", "T-2": "done", "T-3": "done" });
+    const snap = makeSnapshot({ "T-1": "done", "T-2": "done", "T-3": "done" });
+    const run = { ...snap.run, state: "done" };
+    client.snap = { ...snap, run };
+    (client as FakeClient).emit("push", { event: "run", data: { ...run, run_id: "R2" } });
+    await settle(1200);
+    const before = writes;
+    await settle(400);
+    expect(writes).toBe(before);
+    exit();
   });
 });

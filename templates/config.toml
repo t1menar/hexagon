@@ -96,3 +96,4 @@ open_with = "auto"      # "auto" | "tmux" | "iterm" | "terminal" | "print"
 animation = "auto"      # "auto" (reduced over SSH) | "full" | "reduced" | "off"; also HEXAGON_ANIMATION, NO_MOTION
 startup_animation = true
 inspector = true        # show the inspector panel when the terminal is wide enough
+ambient = true          # faint hexagons drifting behind the network; fades when you are away, off with motion=off

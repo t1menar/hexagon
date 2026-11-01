@@ -10,6 +10,7 @@ import type { Draft, PermissionRequest, Push, Snapshot } from "../daemon/orchest
 import { hexagonCommand, openTerminal } from "../shell/open.js";
 import { Canvas, clip, padTo, S, st, wrap } from "./canvas.js";
 import { AnimationManager } from "./motion.js";
+import { AmbientField } from "./ambient.js";
 import { Director } from "./director.js";
 import { computeLayout, type Region } from "./layout.js";
 import { renderNetwork, type NetNode } from "./network.js";
@@ -146,6 +147,14 @@ export class App {
   private histIdx = -1;
   private scroll = 0;
   private frames = 0;
+  private ambient = new AmbientField();
+  private ambientOn = true;
+  private lastInput = Date.now();
+  private ambientLevelShown = -1;
+  private netTopo = "";
+  private netScreen = new Map<string, { x: number; y: number }>();
+  private netEdges = new Set<string>();
+  private morph: { from: Map<string, { x: number; y: number }>; k: number; prevEdges: Set<string> } | null = null;
   private lastMinute = Math.floor(Date.now() / 60_000);
   private caps: Caps = detectCaps();
   private mgr!: AnimationManager;
@@ -175,10 +184,11 @@ export class App {
 
   async start(): Promise<void> {
     this.snap = await this.client.call<Snapshot>("ui.snapshot");
-    let ui = { animation: "auto", startup_animation: true, inspector: true };
+    let ui = { animation: "auto", startup_animation: true, inspector: true, ambient: true };
     try { ui = { ...ui, ...loadConfig(path.join(this.root, ".hexagon", "config.toml")).ui }; } catch { /* defaults */ }
     this.caps = detectCaps(process.env, Boolean(process.stdout.isTTY), { animation: ui.animation, startup: ui.startup_animation });
     this.inspectorOn = ui.inspector;
+    this.ambientOn = ui.ambient && process.env.HEXAGON_AMBIENT !== "off";
     this.mgr = new AnimationManager({ motion: this.caps.motion, fps: this.caps.fps || undefined, onFrame: () => this.render() });
     this.director = new Director(this.mgr);
     for (const a of this.snap.agents) this.setFull(a);
@@ -211,6 +221,7 @@ export class App {
       if (minute !== this.lastMinute) { this.lastMinute = minute; changed = true; }
       if (this.snap?.run?.state === "running") changed = true;
       void this.refreshAgentInfo();
+      if (this.syncAmbient()) changed = true;
       if (changed) this.invalidate();
     }, 1000);
     this.housekeeping.unref();
@@ -379,6 +390,22 @@ export class App {
   /** Animations off (HEXAGON_ANIMATION=off, NO_MOTION, or /animate off): static glyphs, no particles. */
   get still(): boolean { return !this.mgr?.enabled; }
 
+  /** Ambient hexagons: on in full motion only, dimmed after 60 s without input, gone after 5 min (nothing redraws then). */
+  private ambientLevel(): number {
+    if (!this.ambientOn || this.caps.motion !== "full" || !this.mgr.enabled) return 0;
+    const idle = Date.now() - this.lastInput;
+    return idle > 300_000 ? 0 : idle > 60_000 ? 0.35 : 1;
+  }
+
+  /** Keeps the low-rate ambient hold in step with the level. Returns true when the picture needs a redraw. */
+  private syncAmbient(): boolean {
+    const lvl = this.ambientLevel();
+    if (lvl > 0) this.mgr.hold("ambient", lvl < 1 ? 2 : 4); else this.mgr.release("ambient");
+    const changed = lvl !== this.ambientLevelShown;
+    this.ambientLevelShown = lvl;
+    return changed;
+  }
+
   private setMotion(arg: string) {
     const mode = arg === "on" ? "full" : arg;
     if (!["full", "reduced", "off"].includes(mode)) return this.flash("usage: /animate [full|reduced|off]");
@@ -482,6 +509,8 @@ export class App {
     if (this.suspended) return;
     this.invalidate();
     const name = k?.name;
+    this.lastInput = Date.now();
+    this.syncAmbient();
     if (this.startup) { this.startup = null; this.mgr.cancel("startup-end"); this.mgr.release("startup"); }
     if (name === "f1") return void this.command("/help");
     if (name === "f2") { this.inspectorOn = !this.inspectorOn; this.prev = []; return; }
@@ -1023,12 +1052,34 @@ export class App {
     const nodes = this.dagNodes(this.plan());
     if (!nodes.length) { this.director.setGeometry(null); this.placeholder2(cv, r); return; }
     const reserve = d && draft ? 3 : 0;
-    const geom = renderNetwork(nodes, { maxW: r.w - 2, maxH: r.h - 2 - reserve, caps: this.caps, now: this.now, selected: this.selected, still: !this.mgr.enabled, fx: this.director.fx });
+    const opts = { maxW: r.w - 2, maxH: r.h - 2 - reserve, caps: this.caps, now: this.now, selected: this.selected, still: !this.mgr.enabled, fx: this.director.fx };
+    const geom = renderNetwork(nodes, opts); // the true geometry: particles, effects and the next morph start from it
     this.director.setGeometry(geom);
-    if (this.mgr.enabled) this.mgr.particles.draw(geom.canvas, this.now, { depth: this.caps.color, unicode: this.caps.unicode });
     const ox = r.x + 1 + Math.max(0, Math.floor((r.w - 2 - geom.canvas.w) / 2));
     const oy = r.y + 1 + Math.max(0, Math.floor((r.h - 2 - reserve - geom.canvas.h) / 2));
-    cv.blit(geom.canvas, ox, oy, 0, 0, Math.min(geom.canvas.w, r.w - 2), Math.min(geom.canvas.h, r.h - 2 - reserve));
+    // Restructuring: when the graph itself changed (tasks or dependencies), glide nodes to their new places.
+    const topo = nodes.map((n) => `${n.id}<${n.deps.join(",")}`).join("|");
+    if (this.netTopo && topo !== this.netTopo && this.mgr.enabled && this.netScreen.size) {
+      const from = new Map<string, { x: number; y: number }>();
+      for (const [id, q] of this.netScreen) from.set(id, { x: q.x - ox, y: q.y - oy });
+      const m = { from, k: 0, prevEdges: new Set(this.netEdges) };
+      this.morph = m;
+      this.mgr.tween("morph", 480, (v) => { m.k = v; }, { onDone: () => { if (this.morph === m) this.morph = null; this.invalidate(); } });
+    }
+    this.netTopo = topo;
+    this.netScreen = new Map([...geom.nodes].map(([id, q]) => [id, { x: q.x + ox, y: q.y + oy }]));
+    this.netEdges = new Set(geom.edges.map((e) => `${e.from}>${e.to}`));
+    const shown = this.morph && this.morph.k < 1 ? renderNetwork(nodes, { ...opts, morph: this.morph }) : geom;
+    if (this.mgr.enabled) this.mgr.particles.draw(shown.canvas, this.now, { depth: this.caps.color, unicode: this.caps.unicode });
+    cv.blit(shown.canvas, ox, oy, 0, 0, Math.min(shown.canvas.w, r.w - 2), Math.min(shown.canvas.h, r.h - 2 - reserve));
+    // Ambient hexagons only in the empty area around the graph (never over it, never over the draft hint).
+    const lvl = this.ambientLevel();
+    if (lvl > 0) {
+      this.ambient.draw(cv, r.x + 1, r.y + 1, r.w - 2, r.h - 2 - reserve, this.now, {
+        depth: this.caps.color, unicode: this.caps.unicode, level: lvl,
+        blocked: (x, y) => x >= ox - 3 && x < ox + shown.canvas.w + 3 && y >= oy - 1 && y < oy + shown.canvas.h + 1,
+      });
+    }
     if (d && draft) {
       const c = d.check;
       const msg = c.errors.length ? `✖ ${c.errors[0]}` : c.warnings.length ? `! ${c.warnings.length} warning(s): ${c.warnings[0]}` : `✔ ${d.plan.tasks.length} tasks · spec ${path.relative(this.root, d.spec_path)}`;
