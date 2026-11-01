@@ -114,10 +114,6 @@ On start the director is *seeded* with the current state, so old completions are
 A 1.5 s assembly (centre hexagon, six neighbours, outer ring, "H E X A G O N") that reveals the panels top-down. Any key skips it.
 Disabled when motion is off, over `ui.startup_animation = false`, or `HEXAGON_STARTUP=off`.
 
-### Empty-state atom (`src/tui/molecule.ts`)
-
-While the network is empty, a rotating 3D atom is drawn in real time: a hexagonal nucleus (centre, ring of six, one atom above and below) joined by dotted bonds, three orbits tilted 60° apart, and six electrons with a comet tail. Points are rotated about Y (steady spin) and X (slow nod), perspective-projected, and depth-buffered; shading picks the glyph: near `⬢` / `•`, far `⬡` / `·`. It is a pure function of time (deterministic, tested), the app holds it at 12 fps only while it is on screen, and it is a still frame when motion is off.
-
 ## Approval dialog and command broker
 
 Agents ask for commands through `hexagon exec | install | sudo`; the daemon blocks that call until the user decides. `app.ts` opens a modal (`approvalModal`, `drawApproval`) with the command, who asks, why, and the folder it runs in. Keys: the choice key (`y` once, `a` always, `*` all, `n` deny, `t` terminal for sudo), `Enter` = first choice, `Esc` = decide later (header badge `⚠ N approvals waiting`), `F5` reopens. The dialog swallows other keys while open. See the README for the user view.

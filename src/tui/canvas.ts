@@ -72,17 +72,19 @@ export class Canvas {
   lines(color = true): string[] {
     const out: string[] = [];
     for (let y = 0; y < this.h; y++) {
+      const chars = this.chars[y]!, styles = this.styles[y]!;
+      if (!color) { out.push(chars.join("").replace(/\s+$/, "")); continue; }
+      // A trailing run of unstyled blanks becomes one "erase to end of line" instead of N spaces.
+      let end = this.w;
+      while (end > 0 && styles[end - 1] === "" && chars[end - 1] === " ") end--;
       let line = "";
       let cur = "";
-      for (let x = 0; x < this.w; x++) {
-        const s = this.styles[y]![x]!;
-        if (color && s !== cur) {
-          line += `\x1b[0m${s ? `\x1b[${s}m` : ""}`;
-          cur = s;
-        }
-        line += this.chars[y]![x];
+      for (let x = 0; x < end; x++) {
+        const st = styles[x]!;
+        if (st !== cur) { line += st ? `\x1b[0;${st}m` : "\x1b[0m"; cur = st; }
+        line += chars[x];
       }
-      out.push(color ? line + "\x1b[0m" : line.replace(/\s+$/, ""));
+      out.push(line + (cur ? "\x1b[0m" : "") + (end < this.w ? "\x1b[K" : ""));
     }
     return out;
   }
@@ -104,19 +106,22 @@ export function padTo(s: string, n: number): string {
 /** Word-wrap to width (hard-breaks long words). */
 export function wrap(s: string, width: number): string[] {
   const out: string[] = [];
+  const len = (t: string) => (/^[\x20-\x7e]*$/.test(t) ? t.length : [...t].length);
   for (const para of s.split("\n")) {
-    let line = "";
+    let line = "", lineLen = 0;
     for (const word of para.split(/\s+/)) {
       if (!word) continue;
-      let w = word;
-      while ([...w].length > width) {
-        if (line) { out.push(line); line = ""; }
-        out.push([...w].slice(0, width).join(""));
-        w = [...w].slice(width).join("");
+      let w = word, wl = len(w);
+      while (wl > width) {
+        if (line) { out.push(line); line = ""; lineLen = 0; }
+        const cps = [...w];
+        out.push(cps.slice(0, width).join(""));
+        w = cps.slice(width).join("");
+        wl = cps.length - width;
       }
-      if (!line) line = w;
-      else if ([...line].length + 1 + [...w].length <= width) line += " " + w;
-      else { out.push(line); line = w; }
+      if (!line) { line = w; lineLen = wl; }
+      else if (lineLen + 1 + wl <= width) { line += " " + w; lineLen += 1 + wl; }
+      else { out.push(line); line = w; lineLen = wl; }
     }
     out.push(line);
   }

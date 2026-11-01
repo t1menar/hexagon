@@ -113,7 +113,7 @@ const live = { "T-1": "done", "T-2": "running", "T-3": "reviewing" };
 
 await shot("dashboard", "Hexagon dashboard: navigator, agent network, inspector, activity", 170, 42, snapshot(live));
 await shot("dashboard-compact", "Hexagon on a small terminal", 90, 26, snapshot(live));
-await shot("empty-atom", "Empty state with the live 3D atom", 130, 34, snapshot({}, true));
+await shot("empty", "Empty state: chat with Claude, or /sdd for parallel agents", 130, 34, snapshot({}, true));
 const req = (over: Record<string, unknown> = {}) => ({
   id: "P-1", agent: "T-2", kind: "task", command: "go vet ./...", prefix: "go vet", asked_at: new Date().toISOString(), action: "exec", reason: "verify the server compiles cleanly",
   choices: [{ id: "once", label: "run it this once", key: "y" }, { id: "always", label: "always allow `go vet`", key: "a" }, { id: "all", label: "allow every command", key: "*" }, { id: "deny", label: "deny", key: "n" }], ...over,

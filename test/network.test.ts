@@ -52,7 +52,7 @@ describe("agent network", () => {
     expect(frames.size).toBeGreaterThan(1);
   });
   it("color modes: none has no escapes, 16/256/truecolor all do", () => {
-    const esc = (c: Canvas) => /\x1b\[[0-9;]*(38|48)[;:]/.test(c.lines(true).join("")) || /\x1b\[(3[0-7]|9[0-7]|4[0-7])m/.test(c.lines(true).join(""));
+    const esc = (c: Canvas) => /\x1b\[[0-9;]*(38|48)[;:]/.test(c.lines(true).join("")) || /\x1b\[(?:0;)?(3[0-7]|9[0-7]|4[0-7])m/.test(c.lines(true).join(""));
     expect(esc(render({ caps: detectCaps({ NO_COLOR: "1", LANG: "en_US.UTF-8" }, true) }).canvas)).toBe(false); // attributes only (bold/dim)
     for (const env of [{ TERM: "xterm", LANG: "en_US.UTF-8" }, { TERM: "xterm-256color", LANG: "en_US.UTF-8" }, TTY]) expect(esc(render({ caps: detectCaps(env, true) }).canvas)).toBe(true);
   });
