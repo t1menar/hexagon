@@ -108,7 +108,7 @@ Try everything offline and free: set `agent = "mock"` for every role in `.hexago
 
 **Layouts.** The dashboard adapts to the terminal: **large** (≥150×30: navigator, network, inspector, activity, chat), **medium** (≥100×22: narrower navigator, the inspector is optional) and **small** (a strip instead of the navigator). The inspector opens only if the network keeps room. Any size ≥ 40×16 stays readable and never overflows.
 
-**Motion.** Animation is driven only by real events and by two ambient effects (the atom and a faint hexagon background). `/animate full|reduced|off` or `F3` changes it; it is `reduced` over SSH, `off` with `NO_MOTION=1` or `HEXAGON_ANIMATION=off`, and the ambient layer is off with `HEXAGON_AMBIENT=off` or `[ui] ambient = false`. The startup animation (1.5 s) is skipped by any key or `HEXAGON_STARTUP=off`. Design notes: [docs/TUI.md](docs/TUI.md); a text gallery of every state: [docs/TUI-SNAPSHOTS.md](docs/TUI-SNAPSHOTS.md).
+**Motion.** Animation is driven only by real events and by two ambient effects (the atom and a faint hexagon background). `/animate full|reduced|off` or `F3` changes it; the default (`auto`) is calm: `reduced` (8 fps, no background layer). Full motion (15 fps, particles, background hexagons) is opt-in with `/animate full`, `[ui] animation = "full"` or `HEXAGON_ANIMATION=full`. `off` (static, nothing redraws when idle) with `NO_MOTION=1` or `HEXAGON_ANIMATION=off`. The startup animation (1.5 s) is skipped by any key or `HEXAGON_STARTUP=off`. Design notes: [docs/TUI.md](docs/TUI.md); a text gallery of every state: [docs/TUI-SNAPSHOTS.md](docs/TUI-SNAPSHOTS.md).
 
 **Colour and glyphs.** Truecolor, 256, 16 or no colour is detected from the terminal (`NO_COLOR` respected); `HEXAGON_ASCII=1` forces plain ASCII borders and symbols.
 
@@ -292,7 +292,7 @@ Inside the dashboard the inspector (**WHERE THE WORK IS** / **WORKSPACE**) and `
 
 | Environment | Effect |
 |---|---|
-| `HEXAGON_ANIMATION=full\|reduced\|off`, `NO_MOTION=1` | motion level |
+| `HEXAGON_ANIMATION=full\|reduced\|off`, `NO_MOTION=1` | motion level (default `auto` = reduced) |
 | `HEXAGON_AMBIENT=off` | no background hexagons |
 | `HEXAGON_STARTUP=off` | skip the startup animation |
 | `HEXAGON_ASCII=1`, `NO_COLOR=1` | plain glyphs / no colour |

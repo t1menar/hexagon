@@ -969,6 +969,15 @@ export class App {
 
   private get now(): number { return this.mgr.clock.now(); }
   private spin(): number { return this.mgr.enabled ? Math.floor(this.now / 90) : 0; }
+  /** Building a long conversation (thousands of events, wrapped) costs tens of ms: redo it only when its inputs changed. */
+  private chatCache: { key: string; lines: { text: string; style: string }[] } | null = null;
+  private chatMemo(key: string, build: () => { text: string; style: string }[]): { text: string; style: string }[] {
+    if (this.chatCache?.key === key) return this.chatCache.lines;
+    const lines = build();
+    this.chatCache = { key, lines };
+    return lines;
+  }
+
   private invalidate() { this.dirty = true; this.mgr?.invalidate(); }
   private tk(t: Token, ...extra: string[]): string { return st(sgr(TOKENS[t], this.caps.color), ...extra); }
   private look(state: AgentState) { const l = STATE_LOOK[state]; return { sym: this.caps.unicode ? l.symbol : l.ascii, label: l.label, style: this.tk(l.token) }; }
@@ -1468,20 +1477,25 @@ export class App {
       const cs = this.sessions.get(HEX);
       title = "Chat · Claude";
       const notes: ChatItem[] = (this.feeds.get(HEX) ?? []).map((f) => ({ ts: f.ts, kind: "info", text: f.text, style: f.style || S.gray }));
-      const items = [...(cs ? itemsFromSession(cs) : []), ...notes].sort((x, y) => x.ts.localeCompare(y.ts));
-      chat = chatLines(items, inner, "Claude");
+      chat = this.chatMemo(`${sel}|${inner}|${cs?.feed.length ?? 0}|${cs?.feed.at(-1)?.ts ?? ""}|${cs?.feed.at(-1)?.text.length ?? 0}|${notes.length}|${notes.at(-1)?.ts ?? ""}`, () => {
+        const items = [...(cs ? itemsFromSession(cs) : []), ...notes].sort((x, y) => x.ts.localeCompare(y.ts));
+        return chatLines(items, inner, "Claude");
+      });
       const r = this.snap.run;
       head.push([cs ? `${cs.state === "running" ? `${spinner(this.spin())} thinking` : cs.state} · ${tokLine(cs.tokens)}` : "Ask Claude anything or ask for a change: it works directly in this repo. /sdd <goal> runs the spec-driven flow.", S.gray]);
       if (r) head.push([`run ${r.run_id} · ${r.state} · ${r.integration_branch} → ${r.base_branch}`, S.gray]);
     } else if (s) {
       title = `Chat · ${(SESSION_NAMES[s.id] ?? [s.id])[0]} · ${s.agent}`;
-      chat = chatLines(itemsFromSession(s), inner, (SESSION_NAMES[s.id] ?? [s.id])[0]);
+      chat = this.chatMemo(`${sel}|${inner}|${s.feed.length}|${s.feed.at(-1)?.ts ?? ""}|${s.feed.at(-1)?.text.length ?? 0}`, () => chatLines(itemsFromSession(s), inner, (SESSION_NAMES[s.id] ?? [s.id])[0]));
       head.push([`${s.state.replace("_", " ")} · ${tokLine(s.tokens)}${s.summary ? ` · ${s.summary}` : ""}`, s.state === "failed" ? S.red : S.gray]);
       if (s.question) head.push([`? ${s.question.question_id} ${s.question.prompt}${s.question.options?.length ? "  " + s.question.options.map((o) => `${o.id}) ${o.label}`).join("  ") : ""}`, st(S.orange, S.bold)]);
     } else if (a) {
       title = `Chat · ${this.taskTitle(a.task_id)} (${a.task_id}) · ${a.role} · ${a.agent.id}${a.agent.model ? ` (${a.agent.model}${a.agent.effort ? `, ${a.agent.effort}` : ""})` : ""} · attempt ${a.attempt}`;
-      const conv = itemsFromEvents(this.events.get(sel) ?? []);
-      chat = chatLines(conv.items, inner, `${a.task_id} ${clip(this.taskTitle(a.task_id), 28)}`, conv.acked, TERMINAL_STATES.has(a.state));
+      const evs = this.events.get(sel) ?? [];
+      chat = this.chatMemo(`${sel}|${inner}|${evs.length}|${evs.at(-1)?.ts ?? ""}|${TERMINAL_STATES.has(a.state)}|${a.attempt}`, () => {
+        const conv = itemsFromEvents(evs);
+        return chatLines(conv.items, inner, `${a.task_id} ${clip(this.taskTitle(a.task_id), 28)}`, conv.acked, TERMINAL_STATES.has(a.state));
+      });
       const since = Date.now() - Date.parse(a.state_since);
       head.push([`${glyph(a.state, this.spin())} ${a.state.replace("_", " ")} ${dur(since)}${a.state_reason ? ` — ${a.state_reason}` : ""} · ${a.usage.turns} step(s)`, STATE_COLOR[a.state]]);
       head.push([tokLine({ input: a.usage.input_tokens, cache_read: a.usage.cache_read_tokens, output: a.usage.output_tokens, steps: a.usage.turns }), S.gray]);
