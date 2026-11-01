@@ -147,6 +147,7 @@ export class App {
   private histIdx = -1;
   private scroll = 0;
   private frames = 0;
+  private modalHidden: string | null = null;
   private ambient = new AmbientField();
   private ambientOn = true;
   private lastInput = Date.now();
@@ -512,6 +513,9 @@ export class App {
     this.lastInput = Date.now();
     this.syncAmbient();
     if (this.startup) { this.startup = null; this.mgr.cancel("startup-end"); this.mgr.release("startup"); }
+    const modal = this.approvalModal();
+    if (modal && !k?.ctrl) { if (this.approvalKey(modal, s, k)) return; }
+    if (name === "f5") { this.modalHidden = null; return; }
     if (name === "f1") return void this.command("/help");
     if (name === "f2") { this.inspectorOn = !this.inspectorOn; this.prev = []; return; }
     if (name === "f3") return this.setMotion(this.still ? "full" : "off");
@@ -930,6 +934,75 @@ export class App {
   private tk(t: Token, ...extra: string[]): string { return st(sgr(TOKENS[t], this.caps.color), ...extra); }
   private look(state: AgentState) { const l = STATE_LOOK[state]; return { sym: this.caps.unicode ? l.symbol : l.ascii, label: l.label, style: this.tk(l.token) }; }
 
+  // ── approvals: a real dialog, not a line of chat ──
+
+  private approvalModal(): PermissionRequest | null {
+    const list = this.snap?.permissions ?? [];
+    if (this.modalHidden && !list.some((p) => p.id === this.modalHidden)) this.modalHidden = null;
+    return list.find((p) => p.id !== this.modalHidden) ?? null;
+  }
+
+  private choicesOf(p: PermissionRequest): { id: string; label: string; key: string }[] {
+    return p.choices ?? [
+      { id: "1", label: p.prefix ? `allow \`${p.prefix}\` commands` : "allow it", key: "a" },
+      { id: "2", label: "allow every command", key: "*" },
+      { id: "3", label: "deny", key: "n" },
+    ];
+  }
+
+  /** Returns true when the key was used by the dialog. */
+  private approvalKey(p: PermissionRequest, s: string | undefined, k: readline.Key | undefined): boolean {
+    const choices = this.choicesOf(p);
+    if (k?.name === "escape") { this.modalHidden = p.id; this.flash("Approval postponed — press F5 to answer it", "attention"); return true; }
+    let pick = choices.find((c) => c.key === s);
+    if (!pick && (k?.name === "return" || k?.name === "enter")) pick = choices[0];
+    if (!pick && s === "y") pick = choices.find((c) => c.id === "once" || c.id === "1" || c.id === "terminal");
+    if (!pick && s && /^[1-9]$/.test(s)) pick = choices[Number(s) - 1];
+    if (!pick) return true; // modal: swallow everything else
+    this.snap.permissions = (this.snap.permissions ?? []).filter((x) => x.id !== p.id);
+    void this.client.call("question.answer", { question_id: p.id, answer: pick.id }).catch((e) => this.flash(String(e.message ?? e), "error"));
+    this.invalidate();
+    return true;
+  }
+
+  private drawApproval(cv: Canvas, W: number, H: number, p: PermissionRequest) {
+    const w = Math.min(W - 2, 78);
+    const inner = w - 4;
+    const a = this.full.get(p.agent);
+    const who = a ? `${p.agent} · ${a.role} · ${a.agent.provider} ${a.agent.adapter ?? ""}`.trim() : p.agent === HEX ? "Claude chat" : p.agent;
+    const what = p.action === "install" ? "install a tool" : p.action === "sudo" ? "run as ROOT (sudo)" : "run a command";
+    const rows: { k: string; v: string; style: string }[] = [
+      { k: "Agent", v: who, style: this.tk("text") },
+      { k: "Wants to", v: what, style: this.tk("warning", S.bold) },
+      { k: "Command", v: p.command, style: this.tk("text", S.bold) },
+    ];
+    if (p.reason) rows.push({ k: "Why", v: p.reason, style: this.tk("text") });
+    const wt = a?.workspace?.worktree;
+    rows.push({ k: "Where", v: wt ? path.relative(this.root, wt) || wt : "project root", style: this.tk("muted") });
+    if (p.action === "sudo") rows.push({ k: "How", v: "you type the password in a terminal; Hexagon never sees it", style: this.tk("muted") });
+    else if (p.action === "install") rows.push({ k: "How", v: "official release into ~/.hexagon/toolchains, no sudo", style: this.tk("muted") });
+    else rows.push({ k: "Runs", v: "in the agent's directory, output goes back to the agent", style: this.tk("muted") });
+    const lines: { k: string; v: string; style: string }[] = [];
+    for (const r of rows) wrap(r.v, inner - 10).slice(0, r.k === "Command" ? 4 : 2).forEach((l, i) => lines.push({ k: i ? "" : r.k, v: l, style: r.style }));
+    const choices = this.choicesOf(p);
+    const more = (this.snap.permissions ?? []).length - 1;
+    const h = lines.length + 6 + (more > 0 ? 1 : 0);
+    const x = Math.max(0, Math.floor((W - w) / 2)), y = Math.max(1, Math.floor((H - h) / 2) - 1);
+    cv.fill(x, y, w, h, S.bgSel);
+    cv.box(x, y, w, h, this.tk(p.action === "sudo" ? "error" : "warning"), " APPROVAL NEEDED ", this.tk("warning", S.bold));
+    lines.forEach((l, i) => { cv.text(x + 2, y + 1 + i, l.k.padEnd(9), st(this.tk("muted"), S.bgSel)); cv.text(x + 12, y + 1 + i, clip(l.v, inner - 10), st(l.style, S.bgSel)); });
+    let cy = y + lines.length + 2;
+    let cx = x + 2;
+    for (const c of choices) {
+      const label = `[${c.key}] ${c.label}`;
+      if (cx + label.length > x + w - 2) { cx = x + 2; cy++; }
+      const deny = c.id === "deny" || c.id === "3";
+      cx = cv.text(cx, cy, label, st(this.tk(deny ? "error" : "success", S.bold), S.bgSel), x + w - 2) + 2;
+    }
+    cv.text(x + 2, y + h - 2 - (more > 0 ? 1 : 0), "Enter = first choice · Esc = decide later (F5 reopens)", st(this.tk("muted"), S.bgSel));
+    if (more > 0) cv.text(x + 2, y + h - 2, `${more} more waiting`, st(this.tk("warning"), S.bgSel));
+  }
+
   private render() {
     this.dirty = false;
     const W = Math.max(40, process.stdout.columns || 100);
@@ -940,6 +1013,8 @@ export class App {
     if (su && !su.done && su.reveal === 0) cv = renderStartup(W, H, this.now - this.startup!.t0, this.caps, cellAspect());
     else {
       this.dashboard(cv, W, H);
+      const modal = this.approvalModal();
+      if (modal) this.drawApproval(cv, W, H, modal);
       if (su && !su.done) {
         // Panels reveal top-down while the molecule dissolves below them.
         const sc = renderStartup(W, H, this.now - this.startup!.t0, this.caps, cellAspect());
@@ -1003,6 +1078,8 @@ export class App {
       const prov = this.agentInfo.filter((a) => a.adapter !== "mock" && !seen.has(a.provider) && seen.add(a.provider));
       if (prov.length) parts.push([prov.map((a) => `${a.provider} ${a.diagnostics?.installed && a.diagnostics.auth !== "unauthenticated" ? (this.caps.unicode ? "✔" : "+") : (this.caps.unicode ? "✖" : "x")}`).join("  "), this.tk("muted")]);
     }
+    const nApprovals = (this.snap.permissions ?? []).length;
+    if (nApprovals) parts.unshift([`${this.caps.unicode ? "⚠" : "!"} ${nApprovals} approval${nApprovals === 1 ? "" : "s"} waiting${this.approvalModal() ? "" : " (F5)"}`, this.tk("warning", S.bold)]);
     for (const [t, s] of parts) {
       if (x + t.length + 4 >= W - 8) break;
       x = cv.text(x + 1, 0, " │ ", bar(this.tk("border")));

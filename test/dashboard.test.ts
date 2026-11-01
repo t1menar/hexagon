@@ -30,7 +30,8 @@ function makeSnapshot(states: Record<string, string>) {
 
 class FakeClient extends EventEmitter {
   constructor(public snap: unknown) { super(); }
-  async call(m: string) { if (m === "ui.snapshot") return this.snap; if (m === "agents.list") return []; return []; }
+  calls: { m: string; p: unknown }[] = [];
+  async call(m: string, p?: unknown) { this.calls.push({ m, p }); if (m === "ui.snapshot") return this.snap; if (m === "agents.list") return []; return []; }
   async subscribe() {}
   close() {}
 }
@@ -244,6 +245,64 @@ describe("dashboard (real App, fake daemon)", () => {
     const before = writes;
     await settle(400);
     expect(writes).toBe(before);
+    exit();
+  });
+
+  const execReq = (over: Record<string, unknown> = {}) => ({
+    id: "P-1", agent: "T-2", kind: "task", command: "go vet ./...", prefix: "go vet", asked_at: new Date().toISOString(), action: "exec", reason: "verify the server",
+    choices: [{ id: "once", label: "run it this once", key: "y" }, { id: "always", label: "always allow `go vet`", key: "a" }, { id: "all", label: "allow every command", key: "*" }, { id: "deny", label: "deny", key: "n" }], ...over,
+  });
+  const key = (app: unknown, s: string | undefined, name?: string) => (app as { onKey(s: string | undefined, k: { name?: string }): void }).onKey(s, { name: name ?? s });
+
+  it("a waiting approval opens a dialog with the exact command, who asks and why; a key answers it", async () => {
+    const { app, client, exit } = await boot({ "T-1": "done", "T-2": "running" });
+    push(client, "permissions", [execReq()]);
+    await settle(120);
+    const t = text();
+    for (const w of ["APPROVAL NEEDED", "go vet ./...", "verify the server", "T-2", "run it this once", "always allow `go vet`", "deny"]) expect(t, w).toContain(w);
+    key(app, "a");
+    await settle(50);
+    const answered = client.calls.find((c) => c.m === "question.answer");
+    expect(answered?.p).toEqual({ question_id: "P-1", answer: "always" });
+    expect(text()).not.toContain("APPROVAL NEEDED");
+    exit();
+  });
+  it("the dialog swallows other keys (typing cannot answer by accident), Esc postpones it, F5 brings it back", async () => {
+    const { app, client, exit } = await boot({ "T-2": "running" });
+    push(client, "permissions", [execReq({ action: "sudo", command: "sudo brew install go", choices: [{ id: "terminal", label: "run it in a terminal (you type the password)", key: "t" }, { id: "deny", label: "deny", key: "n" }] })]);
+    await settle(100);
+    expect(text()).toContain("as ROOT");
+    expect(text()).toContain("never sees it");
+    key(app, "x"); key(app, "q");
+    expect(client.calls.some((c) => c.m === "question.answer")).toBe(false);
+    key(app, undefined, "escape");
+    await settle(100);
+    expect(text()).not.toContain("APPROVAL NEEDED");
+    expect(text()).toMatch(/1 approval waiting/);
+    key(app, undefined, "f5");
+    await settle(100);
+    expect(text()).toContain("APPROVAL NEEDED");
+    key(app, undefined, "return"); // primary choice
+    await settle(50);
+    expect(client.calls.find((c) => c.m === "question.answer")?.p).toEqual({ question_id: "P-1", answer: "terminal" });
+    exit();
+  });
+  it("native refusals (no choices from the daemon) still get a dialog", async () => {
+    const { app, client, exit } = await boot({ "T-2": "running" });
+    push(client, "permissions", [{ id: "P-3", agent: "T-2", kind: "task", command: "brew install go", prefix: "brew", asked_at: new Date().toISOString() }]);
+    await settle(100);
+    expect(text()).toContain("allow `brew` commands");
+    key(app, "n");
+    await settle(50);
+    expect(client.calls.find((c) => c.m === "question.answer")?.p).toEqual({ question_id: "P-3", answer: "3" });
+    exit();
+  });
+  it("small terminals still fit the dialog", async () => {
+    const { client, exit } = await boot({ "T-2": "running" }, 60, 20);
+    push(client, "permissions", [execReq({ command: "a-very-long-command --with --many --arguments ".repeat(3) })]);
+    await settle(100);
+    expect(text()).toContain("APPROVAL NEEDED");
+    for (const l of screen) expect([...strip(l ?? "")].length).toBeLessThanOrEqual(60);
     exit();
   });
 });
