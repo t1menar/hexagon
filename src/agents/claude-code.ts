@@ -35,6 +35,8 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
     supportsModelDiscovery: false, // `claude` has no model-listing command (verified with `claude --help`)
     supportsRuntimeModelReporting: true, // stream-json `system/init` carries the serving model
     supportsUsageMetrics: true, supportsStructuredOutput: true, supportsNativePermissions: true,
+    supportsNativeCompaction: false, // `/compact` did not complete in stream-json mode when probed (CLI 2.1.316): Hexagon compacts
+    resumeAcrossCwd: true, // verified: `claude --resume <id>` from another directory continues the session (CLI 2.1.316)
   });
 
   override readonly security = { readOnlyEnforced: true, commandAllowList: true };

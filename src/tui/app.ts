@@ -43,6 +43,7 @@ const COMMANDS: [string, string][] = [
   ["/resume [T-n]", "resume"],
   ["/cancel [T-n]", "cancel an agent"],
   ["/retry [T-n] [--agent X] [--effort E]", "start a new attempt"],
+  ["/compact [agent|T-n]", "compact an agent's session at its next safe point"],
   ["/takeover [T-n]", "work in the agent's session yourself (Ctrl-T)"],
   ["/open [T-n]", "open the agent in a new terminal window (Ctrl-O)"],
   ["/diff [T-n]", "show the agent's changes (Ctrl-D)"],
@@ -903,6 +904,12 @@ export class App {
           return;
         }
         case "/cancel": { const t = this.target(args); await c.call("agent.cancel", { task: t }); this.flash(`${t} cancelled`); return; }
+        case "/compact": {
+          const t = args.find((a) => !a.startsWith("-"));
+          const r = await c.call<{ agents: string[] }>("session.compact", { agent: t ? (/^t-?\d+$/i.test(t) ? normTask(t) : t) : undefined });
+          this.flash(`will compact ${r.agents.join(", ")} at the next safe point`);
+          return;
+        }
         case "/retry": {
           const agent = flag(args, "--agent");
           const effort = flag(args, "--effort");
@@ -1407,6 +1414,11 @@ export class App {
     const p = this.progress(id);
     if (y < end) { cv.text(x, y, "Progress".padEnd(11), this.tk("muted")); if (p != null) { const b = bar(p, Math.max(8, w - 12)); const bx = cv.text(x + 11, y, b.fill, st(lk.style)); const bx2 = cv.text(bx, y, b.rest, this.tk("border")); cv.text(bx2, y, b.label, this.tk("muted")); } else cv.text(x + 11, y, "n/a", this.tk("muted")); y++; }
     if (a.progress && a.progress.total) row("Criteria", `${a.progress.done}/${a.progress.total} done`);
+    if (a.session) {
+      const ss = a.session;
+      row("Session", `${ss.agent} · ${ss.mode === "new" ? `new${ss.reason ? ` (${ss.reason})` : ""}` : `resumed, turn ${ss.turns}`}`);
+      row("Context", `${ss.turns ? `ctx ${Math.round(ss.ctx_pct * 100)}% (~${tok(ss.ctx_tokens)})` : "empty"}${ss.compactions ? ` ▸ compacted ×${ss.compactions}` : ""}`, ss.ctx_pct >= 0.7 ? this.tk("warning") : undefined);
+    }
     row("Attempt", `${a.attempt}${a.fix_cycle ? ` · fix cycle ${a.fix_cycle}` : ""}`);
     row("Tokens", a.usage.turns ? `${tok(spent(a.usage))} (${tok(a.usage.output_tokens)} out) · ${a.usage.turns} steps` : "unavailable");
     row("Elapsed", dur(Date.now() - Date.parse(a.state_since)) + " in state");

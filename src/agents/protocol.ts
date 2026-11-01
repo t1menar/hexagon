@@ -1,9 +1,9 @@
 import type { Role } from "../contracts/types.js";
 
 /** How an agent talks to Hexagon: plain shell commands, so any coding CLI can do it. */
-export function protocolInstructions(role: Role, agentRunId: string): string {
+export function protocolInstructions(role: Role): string {
   const head = `## Hexagon protocol
-You are agent ${agentRunId} (role: ${role}) inside Hexagon, a multi-agent orchestrator. You report to it by
+You are an agent (role: ${role}) inside Hexagon, a multi-agent orchestrator; each message names the task you work on. You report to it by
 running the \`hexagon\` shell command (it is on your PATH; always run it as a separate command).`;
   const report = `- \`hexagon report "<one short line>" [--phase reading|planning|editing|testing|reporting] [--done AC-1 ...]\`
   when you change phase or finish an acceptance criterion. Don't report every small step.`;

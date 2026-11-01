@@ -38,6 +38,7 @@ export class ProjectPaths {
   get daemonLog() { return path.join(this.hex, "daemon.log"); }
   get roles() { return path.join(this.hex, "roles"); }
   get skills() { return path.join(this.hex, "skills"); }
+  get sessions() { return path.join(this.hex, "sessions"); }
   get runs() { return path.join(this.hex, "runs"); }
   get worktrees() { return path.join(this.hex, "worktrees"); }
   get plans() { return path.join(this.hex, "plans"); }
@@ -84,7 +85,7 @@ export function scaffold(root: string): string[] {
   fs.mkdirSync(p.runs, { recursive: true });
   fs.mkdirSync(path.join(root, "specs"), { recursive: true });
   const gi = path.join(root, ".gitignore");
-  const ignore = [".hexagon/runs/", ".hexagon/worktrees/", ".hexagon/drafts/", ".hexagon/bin/", ".hexagon/plans/", ".hexagon/metrics.db", ".hexagon/hexagon.sock", ".hexagon/daemon.*", ".hexagon/shell_history"];
+  const ignore = [".hexagon/runs/", ".hexagon/worktrees/", ".hexagon/drafts/", ".hexagon/bin/", ".hexagon/plans/", ".hexagon/sessions/", ".hexagon/metrics.db", ".hexagon/hexagon.sock", ".hexagon/daemon.*", ".hexagon/shell_history"];
   const existing = fs.existsSync(gi) ? fs.readFileSync(gi, "utf8") : "";
   const missing = ignore.filter((l) => !existing.split("\n").includes(l));
   if (missing.length) {

@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import type {
-  AgentEvent, AgentState, AgentStatus, Effort, Role, RunStatus, StampedEvent, Task, Usage,
+  AgentEvent, AgentState, AgentStatus, Effort, Role, RunStatus, StampedEvent, Task, TokenCause, TokenCounts, Usage,
 } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
 import { appendJsonl, atomicWriteJson, nowIso, readJson } from "../util/fsx.js";
@@ -171,6 +171,14 @@ export class StatusStore extends EventEmitter {
         s.usage.cache_read_tokens += event.cache_read;
         s.usage.cost_usd = round(s.usage.cost_usd + event.cost_usd);
         if (event.step) s.usage.turns += 1;
+        if (event.cause && (event.input || event.output || event.cache_read)) {
+          const by = (s.usage_by_cause ??= {});
+          const c = (by[event.cause] ??= { input: 0, cache_read: 0, output: 0 });
+          c.input += event.input; c.cache_read += event.cache_read; c.output += event.output;
+        }
+        break;
+      case "session":
+        s.session = event.info;
         break;
       case "question":
         s.needs_input = event.question;
@@ -250,6 +258,18 @@ export class StatusStore extends EventEmitter {
     return t;
   }
 
+  /** Token ledger of the run by cause. */
+  ledger(): Partial<Record<TokenCause, TokenCounts>> {
+    const out: Partial<Record<TokenCause, TokenCounts>> = {};
+    for (const s of this.agents.values()) {
+      for (const [cause, c] of Object.entries(s.usage_by_cause ?? {}) as [TokenCause, TokenCounts][]) {
+        const t = (out[cause] ??= { input: 0, cache_read: 0, output: 0 });
+        t.input += c.input; t.cache_read += c.cache_read; t.output += c.output;
+      }
+    }
+    return out;
+  }
+
   runStatus(): RunStatus {
     const latest = new Map<string, AgentStatus>();
     for (const s of this.agents.values()) {
@@ -276,6 +296,7 @@ export class StatusStore extends EventEmitter {
       state: this.runState,
       ...this.meta,
       totals: this.totals(),
+      ledger: this.ledger(),
       counts,
       agents: agents.map((s) => ({
         task_id: s.task_id, agent_run_id: s.agent_run_id, role: s.role, agent: s.agent.id, state: s.state,

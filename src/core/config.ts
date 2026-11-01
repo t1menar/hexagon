@@ -24,12 +24,24 @@ export interface AgentConfig {
   step_ms?: number;
 }
 
+export interface ContextConfig {
+  /** auto: compact at the threshold · manual: only on /compact · off: never (overflow recovery still applies). */
+  mode: "auto" | "manual" | "off";
+  /** Fraction of the model's context window at which a session is compacted. */
+  compact_at: number;
+  /** Turns that must pass after a compaction before the next one. */
+  min_turns_between: number;
+  /** Window size used when the runtime reports none. */
+  assumed_window_tokens: number;
+}
+
 export interface HexagonConfig {
   run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null };
   roles: Record<Role, { agent: string; effort: Effort; model?: string; /** used only when recovery.allow_provider_failover is true */ fallback_agent?: string }>;
   agents: Record<string, AgentConfig>;
   recovery: RecoveryConfig;
   review: { mode: "agent" | "off" };
+  context: ContextConfig;
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
   sandbox: { allow_commands: string[]; command_timeout_s: number };
   ui: { open_with: "auto" | "tmux" | "iterm" | "terminal" | "print"; /** auto | full | reduced | off */ animation: string; startup_animation: boolean; inspector: boolean; /** faint ambient hexagons behind the network (full motion only) */ ambient: boolean };
@@ -38,14 +50,14 @@ export interface HexagonConfig {
 export const DEFAULT_CONFIG: HexagonConfig = {
   run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 0, max_identical_failures: 3, budget_tokens: null, base_branch: null },
   roles: {
-    init: { agent: "claude", effort: "medium" },
+    init: { agent: "claude", effort: "low" },
     planner: { agent: "claude", effort: "high" },
     implementer: { agent: "claude", effort: "medium" },
     tester: { agent: "claude", effort: "medium" },
     reviewer: { agent: "claude", effort: "high" },
     integrator: { agent: "claude", effort: "high" },
     resolver: { agent: "claude", effort: "high" },
-    lead: { agent: "claude", effort: "medium" },
+    lead: { agent: "claude", effort: "low" },
   },
   agents: {
     claude: { id: "claude", adapter: "claude-code", provider: "anthropic", command: ["claude"] },
@@ -53,6 +65,7 @@ export const DEFAULT_CONFIG: HexagonConfig = {
   },
   recovery: DEFAULT_RECOVERY,
   review: { mode: "agent" },
+  context: { mode: "auto", compact_at: 0.7, min_turns_between: 3, assumed_window_tokens: 200_000 },
   messaging: { max_outbound_per_run: 10, max_blocking_questions: 2 },
   sandbox: {
     allow_commands: [
@@ -100,6 +113,11 @@ export function loadConfig(file: string): HexagonConfig {
   for (const [role, r] of Object.entries(cfg.roles)) {
     if (!cfg.agents[r.agent]) throw new Error(`[roles.${role}] uses agent "${r.agent}", which is not defined under [agents] (defined: ${Object.keys(cfg.agents).join(", ")})`);
   }
+  const cx = cfg.context;
+  if (!["auto", "manual", "off"].includes(cx.mode)) throw new Error(`[context].mode must be "auto", "manual" or "off" (got "${cx.mode}")`);
+  if (!(cx.compact_at > 0 && cx.compact_at <= 1)) throw new Error(`[context].compact_at must be between 0 and 1 (got ${cx.compact_at})`);
+  if (!(cx.assumed_window_tokens >= 1000)) throw new Error(`[context].assumed_window_tokens must be at least 1000 (got ${cx.assumed_window_tokens})`);
+  cx.min_turns_between = Math.max(0, Math.floor(cx.min_turns_between));
   // fix_loops was the only knob before max_fix_cycles existed: honour it when the new one is not set.
   const rawRun = (raw.run ?? {}) as Record<string, unknown>;
   if ("fix_loops" in rawRun && !("max_fix_cycles" in rawRun)) cfg.run.max_fix_cycles = cfg.run.fix_loops;

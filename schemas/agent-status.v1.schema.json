@@ -132,6 +132,36 @@
       }
     },
 
+    "usage_by_cause": {
+      "type": "object",
+      "propertyNames": { "enum": ["prompt", "fix_loop", "review", "compaction"] },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["input", "cache_read", "output"],
+        "properties": {
+          "input": { "type": "integer", "minimum": 0 },
+          "cache_read": { "type": "integer", "minimum": 0 },
+          "output": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+
+    "session": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["agent", "mode", "turns", "ctx_tokens", "ctx_pct", "compactions"],
+      "properties": {
+        "agent": { "type": "string" },
+        "mode": { "enum": ["new", "resumed"] },
+        "reason": { "type": ["string", "null"] },
+        "turns": { "type": "integer", "minimum": 0 },
+        "ctx_tokens": { "type": "integer", "minimum": 0 },
+        "ctx_pct": { "type": "number", "minimum": 0, "maximum": 1 },
+        "compactions": { "type": "integer", "minimum": 0 }
+      }
+    },
+
     "usage": {
       "type": "object",
       "additionalProperties": false,
