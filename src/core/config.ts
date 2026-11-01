@@ -55,7 +55,7 @@ export interface RoleConfig {
 }
 
 export interface HexagonConfig {
-  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null };
+  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null; /** run the task's verify commands once before work starts, to know what was already red */ baseline: boolean };
   roles: Record<Role, RoleConfig>;
   agents: Record<string, AgentConfig>;
   recovery: RecoveryConfig;
@@ -68,7 +68,7 @@ export interface HexagonConfig {
 }
 
 export const DEFAULT_CONFIG: HexagonConfig = {
-  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 0, max_identical_failures: 3, budget_tokens: null, base_branch: null },
+  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 0, max_identical_failures: 3, budget_tokens: null, base_branch: null, baseline: true },
   roles: Object.fromEntries(BUILTIN_ROLES.map((r) => [r.id, { agent: "claude", effort: r.effort }])),
   agents: {
     claude: { id: "claude", adapter: "claude-code", provider: "anthropic", command: ["claude"] },

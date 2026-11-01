@@ -10,6 +10,7 @@ import { classifyProviderError, recoveryFor } from "../agents/contracts/errors.j
 import { planRetry, waitTooLong, type WaitStore } from "./recovery.js";
 import { atomicWriteJson, matchesAny, nowIso, truncateMiddle } from "../util/fsx.js";
 import { runShell } from "../util/shell.js";
+import { onPath } from "./toolchains.js";
 import { roleConfig, type HexagonConfig } from "./config.js";
 import * as g from "./git.js";
 import type { ProjectPaths, RunPaths } from "./project.js";
@@ -49,6 +50,23 @@ export interface RunContext {
   gate?(task: Task): { ok: boolean; problems: string[]; changed: string[] };
   /** Environment for agent processes: lets them run `hexagon report|ask|…`. */
   agentEnv(agentId: string): Record<string, string>;
+  /** Ask the user, before the work starts, to allow commands the task will need. Resolves with the ones they denied. */
+  preapprove?(taskId: string, commands: string[], reason: string): Promise<string[]>;
+}
+
+/** What was settled before the agent started: kept next to the status so a later question ("why did it start red?") has an answer. */
+export interface Preparation {
+  task: string;
+  base_commit: string;
+  requirements: string[];
+  upstream: string[];
+  scope: string[];
+  /** Short plan, derived from the acceptance criteria. */
+  steps: string[];
+  tools: { command: string; found: boolean }[];
+  denied_commands: string[];
+  baseline: { cmd: string; code: number }[];
+  warnings: string[];
 }
 
 interface Gate { promise: Promise<void>; resolve: () => void }
@@ -187,11 +205,71 @@ export class AgentRun {
     }
     const unregister = this.rc.registry.register(this.agentRunId, this.api());
     try {
+      await this.prepare();
+      if (this.cancelled) return this.final("cancelled", "cancelled by user");
       return await this.pipeline();
     } finally {
       unregister();
       this.releaseLease();
     }
+  }
+
+  /** Baseline results of the preparation, told to the agent once with its first task card. */
+  private baselineNote = "";
+
+  /**
+   * Preparing: everything that can be settled before the agent spends tokens. The worktree is on the integration
+   * branch head (dependencies are merged), the tools its checks need exist, commands it will need are approved now
+   * rather than mid-task, and a baseline run says what was already failing. Nothing here blocks the task except the
+   * user cancelling; problems are recorded and shown, and the agent is told.
+   */
+  private async prepare(): Promise<void> {
+    const t = this.task;
+    const warnings: string[] = [];
+    const step = (text: string) => this.st("preparing", text);
+
+    step("checking tools");
+    const words = [...new Set(t.verify.map((v) => v.trim().split(/\s+/)[0] ?? "").filter((w) => w && !/^[.\/~]/.test(w) && !/[=$]/.test(w)))];
+    const tools = words.map((command) => ({ command, found: onPath(command) }));
+    for (const x of tools.filter((x) => !x.found)) warnings.push(`\`${x.command}\` is not installed (needed by: ${t.verify.filter((v) => v.trim().startsWith(x.command)).join("; ")})`);
+
+    let denied: string[] = [];
+    if (this.rc.preapprove && t.verify.length) {
+      step("approvals");
+      denied = await this.rc.preapprove(t.id, t.verify, `${t.id} verifies with it`);
+      for (const d of denied) warnings.push(`you did not allow \`${d}\``);
+    }
+    if (this.cancelled) return;
+
+    const baseline: Preparation["baseline"] = [];
+    if (this.rc.cfg.run.baseline && t.verify.length) {
+      this.abort = new AbortController();
+      for (const cmd of t.verify) {
+        const word = cmd.trim().split(/\s+/)[0] ?? "";
+        if (tools.some((x) => x.command === word && !x.found) || denied.includes(cmd)) continue;
+        step(`baseline: ${cmd}`);
+        const r = await runShell(cmd, this.worktree, this.rc.cfg.sandbox.command_timeout_s, this.abort.signal);
+        if (this.cancelled) return;
+        baseline.push({ cmd, code: r.code });
+      }
+    }
+
+    const upstream = this.upstream();
+    const prep: Preparation = {
+      task: t.id, base_commit: this.baseCommit, requirements: t.requirements, upstream, scope: t.files.write,
+      steps: (t.acceptance.length ? t.acceptance : t.definition_of_done).map((a, i) => `${i + 1}. ${a}`),
+      tools, denied_commands: denied, baseline, warnings,
+    };
+    atomicWriteJson(path.join(this.rc.run.agentDir(this.agentRunId), "prepare.json"), prep);
+    const red = baseline.filter((b) => b.code !== 0);
+    this.baselineNote = baseline.length
+      ? `<baseline>\nBefore your change, Hexagon ran the verification commands on the fresh worktree:\n${baseline.map((b) => `- \`${b.cmd}\`: ${b.code === 0 ? "passes" : `exit ${b.code}`}`).join("\n")}${warnings.length ? `\n${warnings.map((w) => `Note: ${w}.`).join("\n")}` : ""}\n</baseline>`
+      : warnings.length ? `<baseline>\n${warnings.map((w) => `Note: ${w}.`).join("\n")}\n</baseline>` : "";
+    this.ev({
+      type: "progress",
+      text: `prepared: base ${this.baseCommit.slice(0, 7)}, ${upstream.length} upstream, ${red.length ? `${red.length} check(s) already failing` : baseline.length ? "baseline green" : "no baseline"}${warnings.length ? `, ${warnings.length} warning(s)` : ""}`,
+    });
+    for (const w of warnings) this.ev({ type: "progress", text: `prepare: ${w}` });
   }
 
   /** After a daemon restart: same worktree, branch and CLI session; wait out the remaining time, then continue. */
@@ -468,7 +546,7 @@ export class AgentRun {
     if (!this.started) {
       // First turn of this task. In a resumed session the card goes as the next message.
       const carried = fresh && this.compactSummary ? `Summary of your earlier work in this project (written by you before the session was compacted):\n${this.compactSummary}` : "";
-      const text = [card, carried, fu].filter(Boolean).join("\n\n");
+      const text = [card, this.baselineNote, carried, fu].filter(Boolean).join("\n\n");
       return { prompt: text, followUp: res.resume ? text : undefined, freshTask: true };
     }
     // Fresh session in the middle of a task (compaction, reset, overflow): card + pinned context.
