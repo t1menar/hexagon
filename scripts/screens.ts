@@ -27,7 +27,7 @@ function snapshot(states: Record<string, string>, empty = false) {
     run: {
       schema: "hexagon.run-status/v1", run_id: "R1", updated_at: new Date().toISOString(), state: "running", plan_path: "", integration_branch: "hexagon/R1/integration", base_branch: "main", started_at: new Date(Date.now() - 130_000).toISOString(), budget_tokens: null,
       totals: { input_tokens: 164000, output_tokens: 24800, cache_read_tokens: 120000, cache_write_tokens: 0, cost_usd: 0, turns: 36, wall_ms: 130000 },
-      counts: {}, agents: agents.map((a) => ({ task_id: a.task_id, agent_run_id: a.agent_run_id, role: a.role, agent: a.agent.id, state: a.state, activity: a.state === "running" ? "go test ./..." : null, needs_input: false, progress: a.state === "done" ? 1 : a.state === "running" ? 0.55 : 0, cost_usd: 0, tokens: 47000 })), attention: [],
+      counts: {}, agents: agents.map((a) => ({ task_id: a.task_id, agent_run_id: a.agent_run_id, role: a.role, agent: a.agent.id, state: a.state, activity: a.state === "working" ? "go test ./..." : null, needs_input: false, progress: a.state === "done" ? 1 : a.state === "running" ? 0.55 : 0, cost_usd: 0, tokens: 47000 })), attention: [],
     },
   };
 }
@@ -109,7 +109,7 @@ async function shot(name: string, title: string, cols: number, rows: number, sna
   console.log(`docs/img/${name}.svg`);
 }
 const push = (c: Fake, event: string, data: unknown) => c.emit("push", { event, data });
-const live = { "T-1": "done", "T-2": "running", "T-3": "reviewing" };
+const live = { "T-1": "done", "T-2": "working", "T-3": "reviewing" };
 
 await shot("dashboard", "Hexagon dashboard: navigator, agent network, inspector, activity", 170, 42, snapshot(live));
 await shot("dashboard-compact", "Hexagon on a small terminal", 90, 26, snapshot(live));
