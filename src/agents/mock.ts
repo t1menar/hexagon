@@ -20,6 +20,7 @@ import type { AdapterOutcome, AgentAdapter, AgentRunContext, Injected } from "./
  * - Init: writes HEXAGON.md.
  */
 export class MockAdapter extends AdapterBase implements AgentAdapter {
+  static reviews = new Map<string, number>();
   readonly adapterId = "mock";
   readonly provider = "mock";
   readonly displayName = "Mock agent";
@@ -86,6 +87,16 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
       if (ctx.role === "reviewer") {
         api.report({ phase: "reading", activity: "Reading the diff" });
         await step("Checking acceptance evidence");
+        // `@reject: N` (or `always`) in the task description: request changes N times, with a different finding each
+        // time unless `@reject-same` is also present (to exercise no-progress detection).
+        const rj = /@reject:\s*(\d+|always)/.exec(ctx.task?.description ?? "");
+        const n = (MockAdapter.reviews.get(ctx.task?.id ?? "") ?? 0) + 1;
+        MockAdapter.reviews.set(ctx.task?.id ?? "", n);
+        if (rj && (rj[1] === "always" || n <= Number(rj[1]))) {
+          const same = /@reject-same/.test(ctx.task?.description ?? "");
+          api.review({ verdict: "request_changes", summary: same ? "Mock review: not good enough." : `Mock review #${n}: please improve.`, findings: [{ severity: "high", issue: same ? "still wrong" : `issue ${n}`, file: "src/a.txt" }] });
+          return { kind: "finished" };
+        }
         api.review({ verdict: "approve", summary: "Mock review: scope and evidence look fine.", findings: [] });
         return { kind: "finished" };
       }
