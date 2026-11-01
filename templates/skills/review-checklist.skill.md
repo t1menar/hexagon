@@ -1,11 +1,15 @@
 ---
 name: review-checklist
-version: 1
+version: 2
 applies_to: [reviewer]
 summary: What every review checks.
 ---
-- Each acceptance criterion: is there a test or command output that demonstrates it?
-- Scope: are all changed files inside the task's write scope?
-- Errors: are failure paths handled the way the spec says (status codes, messages)?
-- Security: input validation, secrets, injection, auth checks where relevant.
-- Tests: do they assert behavior, and would they fail if the AC were broken?
+## In order
+1. Each acceptance criterion has evidence: a test that exercises it, or command output you saw.
+2. The diff stays inside the task's write scope.
+3. Behavior on the error path and on empty or boundary input.
+4. Tests would fail if the behavior broke.
+5. No leftover debug code, secrets, or unrelated edits.
+
+## Reporting
+Report findings in severity order. One approval or one change request per review, never both.

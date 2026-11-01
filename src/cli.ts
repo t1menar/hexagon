@@ -38,6 +38,7 @@ ${c.bold("Watch & steer")}
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
   hexagon compact [agent|T-n]      compact an agent's session at its next safe point  ·  hexagon stats [--json]  tokens by cause
   hexagon bus send|read|subscribe  agents: structured messages between agents (handoff, decision, finding, question …)
+  hexagon prompts lint [--json]    check the shipped role prompts and skills (frontmatter, vendor names, size, contradictions)
   hexagon commands                 the typed command API (graph, agents, runs) the assistant uses  ·  hexagon do <command> [--param v]
   hexagon proposals | apply [P-n] | reject [P-n]   changes the assistant proposed, waiting for you
   hexagon approve-spec [file]      approve the spec under review (or a spec file): nothing is planned or built before that
@@ -95,6 +96,14 @@ async function main(argv: string[]): Promise<void> {
   if (cmd === "--version" || cmd === "-v") return void console.log(VERSION);
   if (cmd === "--help" || cmd === "-h" || cmd === "help") return void console.log(USAGE);
   if (cmd && AGENT_OPS.has(cmd)) return agentOp(cmd, rest);
+  if (cmd === "prompts") {
+    if (rest[0] !== "lint") { console.error("usage: hexagon prompts lint [--json]"); process.exit(2); }
+    const { lintPrompts, formatLint } = await import("./core/promptlint.js");
+    const found = lintPrompts();
+    console.log(bool(rest, "--json") ? JSON.stringify(found, null, 2) : formatLint(found));
+    process.exitCode = found.some((f) => f.level === "error") ? 1 : 0;
+    return;
+  }
   if (cmd === "commands") return void console.log(commandDocs());
   if (cmd === "do") {
     const name = rest[0];

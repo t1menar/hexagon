@@ -1,15 +1,14 @@
 ---
 name: tdd
-version: 1
+version: 2
 applies_to: [developer, qa]
-summary: Write failing tests first, then the minimal code to pass.
+summary: Write the failing test first, then the smallest change that passes.
 ---
 ## Workflow
-1. For each acceptance criterion in the task, write a test named after the AC id.
-2. Run the tests and confirm they fail for the expected reason.
-3. Implement the smallest change that makes them pass.
-4. Re-run the full suite for the touched package before reporting.
+1. For each acceptance criterion, write a test named after its id.
+2. Run it and confirm it fails for the expected reason, not a typo.
+3. Make the smallest change that passes.
+4. Run the full suite of the touched package before reporting.
 
-## Rules
-- Never weaken or delete an existing test to make the suite pass. If an existing test
-  conflicts with the spec, report it under `spec_issues`.
+## Escape hatch
+If the code cannot be tested without a larger refactor than the task allows, test through the nearest public entry point and record the gap with `--issue`.
