@@ -1,5 +1,6 @@
 import type { AgentState } from "../contracts/types.js";
 import { Canvas, clip, S, st } from "./canvas.js";
+import { cellAspect, drawHexagon, hexMetrics, placeLabels, type HexLabel, type HexMetrics } from "./hex.js";
 
 export interface DagNode {
   id: string;
@@ -9,6 +10,14 @@ export interface DagNode {
   state: AgentState;
   /** 0..1 through the task pipeline, or null when not started. */
   progress?: number | null;
+  /** Vendor and CLI of the agent (from its status); undefined until an agent exists. */
+  provider?: string | null;
+  cli?: string | null;
+  /** Model the running process reported. null/undefined = not reported: shown as "CLI-managed", never guessed. */
+  runtimeModel?: string | null;
+  /** Provider-limit wait summary, e.g. "resumes 15:04 (est.)". */
+  quota?: string | null;
+  fixCycle?: number | null;
 }
 
 const PHASE_AT: Record<string, number> = { reading: 0.1, planning: 0.2, editing: 0.45, testing: 0.65, reporting: 0.75 };
@@ -157,6 +166,10 @@ export interface DagRenderOptions {
   maxH: number;
   frame: number;
   selected?: string | null;
+  /** Cell height ÷ width. Default from HEXAGON_CELL_ASPECT or 2. */
+  aspect?: number;
+  /** Animations off: static glyphs, no orbiting particles. */
+  still?: boolean;
 }
 
 /** Render the task DAG as a molecule: hexagonal agents joined by bonds. */
@@ -165,11 +178,19 @@ export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
   const { layers, edges } = layout(nodes);
   const nL = layers.length;
   const G = 5;
-  const boxW = Math.max(16, Math.min(30, Math.floor((o.maxW - (nL - 1) * G) / nL)));
+  const boxW0 = Math.max(16, Math.min(30, Math.floor((o.maxW - (nL - 1) * G) / nL)));
   const rows = Math.max(...layers.map((l) => l.length));
-  const normal = rows * 5 - 1 <= o.maxH;
-  const boxH = normal ? 4 : 3;
-  const slot = normal ? 5 : 3;
+  // Regular hexagons, as large as the terminal allows; the old compact node is the last resort.
+  const aspect = o.aspect ?? cellAspect();
+  let hex: HexMetrics | null = null;
+  for (const r of [5, 4, 3, 2]) {
+    const m = hexMetrics(r, aspect);
+    if (nL * m.w + (nL - 1) * G <= o.maxW && rows * (m.h + 1) - 1 <= o.maxH) { hex = m; break; }
+  }
+  const normal = hex ? false : rows * 5 - 1 <= o.maxH;
+  const boxW = hex ? hex.w : boxW0;
+  const boxH = hex ? hex.h : normal ? 4 : 3;
+  const slot = hex ? hex.h + 1 : normal ? 5 : 3;
   const width = Math.min(o.maxW, nL * boxW + (nL - 1) * G);
   const height = Math.min(o.maxH, rows * slot - (slot - boxH));
   const c = new Canvas(Math.max(1, width), Math.max(1, height));
@@ -248,7 +269,7 @@ export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
   }
   for (const a of arrows) c.set(a.x, a.y, "▸", a.style);
   // Electrons flow along bonds into working agents.
-  for (const f of flows) {
+  for (const f of o.still ? [] : flows) {
     const n = f.cells.length;
     if (n < 3) continue;
     for (let k = Math.floor(o.frame / 2) % 6; k < n - 1; k += 6) c.set(f.cells[k]![0], f.cells[k]![1], "•", st(f.style, S.bold));
@@ -264,10 +285,31 @@ export function renderDag(nodes: DagNode[], o: DagRenderOptions): Canvas {
       const color = STATE_COLOR[node.state];
       const live = ACTIVE.has(node.state) || node.state === "waiting_input";
       // Working agents "resonate": the outline brightens and dims.
-      const border = sel ? st(S.white, S.bold) : live && Math.floor(o.frame / 6) % 2 ? st(color, S.bold) : color;
+      const border = sel ? st(S.white, S.bold) : live && !o.still && Math.floor(o.frame / 6) % 2 ? st(color, S.bold) : color;
+      const g = o.still && ACTIVE.has(node.state) ? STATE_GLYPH[node.state] : glyph(node.state, o.frame);
+      if (hex) {
+        const ring = drawHexagon(c, p.x, p.y, hex, border, node.state === "queued");
+        const sty = (...x: string[]) => st(...x, sel ? S.bgSel : "");
+        const labels: HexLabel[] = [
+          { key: "id", text: node.id, style: sty(S.bold) },
+          { key: "role", text: node.role, style: sty(S.cyan) },
+          { key: "title", text: node.title, style: sty(S.white) },
+          { key: "provider", text: [node.provider, node.cli].filter(Boolean).join(" · ") || "no agent yet", style: sty(S.gray) },
+          { key: "model", text: node.provider || node.cli ? (node.runtimeModel ? node.runtimeModel : "CLI-managed") : "", style: sty(S.gray) },
+          { key: "state", text: `${g} ${node.quota ? node.quota : node.state.replace(/_/g, " ")}${node.fixCycle ? ` ·fix ${node.fixCycle}` : ""}`, style: sty(color, S.bold) },
+          { key: "bar", text: node.progress != null ? ((b) => `${b.fill}${b.rest}${b.label}`)(bar(node.progress, Math.max(6, hex.top))) : "", style: sty(color) },
+        ].filter((l) => l.text);
+        placeLabels(c, p.x, p.y, hex, labels, ["id", "state", "role", "bar", "provider", "model", "title"]);
+        if (!o.still && (ACTIVE.has(node.state) || node.state === "waiting_quota")) {
+          const at = Math.floor(o.frame / (node.state === "waiting_quota" ? 3 : 1)) % ring.length;
+          const [tx, ty] = ring[(at + ring.length - 1) % ring.length]!;
+          c.set(tx, ty, "•", st(color, S.dim));
+          c.set(ring[at]![0], ring[at]![1], node.state === "waiting_quota" ? "◌" : "●", st(color, S.bold));
+        }
+        continue;
+      }
       c.fill(p.x + 1, p.y + 1, boxW - 2, boxH - 2, sel ? S.bgSel : "");
       hexagon(c, p.x, p.y, boxW, boxH, border, node.state === "queued");
-      const g = glyph(node.state, o.frame);
       const inner = boxW - 4;
       const bg = sel ? S.bgSel : "";
       if (node.progress != null && boxW >= 12) {
