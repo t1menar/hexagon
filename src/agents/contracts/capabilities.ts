@@ -12,6 +12,10 @@ export interface AgentCapabilities {
   supportsStructuredOutput: boolean;
   /** Tool/command permissions are enforced by the CLI itself (not only by Hexagon's worktree isolation). */
   supportsNativePermissions: boolean;
+  /** The CLI has its own command to compact a session in place. Verified per CLI; false when unsure. */
+  supportsNativeCompaction: boolean;
+  /** A session can be resumed from a different working directory than the one that created it (verified per CLI). */
+  resumeAcrossCwd: boolean;
 }
 
 export const NO_CAPABILITIES: AgentCapabilities = {
@@ -24,6 +28,8 @@ export const NO_CAPABILITIES: AgentCapabilities = {
   supportsUsageMetrics: false,
   supportsStructuredOutput: false,
   supportsNativePermissions: false,
+  supportsNativeCompaction: false,
+  resumeAcrossCwd: false,
 };
 
 export function capabilities(over: Partial<AgentCapabilities>): AgentCapabilities {

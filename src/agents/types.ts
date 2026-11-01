@@ -51,6 +51,8 @@ export interface AgentRunContext {
   prompt: string;
   /** User message when resuming an existing session (fix loop, hand-back, resume after pause). */
   followUp?: string;
+  /** `followUp` is the card of a task new to this (resumed) session, not an instruction about earlier work. */
+  freshTask?: boolean;
   /** Stable conversation id; `resume` continues it. */
   sessionId: string;
   resume: boolean;

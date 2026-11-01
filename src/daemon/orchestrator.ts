@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { createAdapter } from "../agents/registry.js";
-import { contextFile, loadSkills, projectContext, systemPrompt } from "../agents/prompts.js";
+import { contextFile, identityHash, loadSkills, projectContext, systemPrompt } from "../agents/prompts.js";
 import type { AgentAdapter, Reply } from "../agents/types.js";
 import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
@@ -23,6 +23,7 @@ import { ApiRegistry, type ApiOp } from "../core/registry.js";
 import { MessageRouter } from "../core/router.js";
 import { formatTrace, trace, type TaskEvidence } from "../core/trace.js";
 import { WaitStore } from "../core/recovery.js";
+import { IdentityPool, SessionRegistry } from "../core/sessions.js";
 import { Scheduler, type PriorTask } from "../core/scheduler.js";
 import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
 import { SoloSession, type SessionStatus } from "../core/solo.js";
@@ -136,6 +137,10 @@ export class Orchestrator extends EventEmitter {
   private adapters = new Map<string, AgentAdapter>();
   private sessions = new Map<string, SoloSession>();
   private nextSoloQuestion = 1;
+  private lastChatState = "";
+  /** One session per agent identity, for the whole project. */
+  readonly agentSessions: SessionRegistry;
+  readonly pool: IdentityPool;
   private permissions = new Map<string, PermissionRequest>();
   private nextPermission = 1;
 
@@ -143,6 +148,8 @@ export class Orchestrator extends EventEmitter {
     super();
     this.paths = new ProjectPaths(root);
     this.cfg = loadConfig(this.paths.config);
+    this.agentSessions = new SessionRegistry(this.paths.sessions);
+    this.pool = new IdentityPool(this.agentSessions);
     applyToolchainEnv();
     const d = readJson<Draft>(path.join(this.paths.hex, "drafts", "current.json"));
     if (d && fs.existsSync(d.plan_path)) this.draft = d;
@@ -351,7 +358,9 @@ export class Orchestrator extends EventEmitter {
     if (prev?.alive) throw new Error(`the ${id} agent is already running`);
     const adapter = this.adapterFor(role);
     const s = new SoloSession(id, role, adapter, {
-      cwd: this.root, effort: this.cfg.roles[role].effort, ...opts, nextQuestionId: () => `Q-S${this.nextSoloQuestion++}`,
+      cwd: this.root, effort: this.cfg.roles[role].effort, ...opts,
+      sessions: this.agentSessions, promptHash: identityHash(this.paths, role, loadSkills(this.paths)), windowTokens: this.cfg.context.assumed_window_tokens,
+      nextQuestionId: () => `Q-S${this.nextSoloQuestion++}`,
     });
     s.on("status", (st: SessionStatus) => this.push({ event: "session", data: st }));
     s.on("permission", (command: string, tool: string) => this.requestPermission(id, "session", command, tool));
@@ -377,7 +386,7 @@ export class Orchestrator extends EventEmitter {
       return { id: "init", skipped: true };
     }
     const s = this.solo("init", "init", {
-      system: systemPrompt(this.paths, "init", "init", loadSkills(this.paths), [], projectContext(this.root)),
+      system: systemPrompt(this.paths, "init", loadSkills(this.paths), projectContext(this.root)),
       env: this.agentEnv("init"),
       allowCommands: [...new Set([...PLANNER_COMMANDS, ...this.cfg.sandbox.allow_commands])],
       validate: () => (contextFile(this.root) ? { ok: true, message: "ok" } : { ok: false, message: "HEXAGON.md does not exist yet. Write it in the repository root, then run `hexagon done` again." }),
@@ -405,7 +414,7 @@ export class Orchestrator extends EventEmitter {
     const out = path.join(this.paths.hex, "drafts", id);
     fs.mkdirSync(out, { recursive: true });
     const s = this.solo("planner", "planner", {
-      system: systemPrompt(this.paths, "planner", "planner", loadSkills(this.paths), [], projectContext(this.root)),
+      system: systemPrompt(this.paths, "planner", loadSkills(this.paths), projectContext(this.root)),
       env: this.agentEnv("planner", { HEXAGON_OUT: out }),
       allowCommands: [...new Set([...PLANNER_COMMANDS, ...this.cfg.sandbox.allow_commands])],
       validate: () => draftCheck(this.root, out).reply,
@@ -584,7 +593,7 @@ export class Orchestrator extends EventEmitter {
       const cur = prior.get(st.task_id);
       if (!cur || st.attempt > cur.attempt) {
         const w = waits.get(st.agent_run_id);
-        prior.set(st.task_id, { state: st.state, attempt: st.attempt, sessionId: st.attach?.native_session_id ?? null, nextRetryAt: w?.next_retry_at ?? st.recovery?.next_retry_at ?? null });
+        prior.set(st.task_id, { state: st.state, attempt: st.attempt, identity: st.session?.agent ?? null, sessionId: st.attach?.native_session_id ?? null, nextRetryAt: w?.next_retry_at ?? st.recovery?.next_retry_at ?? null });
       }
     }
     let scheduler!: Scheduler;
@@ -594,6 +603,7 @@ export class Orchestrator extends EventEmitter {
       skills: loadSkills(this.paths), context: projectContext(this.root), integration,
       adapterFor: (role, override) => this.adapterFor(role, override),
       waits,
+      sessions: this.agentSessions, pool: this.pool,
       agentEnv: (id) => this.agentEnv(id),
       tasks: plan.tasks,
       returnTask: (from, to, issue) => scheduler.returnTask(from, to, issue),
@@ -1008,19 +1018,23 @@ export class Orchestrator extends EventEmitter {
    */
   chat(text: string): void {
     if (!text.trim()) return;
-    const context = `<hexagon_state>\n${this.stateSummary()}\n</hexagon_state>`;
+    // The state block is sent only when it differs from what the session was last told.
+    const summary = this.stateSummary();
+    const changed = summary !== this.lastChatState;
+    this.lastChatState = summary;
+    const context = changed ? `<hexagon_state>\n${summary}\n</hexagon_state>` : "";
     const cur = this.sessions.get("claude");
     if (cur?.alive) return cur.say(text, context);
     this.reloadConfig();
     const s = cur ?? this.solo("claude", "lead", {
-      system: systemPrompt(this.paths, "lead", "claude", loadSkills(this.paths), [], projectContext(this.root)),
+      system: systemPrompt(this.paths, "lead", loadSkills(this.paths), projectContext(this.root)),
       env: this.agentEnv("claude"),
       allowCommands: ["hexagon", ...new Set([...this.cfg.sandbox.allow_commands, ...PLANNER_COMMANDS, "git diff", "git show", "git status", "git log", "git add", "git commit"])],
       conversational: true,
       readOnly: false,
     });
     s.logUser(text);
-    const first = `${context}\n<user_message>\n${text}\n</user_message>`;
+    const first = `${context ? `${context}\n` : ""}<user_message>\n${text}\n</user_message>`;
     void s.run(first, first).then(() => {
       if (s.status.state === "failed") this.notice("error", `chat session ended: ${s.status.error ?? "unknown error"}`);
     });
@@ -1031,14 +1045,40 @@ export class Orchestrator extends EventEmitter {
     const lines: string[] = [];
     const r = this.status();
     if (r) {
-      const t = r.totals;
-      lines.push(`Run ${r.run_id}: ${r.state}; ${r.counts.done ?? 0}/${r.agents.length} done; ${t.input_tokens + t.cache_read_tokens + t.output_tokens} tokens used.`);
-      for (const a of r.agents) lines.push(`- ${a.task_id} (${a.role}) ${a.state}${a.activity ? `: ${a.activity}` : ""}${a.needs_input ? " [waiting for the user's answer]" : ""}`);
+      lines.push(`Run ${r.run_id}: ${r.state}; ${r.counts.done ?? 0}/${r.agents.length} done.`);
+      for (const a of r.agents) lines.push(`- ${a.task_id} (${a.role}) ${a.state}${a.needs_input ? " [waiting for the user's answer]" : ""}`);
     } else lines.push("No run yet.");
     if (this.draft) lines.push(`A draft plan "${this.draft.goal}" (${this.draft.plan.tasks.length} tasks) is waiting for the user's approval.`);
     const p = this.sessions.get("planner");
     if (p?.alive) lines.push(`The planner is working on a plan${p.status.question ? ` and asks: ${p.status.question.prompt}` : ""}.`);
     return lines.join("\n");
+  }
+
+  // ───────────── sessions ─────────────
+
+  /** `/compact [agent]`: compact at the next safe point. `target`: an agent identity, a task id, or nothing (all). */
+  compactSessions(target?: string): string[] {
+    let ids: string[];
+    if (!target) ids = this.agentSessions.all().map((r) => r.agentId);
+    else if (this.agentSessions.get(target)) ids = [target];
+    else {
+      const id = this.current?.store.byTask(target.toUpperCase())?.session?.agent;
+      ids = id ? [id] : [];
+    }
+    if (!ids.length) throw new Error(target ? `no session for "${target}" (agents: ${this.agentSessions.all().map((r) => r.agentId).join(", ") || "none yet"})` : "no sessions yet");
+    for (const id of ids) this.agentSessions.requestCompact(id);
+    return ids;
+  }
+
+  /** Token ledger: this run by cause, and every agent identity over its whole life. */
+  stats() {
+    return {
+      run: this.current?.store.ledger() ?? null,
+      agents: this.agentSessions.all().map((r) => ({
+        agent: r.agentId, role: r.role, turns: r.turns, ctx_tokens: r.contextTokens, ctx_pct: Math.min(1, r.contextTokens / this.cfg.context.assumed_window_tokens),
+        compactions: r.compactions, created_at: r.createdAt, ledger: r.ledger,
+      })),
+    };
   }
 
   // ───────────── controls ─────────────

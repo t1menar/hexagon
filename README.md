@@ -153,6 +153,7 @@ Hexagon has two surfaces: the **dashboard** (slash commands, type them in the in
 | `/answer <Q-n> <text>` | Answer an agent's question (an option number works). |
 | `/pause [T-n]`, `/resume [T-n]`, `/cancel [T-n]` | Control one agent, or the whole run when no task is given. |
 | `/retry [T-n] [--agent X] [--effort E]` | Start a new attempt, optionally with another agent or effort (`low`, `medium`, `high`). |
+| `/compact [agent\|T-n]` | Compact an agent's session at its next safe point (between turns). |
 | `/takeover [T-n]` | Work in the agent's own session yourself (`Ctrl-T`). Exit to hand it back. |
 | `/open [T-n]` | Open the agent in a new terminal window (`Ctrl-O`). |
 | `/diff [T-n]` | The agent's changes (`Ctrl-D`). |
@@ -192,6 +193,8 @@ Hexagon has two surfaces: the **dashboard** (slash commands, type them in the in
 | `hexagon answer <Q-n\|P-n> <text>` | Answer a question (`Q-1 2` picks option 2) or an approval (`P-1 1`). |
 | `hexagon pause\|resume\|cancel <T-n>` | Control one agent. |
 | `hexagon retry <T-n> [--agent X] [--effort E]` | New attempt. |
+| `hexagon compact [agent\|T-n]` | Same as `/compact`. |
+| `hexagon stats [--json]` | Tokens by cause (prompt, fix loop, review, compaction) for the run and for each agent session. |
 | `hexagon takeover <T-n>` | Continue the agent's own session yourself (`claude --resume`). |
 | `hexagon open <T-n>` | Open the agent in a new terminal window. |
 | `hexagon diff <T-n>`, `hexagon logs <T-n>` | The agent's changes and its event log. |
@@ -345,6 +348,7 @@ Inside the dashboard the inspector (**WHERE THE WORK IS** / **WORKSPACE**) and `
 | `[agents.<id>]` | `adapter` (`claude-code`, `codex`, `grok`, `exec`, `mock`), `provider`, `command`, `args`, `model` |
 | `[recovery]` | provider-limit handling: `auto_resume`, backoff, `allow_provider_failover`, … ([docs/RECOVERY.md](docs/RECOVERY.md)) |
 | `[review]` | `mode = "agent" \| "off"` |
+| `[context]` | `mode = "auto" \| "manual" \| "off"`, `compact_at = 0.70`, `min_turns_between = 3`, `assumed_window_tokens = 200000`. One session per agent identity is reused for the whole project and compacted between turns; see [docs/TOKENS.md](docs/TOKENS.md). |
 | `[messaging]` | limits for agent-to-user messages |
 | `[sandbox]` | `allow_commands`, `command_timeout_s` |
 | `[ui]` | `open_with`, `animation`, `startup_animation`, `inspector`, `ambient` |

@@ -16,7 +16,7 @@ budget_tokens = 0       # pause the run after this many tokens (input + cached +
 # Change from the dashboard with /model <role> <model|default>, or `hexagon agents configure`.
 [roles.init]
 agent = "claude"
-effort = "medium"
+effort = "low"
 [roles.planner]
 agent = "claude"
 effort = "high"
@@ -76,6 +76,15 @@ backoff_multiplier = 2
 backoff_jitter = true
 max_wait_seconds = 0            # 0 = wait as long as it takes
 max_context_recoveries = 3      # fresh compacted sessions after context overflow
+
+# One session per agent identity is reused for the whole project. It is compacted between turns
+# (never mid tool call) when it fills up; the task card, acceptance criteria, review feedback and changed
+# files are rebuilt from disk into the fresh session. /compact [agent] forces it.
+[context]
+mode = "auto"                   # "auto" | "manual" | "off"
+compact_at = 0.70               # fraction of the model's context window
+min_turns_between = 3
+assumed_window_tokens = 200000  # used when the CLI reports no window
 
 [review]
 mode = "agent"          # "agent" | "off"

@@ -1,11 +1,10 @@
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type {
-  AgentEvent, AgentState, Effort, ErrorKind, Message, NeedsInput, ResultEnvelope, ReviewVerdict, Role, Task,
+  AgentEvent, AgentState, Effort, ErrorKind, Message, NeedsInput, ResultEnvelope, ReviewVerdict, Role, Task, TokenCause,
 } from "../contracts/types.js";
 import { validateResult } from "../contracts/validate.js";
-import { systemPrompt, taskCard, type Skill } from "../agents/prompts.js";
+import { identityHash, skillsBlock, systemPrompt, taskCard, type Skill } from "../agents/prompts.js";
 import type { AdapterOutcome, AgentAdapter, AgentApi, AgentHost, AgentRunContext, Injected, Reply } from "../agents/types.js";
 import { classifyProviderError, recoveryFor } from "../agents/contracts/errors.js";
 import { planRetry, waitTooLong, type WaitStore } from "./recovery.js";
@@ -16,6 +15,8 @@ import * as g from "./git.js";
 import type { ProjectPaths, RunPaths } from "./project.js";
 import type { ApiRegistry } from "./registry.js";
 import type { MessageRouter } from "./router.js";
+import { compactRequest, shouldCompact } from "./compaction.js";
+import type { IdentityPool, Lease, Resolution, SessionRegistry } from "./sessions.js";
 import type { Spec } from "./spec.js";
 import { relResult, type StatusStore } from "./status.js";
 
@@ -39,6 +40,9 @@ export interface RunContext {
   tasks: Task[];
   /** Reopen task `to` with a defect report from `from`; resolves when `to` finishes again. */
   returnTask(from: string, to: string, issue: string): { ok: true; done: Promise<{ state: AgentState; summary: string }> } | { ok: false; message: string };
+  /** One session per agent identity, kept for the whole project. */
+  sessions: SessionRegistry;
+  pool: IdentityPool;
   /** Environment for agent processes: lets them run `hexagon report|ask|…`. */
   agentEnv(agentId: string): Record<string, string>;
 }
@@ -50,7 +54,18 @@ export class AgentRun {
   readonly agentRunId: string;
   readonly worktree: string;
   readonly branch: string;
-  sessionId: string = randomUUID();
+  /** Native id of the session of the current turn (from the registry). */
+  sessionId = "";
+  /** Agent identity (implementer-1, reviewer-1, …) whose session this attempt uses. */
+  identity: string | null = null;
+  private lease: Lease | null = null;
+  /** Who the tokens of the current turn belong to. */
+  private sink: { identity: string; cause: TokenCause } | null = null;
+  private cause: TokenCause = "prompt";
+  private sessionAnnounced = false;
+  /** Summary produced by the last compaction, re-sent as pinned context in the fresh session. */
+  private compactSummary = "";
+  private reviewerSummary = "";
   /** Provider-limit recovery bookkeeping: none of it touches quality fix cycles or attempts. */
   private waitCount = 0;
   private contextRecoveries = 0;
@@ -88,9 +103,9 @@ export class AgentRun {
     readonly attempt: number,
     readonly effort: Effort,
     public adapter: AgentAdapter,
-    private resumeWait?: { sessionId: string; nextRetryAt: string },
+    private resumeWait?: { sessionId: string; nextRetryAt: string; identity?: string | null },
   ) {
-    if (resumeWait) { this.sessionId = resumeWait.sessionId; this.started = true; }
+    if (resumeWait) { this.sessionId = resumeWait.sessionId; this.started = true; this.identity = resumeWait.identity ?? null; }
     this.agentRunId = `${task.id}-a${attempt}`;
     this.worktree = path.join(rc.paths.worktrees, rc.runId, this.agentRunId);
     this.branch = `hexagon/${rc.runId}/${this.agentRunId}`;
@@ -101,7 +116,45 @@ export class AgentRun {
   }
 
   private ev(e: AgentEvent) {
+    if (e.type === "usage") {
+      const sink = this.sink ?? (this.identity ? { identity: this.identity, cause: this.cause } : null);
+      const stamped = { ...e, cause: e.cause ?? sink?.cause ?? this.cause };
+      if (sink && (e.input || e.output || e.cache_read || e.step)) {
+        this.rc.sessions.recordUsage(sink.identity, { input: e.input, cache_read: e.cache_read, output: e.output, cause: stamped.cause, step: Boolean(e.step) });
+        if (e.step && sink.identity === this.identity) this.refreshSession();
+      }
+      this.rc.store.apply(this.agentRunId, stamped);
+      return;
+    }
     this.rc.store.apply(this.agentRunId, e);
+  }
+
+  private windowTokens(): number {
+    return this.rc.cfg.context.assumed_window_tokens;
+  }
+
+  /** Update turns / context size of the session shown for this attempt. */
+  private refreshSession(): void {
+    if (!this.identity) return;
+    const info = this.rc.sessions.info(this.identity, this.rc.sessions.get(this.identity)?.turns ? "resumed" : "new", null, this.windowTokens());
+    this.rc.store.patch(this.agentRunId, (s) => { s.session = { ...info, mode: s.session?.mode ?? info.mode, reason: s.session?.reason ?? null }; });
+  }
+
+  private announce(res: Resolution): void {
+    const info = this.rc.sessions.info(res.record.agentId, res.mode, res.reason, this.windowTokens());
+    this.sessionAnnounced = true;
+    this.rc.store.apply(this.agentRunId, { type: "session", info });
+  }
+
+  private ensureLease(): Lease {
+    if (!this.lease) this.lease = this.rc.pool.acquire(this.task.role, this.identity);
+    this.identity = this.lease.agentId;
+    return this.lease;
+  }
+
+  private releaseLease(): void {
+    this.lease?.release();
+    this.lease = null;
   }
 
   private st(state: AgentState, reason?: string) {
@@ -122,11 +175,7 @@ export class AgentRun {
       this.baseCommit = await g.revParse(this.worktree, "HEAD");
       this.rc.store.patch(this.agentRunId, (s) => {
         s.workspace = { worktree: path.relative(this.rc.root, this.worktree), branch: this.branch };
-        s.attach = {
-          native_session_id: this.sessionId,
-          takeover_command: this.adapter.takeoverCommand(this.sessionId) ?? [process.env.SHELL ?? "/bin/zsh"],
-          supports_live_input: this.adapter.supportsLiveInput,
-        };
+        s.attach = { native_session_id: null, takeover_command: null, supports_live_input: this.adapter.supportsLiveInput };
       });
     } catch (e) {
       this.ev({ type: "error", kind: "internal", message: String(e), retryable: false });
@@ -137,6 +186,7 @@ export class AgentRun {
       return await this.pipeline();
     } finally {
       unregister();
+      this.releaseLease();
     }
   }
 
@@ -160,6 +210,7 @@ export class AgentRun {
       return await this.pipeline("The provider limit has cleared (Hexagon was restarted meanwhile). Check the worktree state and continue the task where you left off, then run `hexagon done`.", true);
     } finally {
       unregister();
+      this.releaseLease();
     }
   }
 
@@ -184,6 +235,7 @@ export class AgentRun {
       return await this.pipeline(body, true);
     } finally {
       unregister();
+      this.releaseLease();
     }
   }
 
@@ -196,6 +248,7 @@ export class AgentRun {
       this.finished = false;
       this.result = undefined;
       if (followUp && !initialFromUser) this.outstanding = followUp;
+      this.cause = followUp && !initialFromUser ? "fix_loop" : "prompt";
       const outcome = await this.agentSegment(followUp, quiet);
       followUp = undefined;
       quiet = false;
@@ -250,7 +303,7 @@ export class AgentRun {
         const stuck = this.noProgress(`verify:${v.cmd}:${v.code}:${v.output.slice(-600)}`);
         if (stuck) return this.final("failed", stuck);
         if (this.mayFix(++fixLoops) && !this.userDone) {
-          followUp = `Hexagon re-ran verification and it failed.\n\n$ ${v.cmd}\n(exit ${v.code})\n${truncateMiddle(v.output, 12_000)}\n\nFix the problem, re-run the command yourself, then run \`hexagon done\` again.`;
+          followUp = `Hexagon re-ran verification and it failed.\n\n$ ${v.cmd}\n(exit ${v.code})\n${this.excerpt(v.output, FIX_EXCERPT, "verify output")}\n\nFix the problem, re-run the command yourself, then run \`hexagon done\` again.`;
           continue;
         }
         return this.final("failed", `verification failed: ${v.cmd}`);
@@ -290,6 +343,116 @@ export class AgentRun {
     }
   }
 
+  /** Head+tail of a long output; the cut is stated in the text and recorded on the timeline. */
+  private excerpt(text: string, max: number, what: string): string {
+    if (text.length <= max) return text;
+    this.ev({ type: "progress", text: `${what} truncated: ${text.length} → ${max} chars sent to the agent` });
+    return truncateMiddle(text, max);
+  }
+
+  /** Bring the agent identity's session up for this turn: new, resumed, or compacted first. */
+  private async prepareSession(): Promise<Resolution> {
+    const lease = this.ensureLease();
+    const cap = this.adapter.capabilities;
+    let res = this.rc.sessions.resolve({
+      agentId: lease.agentId, role: this.task.role, adapterId: this.adapter.adapterId, model: this.adapter.model,
+      promptHash: identityHash(this.rc.paths, this.task.role, this.rc.skills), cwd: this.worktree,
+      resumeAcrossCwd: cap.resumeAcrossCwd, supportsResume: cap.supportsSessionResume,
+    });
+    if (res.resume) {
+      const d = shouldCompact(this.rc.cfg.context, res.record, Boolean(res.record.compactRequested));
+      if (d.compact) {
+        const c = await this.compact(res, d.why);
+        if (c) res = c;
+      }
+    }
+    this.sessionId = res.sessionId;
+    if (!this.sessionAnnounced || res.mode === "new") this.announce(res);
+    this.rc.store.patch(this.agentRunId, (s) => {
+      s.attach = { ...(s.attach ?? {}), native_session_id: res.sessionId, takeover_command: this.adapter.takeoverCommand(res.sessionId) ?? [process.env.SHELL ?? "/bin/zsh"], supports_live_input: this.adapter.supportsLiveInput };
+    });
+    return res;
+  }
+
+  /**
+   * Compact between turns (the previous process has exited, so no tool call is in flight): ask the session for a
+   * summary, then continue in a fresh native session seeded with it plus the pinned context.
+   */
+  private async compact(res: Resolution, why: string, who: { role: Role; adapter: AgentAdapter } = { role: this.task.role, adapter: this.adapter }): Promise<Resolution | null> {
+    const id = res.record.agentId;
+    this.ev({ type: "progress", text: `compacting ${id}: ${why}` });
+    const prev = this.cause;
+    const prevSink = this.sink;
+    this.cause = "compaction";
+    this.sink = { identity: id, cause: "compaction" };
+    let summary = "";
+    const host: AgentHost = {
+      emit: (e) => {
+        if (e.type === "chat" && e.from === "agent") summary += `${summary ? "\n" : ""}${e.text}`;
+        else if (e.type === "usage") this.ev(e);
+      },
+      drainInbox: () => [],
+      onInbox: () => () => undefined,
+      received: () => undefined,
+      isFinished: () => summary.length > 0,
+      hasBlockingQuestion: () => false,
+    };
+    const refuse = (): Reply => ({ ok: false, message: "Compaction turn: just reply with the summary." });
+    this.abort = new AbortController();
+    try {
+      const out = await who.adapter.run(this.ctx({
+        role: who.role, sessionId: res.sessionId, resume: true, followUp: compactRequest(), prompt: compactRequest(),
+        system: systemPrompt(this.rc.paths, who.role, this.rc.skills, this.rc.context), readOnly: true,
+        api: { report: refuse, ask: refuse, note: refuse, done: refuse, review: refuse }, host, agentId: this.agentRunId,
+      }));
+      if (out.kind !== "finished" || !summary.trim()) {
+        this.rc.sessions.skipCompaction(id);
+        this.ev({ type: "progress", text: `compaction of ${id} did not produce a summary; continuing without it` });
+        return null;
+      }
+    } finally {
+      this.sink = prevSink;
+      this.cause = prev;
+    }
+    if (who.role === this.task.role) this.compactSummary = truncateMiddle(summary.trim(), 4000);
+    else this.reviewerSummary = truncateMiddle(summary.trim(), 4000);
+    const sessionId = this.rc.sessions.compacted(id);
+    const record = this.rc.sessions.get(id)!;
+    return { sessionId, resume: false, mode: "new", reason: "compacted", record };
+  }
+
+  /** What the agent receives this turn: the full card for a new session, only what changed for a resumed one. */
+  private turnInput(res: Resolution, fu: string | undefined): { prompt: string; followUp?: string; freshTask: boolean } {
+    const rec = res.record;
+    const fresh = !res.resume;
+    if (this.started && res.resume) {
+      const msg = fu ?? "Continue the task where you left off.";
+      return { prompt: msg, followUp: msg, freshTask: false };
+    }
+    const seen = fresh ? { skills: [] as string[], others: "", notes: null, state: "" } : rec.seen;
+    const others = this.rc.tasks.filter((t) => t.id !== this.task.id);
+    const othersKey = others.map((o) => `${o.id}:${o.role}:${o.files.write.join(",")}`).join("|");
+    const noteLines = this.rc.router.notes().split("\n").filter(Boolean);
+    const cursor = seen.notes?.run === this.rc.runId ? seen.notes.lines : 0;
+    const newSkills = this.task.skills.filter((n) => !seen.skills.includes(n));
+    const card = [
+      taskCard(this.task, this.rc.specs, noteLines.slice(cursor).join("\n"), seen.others === othersKey ? [] : others),
+      newSkills.length ? skillsBlock(this.rc.skills, this.task.role, newSkills) : "",
+    ].filter(Boolean).join("\n\n");
+    this.rc.sessions.markSeen(rec.agentId, {
+      skills: [...new Set([...seen.skills, ...newSkills])], others: othersKey, notes: { run: this.rc.runId, lines: noteLines.length },
+    });
+    if (!this.started) {
+      // First turn of this task. In a resumed session the card goes as the next message.
+      const carried = fresh && this.compactSummary ? `Summary of your earlier work in this project (written by you before the session was compacted):\n${this.compactSummary}` : "";
+      const text = [card, carried, fu].filter(Boolean).join("\n\n");
+      return { prompt: text, followUp: res.resume ? text : undefined, freshTask: true };
+    }
+    // Fresh session in the middle of a task (compaction, reset, overflow): card + pinned context.
+    const text = [card, this.pinnedContext(), fu].filter(Boolean).join("\n\n");
+    return { prompt: text, freshTask: true };
+  }
+
   /** Run the agent CLI until it finishes. Pause/takeover kill the process; resume continues the same session. */
   private async agentSegment(followUp?: string, quiet = false): Promise<AdapterOutcome> {
     let fu = followUp;
@@ -306,21 +469,25 @@ export class AgentRun {
       this.st(this.questions.size ? "waiting_input" : "running");
       this.abort = new AbortController();
       this.sessionSeen = false;
+      const res = await this.prepareSession();
+      const input = this.turnInput(res, fu);
       const out = await this.adapter.run(this.ctx({
         role: this.task.role,
-        sessionId: this.sessionId,
-        resume: this.started,
-        followUp: fu,
-        prompt: taskCard(this.task, this.rc.specs, this.rc.router.notes(), this.rc.tasks.filter((t) => t.id !== this.task.id)),
-        system: systemPrompt(this.rc.paths, this.task.role, this.agentRunId, this.rc.skills, this.task.skills, this.rc.context),
+        sessionId: res.sessionId,
+        resume: res.resume,
+        followUp: input.followUp,
+        freshTask: input.freshTask,
+        prompt: input.prompt,
+        system: systemPrompt(this.rc.paths, this.task.role, this.rc.skills, this.rc.context),
         readOnly: false,
         api: this.api(),
         host: this.host(),
         agentId: this.agentRunId,
       }));
+      if (out.kind !== "error" || this.sessionSeen) this.rc.sessions.confirm(res.record.agentId);
       if (out.kind !== "error" || this.sessionSeen) this.started = true;
       // Safety net: the CLI says this session exists although we thought it was new → continue it instead of failing the task.
-      if (out.kind === "error" && !resumedOnce && /session id .* is already in use/i.test(out.error?.message ?? "")) { resumedOnce = true; this.started = true; continue; }
+      if (out.kind === "error" && !resumedOnce && /session id .* is already in use/i.test(out.error?.message ?? "")) { resumedOnce = true; this.rc.sessions.confirm(res.record.agentId); this.started = true; continue; }
       if (out.kind === "error" && this.rc.cfg.recovery.enabled && !this.cancelled && !this.userDone) {
         const next = await this.recoverFromLimit(out);
         if (next.retry) { fu = next.followUp; this.restarting = false; continue; }
@@ -367,10 +534,11 @@ export class AgentRun {
 
     if (action === "compact_and_resume") {
       if (++this.contextRecoveries > rec.max_context_recoveries) return { retry: false };
-      this.sessionId = randomUUID();
+      if (this.identity) this.rc.sessions.compacted(this.identity);
+      this.compactSummary = "";
       this.started = false; // a fresh session with a smaller, reconstructed context
       this.ev({ type: "recovery", phase: "compacted", cls: c.cls, message: `context window exceeded; starting a new session with a compact summary (${this.contextRecoveries}/${rec.max_context_recoveries})` });
-      return { retry: true, followUp: this.compactedContext() };
+      return { retry: true };
     }
 
     // wait_and_resume
@@ -386,9 +554,9 @@ export class AgentRun {
       this.ev({ type: "recovery", phase: "failover", cls: c.cls, message: `${this.adapter.provider}/${this.adapter.id} → ${next.provider}/${next.id} (allow_provider_failover is enabled; verification and review will run again)` });
       this.adapter = next;
       this.failedOver = true;
-      this.sessionId = randomUUID();
+      this.compactSummary = ""; // the new agent starts a new session (the registry sees the adapter change)
       this.started = false;
-      return { retry: true, followUp: this.compactedContext() };
+      return { retry: true };
     }
     const plan = planRetry(c, this.waitCount, rec);
     if (waitTooLong((this.rc.store.get(this.agentRunId)?.recovery?.waited_s ?? 0) + plan.delayS, rec)) return { retry: false };
@@ -447,22 +615,28 @@ export class AgentRun {
     return null;
   }
 
-  /** A smaller context for a fresh session: spec/task card are rebuilt in full; history is reduced to facts. */
-  private compactedContext(): string {
+  /**
+   * Context that must survive every compaction, rebuilt from files and state, never from the model's memory:
+   * the changed files, finished criteria, outstanding feedback and the shared notes. (The task card is sent separately.)
+   */
+  private pinnedContext(): string {
     const s = this.rc.store.get(this.agentRunId);
     const done = (s?.checklist ?? []).filter((i) => i.status === "done").map((i) => i.id);
     const files = (s?.files_touched ?? []).slice(0, 40);
+    const notes = this.rc.router.notes().split("\n").filter(Boolean).slice(-20).join("\n");
     return [
-      "You are continuing this task in a NEW session (the previous conversation was compacted). The task card above is the full, unchanged specification and acceptance criteria.",
+      "You are continuing this task in a NEW session (the earlier conversation was compacted). The task card above is the full, unchanged specification and acceptance criteria.",
+      this.compactSummary ? `Summary of the earlier conversation (written by you):\n${this.compactSummary}` : "",
       files.length ? `Files already changed in the worktree (inspect them with git diff / git status): ${files.join(", ")}` : "No files changed yet.",
       done.length ? `Acceptance criteria already reported done: ${done.join(", ")}` : "",
-      this.outstanding ? `Outstanding feedback you must still address:\n${truncateMiddle(this.outstanding, 8000)}` : "",
+      this.outstanding ? `Outstanding feedback you must still address:\n${this.excerpt(this.outstanding, FIX_EXCERPT, "outstanding feedback")}` : "",
+      notes ? `Decisions and notes shared by the other agents:\n${notes}` : "",
       this.failedOver ? "The previous agent was replaced because its provider was unavailable; verify its work critically." : "",
       "Check the current state of the worktree first, continue from it, then run `hexagon done`.",
     ].filter(Boolean).join("\n\n");
   }
 
-  private ctx(o: { role: Role; sessionId: string; resume: boolean; followUp?: string; prompt: string; system: string; readOnly: boolean; api: AgentApi; host: AgentHost; agentId: string }): AgentRunContext {
+  private ctx(o: { role: Role; sessionId: string; resume: boolean; followUp?: string; freshTask?: boolean; prompt: string; system: string; readOnly: boolean; api: AgentApi; host: AgentHost; agentId: string }): AgentRunContext {
     return {
       agentRunId: o.agentId,
       role: o.role,
@@ -472,6 +646,7 @@ export class AgentRun {
       system: o.system,
       prompt: o.prompt,
       followUp: o.followUp,
+      freshTask: o.freshTask,
       sessionId: o.sessionId,
       resume: o.resume,
       env: this.rc.agentEnv(o.agentId),
@@ -494,6 +669,7 @@ export class AgentRun {
       finished_at: nowIso(),
       branch: this.branch,
       session_id: this.sessionId,
+      agent_identity: this.identity,
       completed_by: this.userDone ? "user" : "agent",
       result: this.result ?? null,
       review: this.review ?? null,
@@ -510,6 +686,7 @@ export class AgentRun {
     this.questions.clear();
     this.gate?.resolve();
     this.gate = null;
+    this.releaseLease();
     if (state === "done") this.notify("done ✔ merged into the integration branch");
     else if (state === "failed") this.notify(`failed: ${reason ?? "see logs"}`);
     return state;
@@ -585,33 +762,52 @@ export class AgentRun {
       },
     };
     const unregister = this.rc.registry.register(id, api);
-    const diff = await g.diff(this.worktree, this.baseCommit);
-    const prompt = [
-      taskCard(this.task, this.rc.specs, ""),
-      "",
-      "<implementer_report>",
-      JSON.stringify(this.result, null, 2),
-      "</implementer_report>",
-      "",
-      `<diff base="${this.baseCommit.slice(0, 12)}">`,
-      truncateMiddle(diff, 60_000),
-      "</diff>",
-      "",
-      `Review task ${this.task.id} (the diff above is \`git diff ${this.baseCommit.slice(0, 12)}\`; you may read files and run the verify commands). Finish with \`hexagon review\`.`,
-    ].join("\n");
-    this.abort = new AbortController();
+    const lease = this.rc.pool.acquire("reviewer");
+    const prevSink = this.sink;
+    const prevCause = this.cause;
+    this.sink = { identity: lease.agentId, cause: "review" };
+    this.cause = "review";
     try {
+      const cap = reviewer.capabilities;
+      let res = this.rc.sessions.resolve({
+        agentId: lease.agentId, role: "reviewer", adapterId: reviewer.adapterId, model: reviewer.model,
+        promptHash: identityHash(this.rc.paths, "reviewer", this.rc.skills), cwd: this.worktree,
+        resumeAcrossCwd: cap.resumeAcrossCwd, supportsResume: cap.supportsSessionResume,
+      });
+      if (res.resume) {
+        const d = shouldCompact(this.rc.cfg.context, res.record, Boolean(res.record.compactRequested));
+        if (d.compact) res = (await this.compact(res, d.why, { role: "reviewer", adapter: reviewer })) ?? res;
+      }
+      this.ev({ type: "progress", text: `review by ${lease.agentId}: ${res.mode === "new" ? `new session (${res.reason})` : `resumed session, turn ${res.record.turns}`}` });
+      const base = this.baseCommit.slice(0, 12);
+      const [stat, diff] = await Promise.all([g.diff(this.worktree, this.baseCommit, true), g.diff(this.worktree, this.baseCommit)]);
+      const shown = diff.length > REVIEW_DIFF ? truncateMiddle(diff, REVIEW_DIFF) : diff;
+      const prompt = [
+        taskCard(this.task, this.rc.specs, "", []),
+        res.mode === "new" && this.reviewerSummary ? `Your earlier review notes (compacted):\n${this.reviewerSummary}` : "",
+        `<implementer_report>\n${JSON.stringify(compactReport(this.result))}\n</implementer_report>`,
+        `<diffstat base="${base}">\n${stat}\n</diffstat>`,
+        `<diff base="${base}"${diff.length > REVIEW_DIFF ? ` truncated="true"` : ""}>\n${shown}\n</diff>`,
+        diff.length > REVIEW_DIFF ? `The diff above was cut (${diff.length} chars). Read the rest per file: \`git diff ${base}...HEAD -- <file>\`.` : "",
+        `Review task ${this.task.id}. You may read files and run the verify commands. Finish with \`hexagon review\`.`,
+      ].filter(Boolean).join("\n\n");
+      this.abort = new AbortController();
       const out = await reviewer.run(this.ctx({
         role: "reviewer",
-        sessionId: randomUUID(),
-        resume: false,
+        sessionId: res.sessionId,
+        resume: res.resume,
+        followUp: res.resume ? prompt : undefined,
+        freshTask: true,
         prompt,
-        system: systemPrompt(this.rc.paths, "reviewer", id, this.rc.skills, [], this.rc.context),
+        system: systemPrompt(this.rc.paths, "reviewer", this.rc.skills, this.rc.context),
         readOnly: true,
         api,
         agentId: id,
         host: {
-          emit: (e) => this.ev(e.type === "progress" ? { ...e, text: `review: ${e.text}` } : e.type === "tool_call" ? { ...e, summary: `review: ${e.summary}` } : e),
+          emit: (e) => {
+            if (e.type === "progress" && e.text === "session started") { this.rc.sessions.confirm(lease.agentId); return; }
+            this.ev(e.type === "progress" ? { ...e, text: `review: ${e.text}` } : e.type === "tool_call" ? { ...e, summary: `review: ${e.summary}` } : e);
+          },
           drainInbox: () => [],
           onInbox: () => () => undefined,
           received: () => undefined,
@@ -619,8 +815,12 @@ export class AgentRun {
           hasBlockingQuestion: () => false,
         },
       }));
+      if (out.kind !== "error") this.rc.sessions.confirm(lease.agentId);
       if (out.kind === "error") this.ev({ type: "error", ...out.error! });
     } finally {
+      this.sink = prevSink;
+      this.cause = prevCause;
+      lease.release();
       unregister();
     }
     return verdict;
@@ -638,7 +838,11 @@ export class AgentRun {
 
   private host(): AgentHost {
     return {
-      emit: (e) => { if (e.type === "progress" && e.text === "session started") this.sessionSeen = true; this.ev(e); },
+      emit: (e) => {
+        // "session started" fires on every CLI start, resumed or not: it only confirms the session exists.
+        if (e.type === "progress" && e.text === "session started") { this.sessionSeen = true; if (this.identity) this.rc.sessions.confirm(this.identity); return; }
+        this.ev(e);
+      },
       drainInbox: () => this.drain(),
       onInbox: (cb) => {
         const listener = (m: Message) => {
@@ -828,6 +1032,18 @@ export class AgentRun {
 }
 
 const ok = (message: string): Reply => ({ ok: true, message });
+
+/** Largest piece of failure output / feedback sent back to an agent (head + tail). */
+const FIX_EXCERPT = 6000;
+/** Largest diff embedded in a review prompt; the reviewer reads the rest per file. */
+const REVIEW_DIFF = 24_000;
+
+/** The implementer's report without fields the reviewer re-derives from the diff. */
+function compactReport(r: ResultEnvelope | undefined): unknown {
+  if (!r) return null;
+  const { files_changed: _f, ...rest } = r;
+  return rest;
+}
 
 function refs(t: Task): string {
   return t.requirements.flatMap((r) => (t.acceptance.length ? t.acceptance.map((a) => `${r}/${a}`) : [r])).join(", ") || t.id;

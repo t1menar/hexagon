@@ -40,6 +40,22 @@ export interface Usage {
   turns: number;
 }
 
+export type TokenCause = "prompt" | "fix_loop" | "review" | "compaction";
+export interface TokenCounts { input: number; cache_read: number; output: number }
+
+export interface SessionInfo {
+  /** Agent identity that owns the session (e.g. implementer-1). */
+  agent: string;
+  mode: "new" | "resumed";
+  /** Why a new session was created (null when resumed). */
+  reason: string | null;
+  turns: number;
+  ctx_tokens: number;
+  /** Share of the model window in use (0..1). */
+  ctx_pct: number;
+  compactions: number;
+}
+
 export interface AgentStatus {
   schema: "hexagon.agent-status/v1";
   seq: number;
@@ -74,6 +90,10 @@ export interface AgentStatus {
   files_touched?: string[];
   attach?: { native_session_id?: string | null; takeover_command?: string[] | null; supports_live_input?: boolean } | null;
   usage: Usage;
+  /** Tokens by what caused them (prompt, tool results, fix loop, review, compaction). */
+  usage_by_cause?: Partial<Record<TokenCause, TokenCounts>>;
+  /** The logical agent session this attempt runs in (shared across tasks of one agent identity). */
+  session?: SessionInfo | null;
   last_error: { kind: ErrorKind; message: string; retryable: boolean; at?: string } | null;
   /** Provider limit recovery (rate limit / quota wait). Does not count as a fix cycle or attempt. */
   recovery?: {
@@ -97,6 +117,8 @@ export interface RunStatus {
   started_at: string;
   budget_tokens: number | null;
   totals: Usage;
+  /** Tokens of the whole run by cause (prompt, fix loop, review, compaction). */
+  ledger?: Partial<Record<TokenCause, TokenCounts>>;
   counts: Partial<Record<AgentState, number>>;
   agents: {
     task_id: string; agent_run_id: string; role: Role; agent: string; state: AgentState;
@@ -187,7 +209,9 @@ export type AgentEvent =
   | { type: "tool_call"; name: string; summary: string }
   | { type: "tool_result"; name: string; ok: boolean; summary: string }
   /** Token usage. `step`: one model call (counts as a turn); otherwise a correction (e.g. cost only). */
-  | { type: "usage"; input: number; output: number; cache_read: number; cache_write: number; cost_usd: number; step?: boolean }
+  | { type: "usage"; input: number; output: number; cache_read: number; cache_write: number; cost_usd: number; step?: boolean; cause?: TokenCause }
+  /** The session this attempt runs in: created, resumed, or compacted. Emitted only when something really happened. */
+  | { type: "session"; info: SessionInfo }
   | { type: "question"; question: NeedsInput }
   | { type: "answered"; question_id: string; answer: string }
   | { type: "message_delivered"; message_id: string }

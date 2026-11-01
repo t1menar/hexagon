@@ -74,22 +74,43 @@ export function contextFile(root: string): string | null {
   return null;
 }
 
-/** Stable per-run project context: HEXAGON.md + a short repository map. */
-export function projectContext(root: string, maxFiles = 200): string {
+/** Max size of HEXAGON.md inside the prompt; the agent can read the file itself for the rest. */
+const NOTES_BUDGET = 6000;
+
+/**
+ * Stable project context: HEXAGON.md (capped) and a short directory summary. The full file list is not sent:
+ * agents have their own search tools, and 200 paths in every prompt is pure overhead.
+ */
+export function projectContext(root: string): string {
   const ctx = contextFile(root);
-  const notes = ctx ? fs.readFileSync(ctx, "utf8").trim() : "";
-  const files = listProjectFiles(root, maxFiles + 1);
-  const shown = files.slice(0, maxFiles).sort();
-  const more = files.length > maxFiles ? "\n… (more files)" : "";
-  return `# Project\n${notes ? `\n${notes}\n` : ""}\n## Repository files\n${shown.join("\n") || "(empty repository)"}${more}`;
+  let notes = ctx ? fs.readFileSync(ctx, "utf8").trim() : "";
+  if (notes.length > NOTES_BUDGET) notes = `${notes.slice(0, NOTES_BUDGET)}\n… (HEXAGON.md continues; read ${path.basename(ctx!)} for the rest)`;
+  const files = listProjectFiles(root, 5000);
+  const dirs = new Map<string, number>();
+  for (const f of files) {
+    const parts = f.split("/");
+    const key = parts.length === 1 ? "." : parts.length === 2 ? `${parts[0]}/` : `${parts[0]}/${parts[1]}/`;
+    dirs.set(key, (dirs.get(key) ?? 0) + 1);
+  }
+  const shown = [...dirs.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(0, 30).map(([d, n]) => `${d} (${n})`);
+  const tree = files.length ? `${files.length >= 5000 ? "5000+" : files.length} files. Directories: ${shown.join(", ")}${dirs.size > 30 ? ", …" : ""}. Use your search tools (glob/grep) to find files.` : "(empty repository)";
+  return `# Project\n${notes ? `\n${notes}\n` : ""}\n## Repository\n${tree}`;
 }
 
-/** Everything appended to the agent CLI's own system prompt. */
-export function systemPrompt(paths: ProjectPaths, role: Role, agentRunId: string, skills: Skill[], requested: string[], context: string): string {
-  return [loadRolePrompt(paths, role), protocolInstructions(role, agentRunId), skillsBlock(skills, role, requested), context]
-    .filter(Boolean)
-    .join("\n\n");
+/**
+ * Everything appended to the agent CLI's own system prompt. Identity-level and byte-stable: no task ids, no
+ * per-task skills, so the same agent always sends the same prefix (provider-side prompt caching) and keeps one session.
+ */
+export function systemPrompt(paths: ProjectPaths, role: Role, skills: Skill[], context: string): string {
+  return [identityPrompt(paths, role, skills), context].filter(Boolean).join("\n\n");
 }
+
+/** The part of the system prompt that defines the agent. Its hash decides whether the session may be reused. */
+export function identityPrompt(paths: ProjectPaths, role: Role, skills: Skill[]): string {
+  return [loadRolePrompt(paths, role), protocolInstructions(role), skillsBlock(skills, role)].filter(Boolean).join("\n\n");
+}
+
+export const identityHash = (paths: ProjectPaths, role: Role, skills: Skill[]) => roleHash(identityPrompt(paths, role, skills));
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 

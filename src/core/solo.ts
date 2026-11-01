@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { AgentEvent, Effort, NeedsInput, Role } from "../contracts/types.js";
+import type { AgentEvent, Effort, NeedsInput, Role, SessionInfo } from "../contracts/types.js";
+import type { SessionRegistry } from "./sessions.js";
 import type { AdapterOutcome, AgentAdapter, AgentApi, AgentHost, Injected, Reply } from "../agents/types.js";
 import { nowIso } from "../util/fsx.js";
 
@@ -21,6 +22,8 @@ export interface SessionStatus {
   error: string | null;
   feed: { ts: string; text: string; kind: "tool" | "text" | "status" | "error" | "user" | "agent" | "usage"; tokens?: { input: number; cache_read: number; output: number } }[];
   session_id: string;
+  /** The agent identity's session: new or resumed, turn count and context size. */
+  session?: SessionInfo;
 }
 
 /**
@@ -52,6 +55,10 @@ export class SoloSession extends EventEmitter {
       /** Chat session (the lead): stays open between messages, never "done". */
       conversational?: boolean;
       readOnly?: boolean;
+      /** One session per agent identity for the whole project (shared with task agents' registry). */
+      sessions?: SessionRegistry;
+      promptHash?: string;
+      windowTokens?: number;
       nextQuestionId: () => string;
     },
   ) {
@@ -74,6 +81,8 @@ export class SoloSession extends EventEmitter {
   private onEvent(e: AgentEvent) {
     switch (e.type) {
       case "progress":
+        // Fires on every CLI start, resumed or not: it only confirms the session exists.
+        if (e.text === "session started") { this.opts.sessions?.confirm(this.id); return; }
         if (this.opts.conversational && e.text === "ready") {
           if (this.status.state === "running") this.status.state = "idle";
           this.status.activity = null;
@@ -94,6 +103,10 @@ export class SoloSession extends EventEmitter {
         if (!e.step) break;
         const t = this.status.tokens;
         t.input += e.input; t.cache_read += e.cache_read; t.output += e.output; t.steps += 1;
+        if (this.opts.sessions) {
+          this.opts.sessions.recordUsage(this.id, { input: e.input, cache_read: e.cache_read, output: e.output, cause: e.cause ?? "prompt", step: true });
+          this.status.session = this.opts.sessions.info(this.id, this.status.session?.mode ?? "resumed", this.status.session?.reason ?? null, this.opts.windowTokens ?? 200_000);
+        }
         this.log("usage", "", { input: e.input, cache_read: e.cache_read, output: e.output });
         break;
       }
@@ -208,6 +221,16 @@ export class SoloSession extends EventEmitter {
     let fu = followUp;
     let out: AdapterOutcome;
     for (;;) {
+    const cap = this.adapter.capabilities;
+    const res = this.opts.sessions?.resolve({
+      agentId: this.id, role: this.role, adapterId: this.adapter.adapterId, model: this.adapter.model, promptHash: this.opts.promptHash ?? "",
+      cwd: this.opts.cwd, resumeAcrossCwd: cap.resumeAcrossCwd, supportsResume: cap.supportsSessionResume,
+    });
+    if (res) {
+      this.status.session_id = res.sessionId;
+      this.status.session = this.opts.sessions!.info(this.id, res.mode, res.reason, this.opts.windowTokens ?? 200_000);
+      this.changed();
+    }
     out = await this.adapter.run({
       agentRunId: this.id,
       role: this.role,
@@ -217,7 +240,7 @@ export class SoloSession extends EventEmitter {
       prompt,
       followUp: fu,
       sessionId: this.status.session_id,
-      resume: this.started,
+      resume: res ? res.resume : this.started,
       env: this.opts.env,
       allowCommands: this.opts.allowCommands,
       readOnly: this.opts.readOnly ?? false,
@@ -226,7 +249,7 @@ export class SoloSession extends EventEmitter {
       api: this.api(),
       signal: this.abort.signal,
     });
-    if (out.kind !== "error") this.started = true;
+    if (out.kind !== "error") { this.started = true; this.opts.sessions?.confirm(this.id); }
     if (this.restartNote !== null && (this.status.state as SessionStatus["state"]) !== "cancelled") {
       fu = this.restartNote;
       this.restartNote = null;

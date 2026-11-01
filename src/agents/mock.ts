@@ -7,6 +7,7 @@ import type { Task } from "../contracts/types.js";
 import { runShell } from "../util/shell.js";
 import { AdapterBase } from "./contracts/base.js";
 import { capabilities } from "./contracts/capabilities.js";
+import { COMPACT_TAG } from "../core/compaction.js";
 import type { AdapterOutcome, AgentAdapter, AgentRunContext, Injected } from "./types.js";
 
 /**
@@ -21,10 +22,14 @@ import type { AdapterOutcome, AgentAdapter, AgentRunContext, Injected } from "./
  */
 export class MockAdapter extends AdapterBase implements AgentAdapter {
   static reviews = new Map<string, number>();
+  /** Simulated conversation size per session, so token accounting follows the real shape: cold start vs resume. */
+  static contexts = new Map<string, number>();
+  /** Test hook: what each turn was sent (the card for a new session, the delta for a resumed one). */
+  static turns: { agent: string; resume: boolean; text: string }[] = [];
   readonly adapterId = "mock";
   readonly provider = "mock";
   readonly displayName = "Mock agent";
-  readonly capabilities = capabilities({ supportsStreaming: true, supportsLiveInput: true });
+  readonly capabilities = capabilities({ supportsStreaming: true, supportsLiveInput: true, supportsSessionResume: true, resumeAcrossCwd: true, supportsUsageMetrics: true });
   constructor(id: string, private stepMs = 600) { super(id, ["mock"]); }
 
   override async detect() {
@@ -40,6 +45,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     const step = async (activity: string) => {
       if (ctx.signal.aborted) throw new Error("aborted");
       host.emit({ type: "progress", text: activity });
+      spend(40, 60); // one model call per step: re-reads the cached conversation
       await sleep(this.stepMs, undefined, { signal: ctx.signal }).catch(() => undefined);
       if (ctx.signal.aborted) throw new Error("aborted");
     };
@@ -57,7 +63,23 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
       }
       drain();
     };
-    host.emit({ type: "usage", input: 1200, output: 300, cache_read: 0, cache_write: 0, cost_usd: 0, step: true });
+    // A cold session pays for the whole prompt; a resumed one only for the new message and re-reads the cached conversation.
+    const tok = (t: string) => Math.ceil(t.length / 4);
+    let context = ctx.resume ? MockAdapter.contexts.get(ctx.sessionId) ?? 0 : 0;
+    const spend = (input: number, output: number) => {
+      host.emit({ type: "usage", input, output, cache_read: context, cache_write: 0, cost_usd: 0, step: true });
+      context += input + output;
+      MockAdapter.contexts.set(ctx.sessionId, context);
+    };
+    spend(ctx.resume ? tok(ctx.followUp ?? ctx.prompt) : tok(ctx.system) + tok(ctx.prompt), 300);
+    MockAdapter.turns.push({ agent: ctx.agentRunId, resume: ctx.resume, text: ctx.resume ? ctx.followUp ?? ctx.prompt : ctx.prompt });
+    if (MockAdapter.turns.length > 500) MockAdapter.turns.shift();
+    const firstOfTask = !ctx.resume || ctx.freshTask === true;
+    if (ctx.resume && (ctx.followUp ?? "").includes(COMPACT_TAG)) {
+      host.emit({ type: "chat", from: "agent", text: "## Decisions\n(mock) kept the module layout.\n## Done\n(mock) earlier work.\n## Open\nnothing\n## Gotchas\nnone" });
+      spend(0, 120);
+      return { kind: "finished" };
+    }
 
     try {
       if (ctx.role === "planner") return await this.plan(ctx, step);
@@ -103,7 +125,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
 
       const task = ctx.task!;
       api.report({ phase: "reading", activity: `Reading task ${task.id}` });
-      if (ctx.resume && ctx.followUp) instructions.push({ id: "followup", from: "orchestrator", type: "handoff", body: ctx.followUp });
+      if (ctx.resume && ctx.followUp && !ctx.freshTask) instructions.push({ id: "followup", from: "orchestrator", type: "handoff", body: ctx.followUp });
       drain();
       await step("Exploring the workspace");
 
@@ -136,13 +158,13 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         if (r?.ok) return { kind: "finished" };
       }
       const block = /@block:\s*(.+)$/m.exec(task.description ?? "");
-      if (block && !ctx.resume) {
+      if (block && firstOfTask) {
         host.emit({ type: "chat", from: "agent", text: `I can't finish: ${block[1]!.trim()}` });
         api.done({ status: "blocked", summary: block[1]!.trim(), blockers: [block[1]!.trim()] });
         return { kind: "finished" };
       }
       const ask = /@ask:\s*(.+)$/m.exec(task.description ?? "");
-      if (ask && !ctx.resume) {
+      if (ask && firstOfTask) {
         api.ask({ prompt: ask[1]!.trim(), options: ["Option A", "Option B"], default: "Option A", blocking: true });
         await waitForAnswer();
       }

@@ -73,6 +73,8 @@ export class DaemonServer {
         o.requireRun().scheduler.retry(str(p.task, "task").toUpperCase(), { agent: p.agent as string | undefined, effort: p.effort as Effort | undefined });
         return { ok: true };
       },
+      "session.compact": (p) => ({ ok: true, agents: o.compactSessions(p.agent ? String(p.agent) : undefined) }),
+      "stats.get": () => o.stats(),
       "agent.takeover": async (p) => o.takeover(str(p.task, "task")),
       "agent.takeover_end": async (p) => {
         await o.takeoverEnd(str(p.task, "task"), (p.action as "handback" | "done" | "discard") ?? "handback");

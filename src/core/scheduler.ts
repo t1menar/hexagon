@@ -8,7 +8,7 @@ const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 export const escalate = (e: Effort, steps: number): Effort => EFFORTS[Math.min(EFFORTS.indexOf(e) + steps, EFFORTS.length - 1)]!;
 
 /** State a previous daemon left for a task (restart recovery). */
-export interface PriorTask { state: AgentState; attempt: number; sessionId?: string | null; nextRetryAt?: string | null }
+export interface PriorTask { state: AgentState; attempt: number; identity?: string | null; sessionId?: string | null; nextRetryAt?: string | null }
 
 export interface SchedulerOptions {
   /** Resuming a run after a restart: statuses are already on disk and must not be recreated or duplicated. */
@@ -151,7 +151,7 @@ export class Scheduler extends EventEmitter {
     const ov = this.overrides.get(t.id);
     const adapter = this.rc.adapterFor(t.role, ov?.agent ?? this.opts.agentOverride ?? t.agent_hint);
     const p = this.opts.prior?.get(t.id);
-    const resume = p?.state === "waiting_quota" && p.attempt === attempt && p.sessionId ? { sessionId: p.sessionId, nextRetryAt: p.nextRetryAt ?? new Date().toISOString() } : undefined;
+    const resume = p?.state === "waiting_quota" && p.attempt === attempt && p.sessionId ? { sessionId: p.sessionId, identity: p.identity ?? null, nextRetryAt: p.nextRetryAt ?? new Date().toISOString() } : undefined;
     if (resume) this.opts.prior!.delete(t.id); // consumed: a later attempt starts fresh
     const run = new AgentRun(this.rc, t, attempt, this.effortFor(t, attempt, this.rc.cfg.roles[t.role].effort), adapter, resume);
     this.active.set(t.id, run);

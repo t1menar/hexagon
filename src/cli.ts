@@ -35,6 +35,7 @@ ${c.bold("Watch & steer")}
   hexagon pause|resume|cancel <T-n>  ·  hexagon retry <T-n> [--agent X] [--effort E]
   hexagon takeover <T-n>           continue the agent's own session yourself (claude --resume)
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
+  hexagon compact [agent|T-n]      compact an agent's session at its next safe point  ·  hexagon stats [--json]  tokens by cause
   hexagon trace                    requirement → task → agent → verification → review → completion
   hexagon allow <cmd…> | all       let agents run these commands (e.g. allow brew curl) or everything
   hexagon model [role model|default]  show/set a model override per role (default = the CLI's own)
@@ -244,6 +245,24 @@ async function main(argv: string[]): Promise<void> {
         else if (cmd === "cancel") throw new Error("usage: hexagon cancel <T-n>");
         else await client.call(`run.${cmd}`);
         console.log(`${cmd}: ${t ? normTask(t) : "run"}`);
+        break;
+      }
+      case "compact": {
+        const r = await client.call<{ agents: string[] }>("session.compact", { agent: rest[0] ? (TASK_RE.test(rest[0]) ? normTask(rest[0]) : rest[0]) : undefined });
+        console.log(`will compact at the next safe point: ${r.agents.join(", ")}`);
+        break;
+      }
+      case "stats": {
+        const st = await client.call<{ run: Record<string, { input: number; cache_read: number; output: number }> | null; agents: { agent: string; turns: number; ctx_tokens: number; ctx_pct: number; compactions: number; ledger: Record<string, { input: number; cache_read: number; output: number }> }[] }>("stats.get");
+        if (bool(rest, "--json")) { console.log(JSON.stringify(st, null, 2)); break; }
+        const line = (n: string, l: { input: number; cache_read: number; output: number }) => `  ${n.padEnd(12)} ${String(l.input).padStart(9)} in  ${String(l.cache_read).padStart(9)} cached  ${String(l.output).padStart(8)} out`;
+        console.log(c.bold("This run, by cause"));
+        for (const [k, v] of Object.entries(st.run ?? {})) console.log(line(k, v));
+        console.log(c.bold("Agents (whole project)"));
+        for (const a of st.agents) {
+          console.log(`  ${a.agent}: ${a.turns} turns · ctx ${Math.round(a.ctx_pct * 100)}%${a.compactions ? ` ▸ compacted ×${a.compactions}` : ""}`);
+          for (const [k, v] of Object.entries(a.ledger)) console.log(line(`  ${k}`, v));
+        }
         break;
       }
       case "retry": {

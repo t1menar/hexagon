@@ -50,10 +50,17 @@ export function agentDetail(s: AgentStatus): string {
   if (s.inbox.pending) lines.push(`inbox: ${s.inbox.pending} message(s) waiting for the next safe point`);
   if (s.workspace?.worktree) lines.push(c.dim(`worktree: ${s.workspace.worktree} · branch ${s.workspace.branch}`));
   if (s.files_touched?.length) lines.push(c.dim(`files: ${s.files_touched.join(", ")}`));
+  if (s.session) lines.push(c.dim(`session: ${sessionLabel(s.session)}`));
   const u = s.usage;
   lines.push(c.dim(`usage: ${fmtTokens(u.input_tokens)} in · ${fmtTokens(u.output_tokens)} out · ${fmtTokens(u.cache_read_tokens)} cached · ${u.turns} steps · ${Math.round(u.wall_ms / 1000)}s`));
   if (s.last_error) lines.push(c.orange(`last error (${s.last_error.kind}): ${truncate(s.last_error.message, 200)}`));
   return lines.join("\n");
+}
+
+/** "new (first use of this agent)" · "resumed (turn 6, ~2.6k ctx 37%) ▸ compacted ×1". */
+export function sessionLabel(s: NonNullable<AgentStatus["session"]>): string {
+  const base = s.mode === "new" ? `new${s.reason ? ` (${s.reason})` : ""}` : `resumed (turn ${s.turns}, ~${fmtTokens(s.ctx_tokens)} ctx)`;
+  return `${base}${s.turns ? ` · ctx ${Math.round(s.ctx_pct * 100)}%` : ""}${s.compactions ? ` ▸ compacted ×${s.compactions}` : ""}`;
 }
 
 export function formatQuestion(taskId: string, q: NonNullable<AgentStatus["needs_input"]>): string {
@@ -90,6 +97,8 @@ export function formatEvent(e: StampedEvent, detail: boolean): string | null {
       return `${time(e.ts)} ${who} ${c.dim(`answered ${ev.question_id}: ${truncate(ev.answer, 80)}`)}`;
     case "controller":
       return ev.controller === "user" ? `${time(e.ts)} ${who} ${c.magenta("you are in control (takeover)")}` : null;
+    case "session":
+      return `${time(e.ts)} ${who} ${c.dim(`session ${ev.info.agent}: ${sessionLabel(ev.info)}`)}`;
     case "files":
       return detail ? `${time(e.ts)} ${who} ${c.dim(`files: ${ev.files.join(", ")}`)}` : null;
     default:
