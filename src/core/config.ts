@@ -36,6 +36,11 @@ export interface ContextConfig {
   assumed_window_tokens: number;
 }
 
+export interface ControlConfig {
+  /** Apply the control agent's non-destructive proposals without asking. Destructive ones always ask. */
+  auto_apply: boolean;
+}
+
 export interface RoleConfig {
   agent: string;
   effort: Effort;
@@ -56,6 +61,7 @@ export interface HexagonConfig {
   recovery: RecoveryConfig;
   review: { mode: "agent" | "off" };
   context: ContextConfig;
+  control: ControlConfig;
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
   sandbox: { allow_commands: string[]; command_timeout_s: number };
   ui: { open_with: "auto" | "tmux" | "iterm" | "terminal" | "print"; /** auto | full | reduced | off */ animation: string; startup_animation: boolean; inspector: boolean; /** faint ambient hexagons behind the network (full motion only) */ ambient: boolean };
@@ -71,6 +77,7 @@ export const DEFAULT_CONFIG: HexagonConfig = {
   recovery: DEFAULT_RECOVERY,
   review: { mode: "agent" },
   context: { mode: "auto", compact_at: 0.7, min_turns_between: 3, assumed_window_tokens: 200_000 },
+  control: { auto_apply: false },
   messaging: { max_outbound_per_run: 10, max_blocking_questions: 2 },
   sandbox: {
     allow_commands: [

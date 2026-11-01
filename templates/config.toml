@@ -102,6 +102,11 @@ compact_at = 0.70               # fraction of the model's context window
 min_turns_between = 3
 assumed_window_tokens = 200000  # used when the CLI reports no window
 
+# The control agent (chat) changes the graph, agents and runs only through typed commands. Each change is shown
+# as a diff and waits for your confirmation; destructive ones (remove, cancel) always do.
+[control]
+auto_apply = false              # true: apply non-destructive proposals without asking
+
 [review]
 mode = "agent"          # "agent" | "off"
 

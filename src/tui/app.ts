@@ -39,11 +39,13 @@ const COMMANDS: [string, string][] = [
   ["/init [description]", "let an agent study the repo and write HEXAGON.md"],
   ["/answer <Q-n> <text>", "answer an agent's question"],
   ["/tell <T-n|@role|@all> <text>", "message agents"],
-  ["/lead <question>", "ask Claude in the chat (same as typing on the claude tab)"],
+  ["/lead <question>", "ask the Hexagon Assistant (same as typing on its tab)"],
   ["/pause [T-n]", "pause the selected agent (or the whole run)"],
   ["/resume [T-n]", "resume"],
   ["/cancel [T-n]", "cancel an agent"],
   ["/retry [T-n] [--agent X] [--effort E]", "start a new attempt"],
+  ["/apply [P-n]", "apply a change the assistant proposed"],
+  ["/reject [P-n]", "drop a proposed change"],
   ["/approve-spec [file]", "approve the spec under review (Enter on the analyst tab)"],
   ["/respec <change>", "change the approved spec: it is reviewed and approved again before planning"],
   ["/compact [agent|T-n]", "compact an agent's session at its next safe point"],
@@ -65,7 +67,7 @@ const COMMANDS: [string, string][] = [
   ["/help", "show this list"],
 ];
 
-const HEX = "claude";
+const HEX = "control";
 const CONTINUABLE = new Set(["blocked", "failed", "cancelled"]);
 /** Readable names for the run-less sessions: [name, what it does]. */
 const SESSION_NAMES: Record<string, [string, string]> = {
@@ -339,6 +341,17 @@ export class App {
       case "notice": this.log(p.data.text, p.data.level === "info" ? S.cyan : S.orange); this.flash(p.data.text, p.data.level); break;
       case "session": this.sessions.set(p.data.id, p.data); break;
       case "permissions": this.snap.permissions = p.data; break;
+      case "proposals": {
+        const fresh = p.data.filter((x) => !this.snap.proposals.some((y) => y.id === x.id));
+        this.snap.proposals = p.data;
+        for (const x of fresh) {
+          this.log(`${x.id}${x.destructive ? " (destructive)" : ""} proposed by the assistant:\n${x.diff.map((d) => `  ${d}`).join("\n")}`, S.orange);
+          this.log(`/apply ${x.id} to confirm · /reject ${x.id} to drop it`, S.orange);
+          this.flash(`${x.id}: the assistant proposes a change — /apply ${x.id} or /reject ${x.id}`, "attention");
+        }
+        this.invalidate();
+        break;
+      }
       case "spec_review":
         this.snap.spec_review = p.data;
         if (p.data) {
@@ -527,13 +540,13 @@ export class App {
     const sel = this.selected;
     if (q && q.from === sel) return `answer ${q.id}…`;
     if (this.snap.spec_review && !this.plannerBusy() && (sel === HEX || sel === "planner")) return "Enter = approve the spec · or type what to change";
-    if (this.snap.draft && !this.plannerBusy() && (sel === HEX || sel === "planner")) return sel === "planner" ? "Enter = run this plan · or type what to change" : "Enter = run the plan · or chat with Claude…";
+    if (this.snap.draft && !this.plannerBusy() && (sel === HEX || sel === "planner")) return sel === "planner" ? "Enter = run this plan · or type what to change" : "Enter = run the plan · or chat with the assistant…";
     if (sel === "planner" && this.plannerBusy()) return "tell the planner something…";
     const a = this.full.get(sel);
     if (a && !TERMINAL_STATES.has(a.state)) return `message ${a.task_id}…`;
     if (a && CONTINUABLE.has(a.state)) return `${a.task_id} is ${a.state}: reply to continue its session (e.g. "mvn is installed now, try again") · /retry for a fresh attempt`;
     if (this.sessions.get(sel)?.state === "running") return `message the ${sel} agent…`;
-    return "chat with Claude — it works directly in this repo · /sdd <goal> for spec-driven parallel agents";
+    return "chat with the Hexagon Assistant — it works directly in this repo · /sdd <goal> for spec-driven parallel agents";
   }
 
   // ───────────── input ─────────────
@@ -664,7 +677,7 @@ export class App {
         { value: "@all", desc: "every active agent" },
         { value: "@developers", desc: "all developer agents" },
         { value: "@qa", desc: "all QA agents" },
-        { value: "@claude", desc: "chat with Claude" },
+        { value: "@assistant", desc: "chat with the Hexagon Assistant" },
         ...(this.snap.draft ? [{ value: "@planner", desc: "ask the planner to change the draft plan" }] : []),
       ].filter((i) => match(i.value));
     } else if (!first && cmd.startsWith("/")) {
@@ -722,7 +735,7 @@ export class App {
     const t = this.input.trim();
     if (t.startsWith("/")) return { label: "command", style: S.gray };
     const m = /^@(\S+)/.exec(t);
-    if (m) return { label: /^(lead|claude)$/i.test(m[1]!) ? "chat" : `to ${m[1]}`, style: S.cyan };
+    if (m) return { label: /^(lead|control|assistant|claude)$/i.test(m[1]!) ? "chat" : `to ${m[1]}`, style: S.cyan };
     const route = this.route(t);
     return { label: route.label, style: route.style };
   }
@@ -797,7 +810,7 @@ export class App {
   }
 
   private async tell(to: string, body: string) {
-    if (/^(lead|claude)$/i.test(to)) return await this.chat(body);
+    if (/^(lead|control|assistant|claude)$/i.test(to)) return await this.chat(body);
     if (/^planner$/i.test(to)) { await this.client.call("draft.revise", { feedback: body }); this.select("planner"); return; }
     const target = TASK_RE.test(to) ? normTask(to) : `@${to}`;
     await this.client.call("message.send", { to: target, body });
@@ -843,7 +856,7 @@ export class App {
               this.log(`run ${r.run_id} started`, S.cyan);
               return;
             }
-            throw new Error("no plan to run — /sdd <goal> first (or just ask Claude in the chat)");
+            throw new Error("no plan to run — /sdd <goal> first (or just ask the assistant in the chat)");
           }
           await c.call<{ run_id: string }>("draft.approve", { agent: agent || null, max_parallel: j ? Number(j) : undefined });
           this.select(this.snap.draft?.plan.tasks[0]?.id ?? HEX);
@@ -924,6 +937,13 @@ export class App {
           return;
         }
         case "/cancel": { const t = this.target(args); await c.call("agent.cancel", { task: t }); this.flash(`${t} cancelled`); return; }
+        case "/apply": case "/reject": {
+          const id = (args[0] ?? this.snap.proposals[0]?.id)?.toUpperCase();
+          if (!id) throw new Error("no proposal is waiting");
+          if (cmd!.toLowerCase() === "/apply") await c.call("command.confirm", { id }); else await c.call("command.reject", { id });
+          this.flash(cmd!.toLowerCase() === "/apply" ? `${id} applied` : `${id} dropped`);
+          return;
+        }
         case "/approve-spec": {
           const r = await c.call<{ approved: string; planning: boolean }>("spec.approve", { spec: args[0] });
           this.flash(`approved ${r.approved}${r.planning ? " — the analyst is writing the plan" : ""}`);
@@ -1053,7 +1073,7 @@ export class App {
     const w = Math.min(W - 2, 78);
     const inner = w - 4;
     const a = this.full.get(p.agent);
-    const who = a ? `${p.agent} · ${a.role} · ${a.agent.provider} ${a.agent.adapter ?? ""}`.trim() : p.agent === HEX ? "Claude chat" : p.agent;
+    const who = a ? `${p.agent} · ${a.role} · ${a.agent.provider} ${a.agent.adapter ?? ""}`.trim() : p.agent === HEX ? "Hexagon Assistant" : p.agent;
     const what = p.action === "install" ? "install a tool" : p.action === "sudo" ? "run as ROOT (sudo)" : "run a command";
     const rows: { k: string; v: string; style: string }[] = [
       { k: "Agent", v: who, style: this.tk("text") },
@@ -1264,7 +1284,7 @@ export class App {
       lines.push([`${this.look("failed").sym} Planning failed: ${p.error ?? ""}`, this.tk("error")], ["Describe the goal again, or adjust it.", this.tk("muted")]);
     } else {
       lines.push(["No agent network yet.", this.tk("text", S.bold)]);
-      lines.push(["Chat with Claude below: it answers questions and edits this repo directly.", this.tk("muted")]);
+      lines.push(["Chat with the Hexagon Assistant below: it answers questions and edits this repo directly.", this.tk("muted")]);
       lines.push(["For bigger work, /sdd <goal>: a planner writes a spec and task graph, you approve it, agents build it in parallel.", this.tk("muted")]);
       if (!this.snap.has_context) lines.push(["Tip: /init lets an agent study this repo and write HEXAGON.md first.", this.tk("info")]);
     }
@@ -1289,7 +1309,7 @@ export class App {
       const busy = cs?.state === "running";
       const m = this.meta(cs?.agent ?? "claude");
       return {
-        sym: busy ? this.look("running").sym : this.caps.unicode ? "◆" : "*", symStyle: busy ? this.tk("active") : this.tk("brand"), title: "Claude chat",
+        sym: busy ? this.look("running").sym : this.caps.unicode ? "◆" : "*", symStyle: busy ? this.tk("active") : this.tk("brand"), title: "Hexagon Assistant",
         l2: m ? m.provider : "works in this repo", l2b: m ? `${m.adapter}${m.diagnostics?.version ? ` ${m.diagnostics.version}` : ""}` : "",
         l3: [[perm ? `approve: ${perm.command}` : busy ? (cs?.activity ?? "THINKING").slice(0, 40) : "READY", perm ? this.tk("warning") : busy ? this.tk("active") : muted], [cs ? `  ${tok(sessTok(cs))} tok` : "", muted]],
         detail: [[`model: ${m?.selection?.mode === "cli-default" || !m ? "CLI-managed" : (m.selection as { identifier?: string }).identifier ?? "CLI-managed"}`, muted]], pct: null,
@@ -1509,14 +1529,14 @@ export class App {
     const a = this.full.get(sel);
     if (sel === HEX) {
       const cs = this.sessions.get(HEX);
-      title = "Chat · Claude";
+      title = "Chat · Hexagon Assistant";
       const notes: ChatItem[] = (this.feeds.get(HEX) ?? []).map((f) => ({ ts: f.ts, kind: "info", text: f.text, style: f.style || S.gray }));
       chat = this.chatMemo(`${sel}|${inner}|${cs?.feed.length ?? 0}|${cs?.feed.at(-1)?.ts ?? ""}|${cs?.feed.at(-1)?.text.length ?? 0}|${notes.length}|${notes.at(-1)?.ts ?? ""}`, () => {
         const items = [...(cs ? itemsFromSession(cs) : []), ...notes].sort((x, y) => x.ts.localeCompare(y.ts));
-        return chatLines(items, inner, "Claude");
+        return chatLines(items, inner, "Assistant");
       });
       const r = this.snap.run;
-      head.push([cs ? `${cs.state === "running" ? `${spinner(this.spin())} thinking` : cs.state} · ${tokLine(cs.tokens)}` : "Ask Claude anything or ask for a change: it works directly in this repo. /sdd <goal> runs the spec-driven flow.", S.gray]);
+      head.push([cs ? `${cs.state === "running" ? `${spinner(this.spin())} thinking` : cs.state} · ${tokLine(cs.tokens)}` : "Ask anything or ask for a change: it works directly in this repo. /sdd <goal> runs the spec-driven flow.", S.gray]);
       if (r) head.push([`run ${r.run_id} · ${r.state} · ${r.integration_branch} → ${r.base_branch}`, S.gray]);
     } else if (s) {
       title = `Chat · ${(SESSION_NAMES[s.id] ?? [s.id])[0]} · ${s.agent}`;

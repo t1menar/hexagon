@@ -6,6 +6,7 @@ import { HexClient, daemonRunning } from "./client/client.js";
 import type { Reply } from "./agents/types.js";
 import type { AgentStatus, Phase, RunStatus } from "./contracts/types.js";
 import { ensureRepo, isRepo } from "./core/git.js";
+import { argsFromFlags, commandDef, commandDocs, parseArgs } from "./core/commands.js";
 import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
 import type { SessionStatus } from "./core/solo.js";
@@ -37,6 +38,8 @@ ${c.bold("Watch & steer")}
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
   hexagon compact [agent|T-n]      compact an agent's session at its next safe point  ·  hexagon stats [--json]  tokens by cause
   hexagon bus send|read|subscribe  agents: structured messages between agents (handoff, decision, finding, question …)
+  hexagon commands                 the typed command API (graph, agents, runs) the assistant uses  ·  hexagon do <command> [--param v]
+  hexagon proposals | apply [P-n] | reject [P-n]   changes the assistant proposed, waiting for you
   hexagon approve-spec [file]      approve the spec under review (or a spec file): nothing is planned or built before that
   hexagon trace                    requirement → task → agent → verification → review → completion
   hexagon allow <cmd…> | all       let agents run these commands (e.g. allow brew curl) or everything
@@ -92,6 +95,22 @@ async function main(argv: string[]): Promise<void> {
   if (cmd === "--version" || cmd === "-v") return void console.log(VERSION);
   if (cmd === "--help" || cmd === "-h" || cmd === "help") return void console.log(USAGE);
   if (cmd && AGENT_OPS.has(cmd)) return agentOp(cmd, rest);
+  if (cmd === "commands") return void console.log(commandDocs());
+  if (cmd === "do") {
+    const name = rest[0];
+    const def = name ? commandDef(name) : undefined;
+    if (!def) { console.error(`usage: hexagon do <command> [--param value …]   (hexagon commands lists them)`); process.exit(2); }
+    let args: Record<string, unknown>;
+    try { args = parseArgs(def, argsFromFlags(def, rest.slice(1))); } catch (e) { console.error((e as Error).message); process.exit(2); }
+    // From the control agent: a proposal. From you: executed at once.
+    if (process.env.HEXAGON_AGENT) return agentOp("command", [JSON.stringify({ name: def.name, args })]);
+    const client = await HexClient.connect(root());
+    try {
+      const res = await client.call<{ status: string; result?: unknown }>("command.exec", { name: def.name, args });
+      console.log(JSON.stringify(res.result ?? null, null, 2));
+    } finally { client.close(); }
+    return;
+  }
   if (cmd === "init") return init(rest);
 
   if (cmd === "spec") {
@@ -247,6 +266,18 @@ async function main(argv: string[]): Promise<void> {
         else if (cmd === "cancel") throw new Error("usage: hexagon cancel <T-n>");
         else await client.call(`run.${cmd}`);
         console.log(`${cmd}: ${t ? normTask(t) : "run"}`);
+        break;
+      }
+      case "proposals": {
+        const list = await client.call<{ id: string; command: string; destructive: boolean; diff: string[] }[]>("command.list");
+        console.log(list.length ? list.map((p) => `${p.id}${p.destructive ? " (destructive)" : ""}  ${p.command}\n${p.diff.map((d) => `    ${d}`).join("\n")}`).join("\n") : "no proposals waiting");
+        break;
+      }
+      case "apply": case "reject": {
+        const id = (rest[0] ?? (await client.call<{ id: string }[]>("command.list"))[0]?.id)?.toUpperCase();
+        if (!id) { console.error("no proposal is waiting"); process.exitCode = 1; break; }
+        await client.call(cmd === "apply" ? "command.confirm" : "command.reject", { id });
+        console.log(`${id} ${cmd === "apply" ? "applied" : "dropped"}`);
         break;
       }
       case "approve-spec": {
@@ -492,6 +523,7 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
       break;
     }
     case "note": params = { body: a.join(" ") }; break;
+    case "command": params = JSON.parse(a[0] ?? "{}") as Record<string, unknown>; break;
     case "bus": {
       const action = a.shift();
       if (action === "send") {
