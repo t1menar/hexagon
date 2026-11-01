@@ -17,7 +17,6 @@ Claude Code (or any other coding CLI), each in its own git worktree.
 - **See everything.** A full-screen dashboard shows:
   - a live **agent network**: square cards joined by orthogonal edges, each with its own review
     footer (not reviewed / in review / changes requested / approved) and an integration hub, animated only by real events (see [docs/TUI.md](docs/TUI.md));
-  - a **3D atom** on the empty screen: a rotating hexagonal nucleus with orbiting electrons, drawn in real time;
   - an **agent navigator** grouped by role (analysis, implementation, review, integration)
     with provider, CLI, version, model, state and progress, plus an inspector and an
     activity timeline;
@@ -89,14 +88,14 @@ Try everything offline and free: set `agent = "mock"` for every role in `.hexago
 
 ## The dashboard: UI components
 
-![Empty state with the live 3D atom](docs/img/empty-atom.svg)
+![Empty state](docs/img/empty.svg)
 
 | # | Component | What it shows and how to use it |
 |---|---|---|
 | 1 | **Header** | Project, run state (`● RUNNING`), counts (`2 running`, `0/3 done`), tokens, elapsed time, provider health (`anthropic ✔`), `Δ N files +x −y · not in main yet` (what the run changed and has not reached your branch), `⚠ N approvals waiting`. |
 | 2 | **Agents (navigator)** | Left column, grouped by lifecycle: ANALYSIS (chat, planner, init), IMPLEMENTATION, REVIEW, INTEGRATION. Each agent has a state glyph, progress, role, provider, CLI version and model. `Tab` / `↑↓` select. The selected agent decides what the chat, inspector and network highlight. |
 | 3 | **Agent network** | Middle top. One square card per task, joined by orthogonal edges that follow the task dependencies, and an `INTEGRATION` hub that closes the graph. Particles run along the real edge when an agent starts, finishes or is rejected. The footer of each card is its review: `○ not reviewed yet` · `◐ in review` · `↩ changes requested (fix N)` · `✔ approved`. A rejection runs up the rail on the left side of the card (`▲ REJECTED → developer`); an approval leaves through the right side (`✔ APPROVED → integration`). On a graph too large for the box you get `+N more agents not shown`. |
-| 4 | **Empty state: 3D atom** | With no network yet, a hexagonal nucleus with three tilted orbits and six electrons rotates in real time (12 fps, perspective and depth shading: filled `⬢` is near, hollow `⬡` is far). It costs nothing when motion is off. |
+| 4 | **Empty state** | With no network yet, the pane explains the two ways to start: type to chat with Claude, or `/sdd <goal>`. Nothing animates there. |
 | 5 | **Inspector** (`F2`) | Right column. For the chat: identity, and **WHERE THE WORK IS** (your branch, integration branch, folder, size, next step). For a task agent: identity, session tokens, **WORKSPACE** (folder, branch, files changed). |
 | 6 | **Activity** | A timeline of real events: starts, reviews, rejections, approvals, quota waits, recoveries. |
 | 7 | **Chat** | The conversation with the selected agent: its replies, your messages (`✓` when received), Hexagon's notes and its tool steps folded into compact lines. `PgUp/PgDn` scroll. |
@@ -108,7 +107,7 @@ Try everything offline and free: set `agent = "mock"` for every role in `.hexago
 
 **Layouts.** The dashboard adapts to the terminal: **large** (≥150×30: navigator, network, inspector, activity, chat), **medium** (≥100×22: narrower navigator, the inspector is optional) and **small** (a strip instead of the navigator). The inspector opens only if the network keeps room. Any size ≥ 40×16 stays readable and never overflows.
 
-**Motion.** Animation is driven only by real events and by two ambient effects (the atom and a faint hexagon background). `/animate full|reduced|off` or `F3` changes it; the default (`auto`) is calm: `reduced` (8 fps, no background layer). Full motion (15 fps, particles, background hexagons) is opt-in with `/animate full`, `[ui] animation = "full"` or `HEXAGON_ANIMATION=full`. `off` (static, nothing redraws when idle) with `NO_MOTION=1` or `HEXAGON_ANIMATION=off`. The startup animation (1.5 s) is skipped by any key or `HEXAGON_STARTUP=off`. Design notes: [docs/TUI.md](docs/TUI.md); a text gallery of every state: [docs/TUI-SNAPSHOTS.md](docs/TUI-SNAPSHOTS.md).
+**Motion.** Animation is driven only by real events and by one ambient effect (a faint hexagon background). `/animate full|reduced|off` or `F3` changes it; the default (`auto`) is calm: `reduced` (8 fps, no background layer). Full motion (15 fps, particles, background hexagons) is opt-in with `/animate full`, `[ui] animation = "full"` or `HEXAGON_ANIMATION=full`. `off` (static, nothing redraws when idle) with `NO_MOTION=1` or `HEXAGON_ANIMATION=off`. The startup animation (1.5 s) is skipped by any key or `HEXAGON_STARTUP=off`. Design notes: [docs/TUI.md](docs/TUI.md); a text gallery of every state: [docs/TUI-SNAPSHOTS.md](docs/TUI-SNAPSHOTS.md).
 
 **Colour and glyphs.** Truecolor, 256, 16 or no colour is detected from the terminal (`NO_COLOR` respected); `HEXAGON_ASCII=1` forces plain ASCII borders and symbols.
 
@@ -356,7 +355,7 @@ Inside the dashboard the inspector (**WHERE THE WORK IS** / **WORKSPACE**) and `
 | `HEXAGON_AMBIENT=off` | no background hexagons |
 | `HEXAGON_STARTUP=off` | skip the startup animation |
 | `HEXAGON_ASCII=1`, `NO_COLOR=1` | plain glyphs / no colour |
-| `HEXAGON_CELL_ASPECT=2.0` | cell height ÷ width, for the 3D atom and hexagon geometry |
+| `HEXAGON_CELL_ASPECT=2.0` | cell height ÷ width, for the hexagon geometry |
 
 ## A full session, start to finish
 
@@ -528,7 +527,7 @@ goal ─▶ planner agent ─▶ specs/<name>.spec.md + task graph ─▶ you ap
 | Nothing happens after `/sdd` | `hexagon agents doctor`: is `claude` installed and logged in? |
 | `waiting for a provider limit` | Nothing to do: it resumes by itself at the reset time ([docs/RECOVERY.md](docs/RECOVERY.md)). |
 | Odd glyphs or broken borders | `HEXAGON_ASCII=1 hexagon`; check that the terminal uses a UTF-8 locale and a font with box-drawing and `⬢ ⬡`. |
-| The atom or edges look stretched | Set `HEXAGON_CELL_ASPECT` to your cell height ÷ width (about 2.0). |
+| Edges or hexagons look stretched | Set `HEXAGON_CELL_ASPECT` to your cell height ÷ width (about 2.0). |
 | Too much motion / slow over SSH | `/animate reduced` or `off`, or `[ui] animation = "off"`. |
 | The daemon looks stuck | `hexagon down --yes`, then `hexagon`. |
 | Where did my change go? | `/changes`, or `git log hexagon/<run>/integration`. Your branch changes only on `/merge`. |
