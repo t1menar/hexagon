@@ -1,11 +1,10 @@
 /**
- * The agent network: regular hexagonal nodes joined by bonds, plus one reviewer satellite per node and an integration
- * hub. Renders into a Canvas and returns the geometry (node rects, edge paths) so the motion layer can run particles
+ * The agent network: rectangular agent cards joined by edges. Each card carries its own review footer (status in text)
+ * and an integration hub closes the graph. Renders into a Canvas and returns the geometry (node rects, edge paths) so the motion layer can run particles
  * along the real connections.
  */
 import { Canvas, clip, st } from "./canvas.js";
 import { ACTIVE, bar, layout, type DagNode } from "./dag.js";
-import { cellAspect, drawHexagon, hexMetrics, placeLabels, type HexLabel, type HexMetrics } from "./hex.js";
 import { Path, type Pt } from "./motion.js";
 import { asciiFold, STATE_LOOK, sgr, TOKENS, mix, type Caps, type Rgb, type Token } from "./theme.js";
 
@@ -22,8 +21,10 @@ export interface NodeFx {
   sweep?: number | null;
   /** Colour override blended over the outline (0..1). */
   flash?: { color: Rgb; k: number } | null;
-  /** Reviewer satellite highlight (0..1). */
+  /** Review footer highlight (0..1). */
   reviewer?: { color: Rgb; k: number } | null;
+  /** Transient emphasis of the review footer text while a verdict is being delivered. */
+  review?: "rejected" | "approved" | null;
 }
 
 export interface NetOptions {
@@ -33,6 +34,7 @@ export interface NetOptions {
   /** Elapsed milliseconds (animation clock). Only used when `still` is false. */
   now: number;
   selected?: string | null;
+  /** Kept for API compatibility; cards do not depend on the cell aspect. */
   aspect?: number;
   still?: boolean;
   fx?: ReadonlyMap<string, NodeFx>;
@@ -43,13 +45,16 @@ export interface NetOptions {
 export interface Rect { x: number; y: number; w: number; h: number }
 export interface Geometry {
   canvas: Canvas;
-  hex: HexMetrics | null;
+  card: { w: number; h: number; level: 0 | 1 | 2 } | null;
   compact: boolean;
   nodes: Map<string, Rect & { cx: number; cy: number }>;
   /** Path of every dependency edge from → to, as drawn. */
   edges: { from: string; to: string; path: Path }[];
-  /** Reviewer satellite cell and the stem up to the node's lower edge. */
-  reviewers: Map<string, { cell: Pt; stem: Path }>;
+  /**
+   * Review lanes per card. `stem` is the rejection lane: from the review row up the card's left rail to the work area.
+   * `exit` is the approval lane: from the review row out of the card to where its outgoing edges start.
+   */
+  reviewers: Map<string, { cell: Pt; stem: Path; exit: Path }>;
 }
 
 const U = 1, R = 2, D = 4, L = 8;
@@ -62,42 +67,39 @@ const DOUBLE: Record<string, string> = { "─": "═", "│": "║", "╭": "╔
 
 const G = 6; // columns between layers (room for bonds)
 
-/** Pick the largest regular hexagon that lets the whole graph fit. */
-export function fitHex(layers: number, rows: number, maxW: number, maxH: number, aspect: number, sat: boolean): HexMetrics | null {
-  for (const r of [5, 4, 3, 2]) {
-    const m = hexMetrics(r, aspect);
-    const rowH = m.h + (sat ? 4 : 1);
-    if (layers * m.w + (layers - 1) * G <= maxW && rows * rowH - 1 <= maxH) return m;
-  }
+export interface CardSize { w: number; h: number; level: 0 | 1 | 2 }
+const CARD_SIZES: CardSize[] = [{ w: 30, h: 9, level: 0 }, { w: 26, h: 7, level: 1 }, { w: 20, h: 5, level: 2 }];
+const ROW_GAP = 1;
+
+/** Pick the largest card size that lets the whole graph fit. */
+export function fitCard(layers: number, rows: number, maxW: number, maxH: number): CardSize | null {
+  for (const c of CARD_SIZES) if (layers * c.w + (layers - 1) * G <= maxW && rows * (c.h + ROW_GAP) - ROW_GAP <= maxH) return c;
   return null;
 }
 
 export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
-  const aspect = o.aspect ?? cellAspect();
   const withHub = (o.hub ?? true) && input.length > 0;
   const hubNode: NetNode | null = withHub
     ? { id: INTEGRATION, title: "integration", role: "integration", deps: input.filter((n) => !input.some((m) => m.deps.includes(n.id))).map((n) => n.id), state: input.every((n) => n.state === "done") ? "done" : input.some((n) => ACTIVE.has(n.state)) ? "merging" : "queued", progress: null }
     : null;
   const nodes: NetNode[] = hubNode ? [...input, hubNode] : input;
-  const geom: Geometry = { canvas: new Canvas(1, 1), hex: null, compact: false, nodes: new Map(), edges: [], reviewers: new Map() };
+  const geom: Geometry = { canvas: new Canvas(1, 1), card: null, compact: false, nodes: new Map(), edges: [], reviewers: new Map() };
   if (!input.length) { geom.canvas = new Canvas(Math.max(1, o.maxW), 1); return geom; }
 
   const { layers, edges } = layout(nodes);
   const nL = layers.length;
   const rows = Math.max(...layers.map((l) => l.length));
-  let sat = true;
-  let hex = fitHex(nL, rows, o.maxW, o.maxH, aspect, true);
-  if (!hex) { sat = false; hex = fitHex(nL, rows, o.maxW, o.maxH, aspect, false); }
-  const compact = !hex || hex.r <= 2;
-  if (!hex) hex = hexMetrics(2, aspect); // too small even for compact: clipped, never malformed
-  geom.hex = hex;
+  const fit = fitCard(nL, rows, o.maxW, o.maxH);
+  const card = fit ?? CARD_SIZES[2]!; // too small even for the smallest card: clipped, never malformed
+  const compact = card.level === 2;
+  geom.card = card;
   geom.compact = compact;
-  const hubHex = hexMetrics(Math.max(2, hex.r - 1), aspect);
-  const boxOf = (id: string) => (id === INTEGRATION ? hubHex : hex!);
-  const colW = Math.max(hex.w, hubHex.w);
-  const slot = hex.h + (sat ? 4 : 1);
+  const hubH = card.level === 2 ? 3 : 4;
+  const boxOf = (id: string) => ({ w: card.w, h: id === INTEGRATION ? hubH : card.h });
+  const colW = card.w;
+  const slot = card.h + ROW_GAP;
   const width = Math.min(o.maxW, nL * colW + (nL - 1) * G);
-  const height = Math.min(o.maxH, rows * slot - 1);
+  const height = Math.min(o.maxH, rows * slot - ROW_GAP);
   const c = new Canvas(Math.max(1, width), Math.max(1, height));
   geom.canvas = c;
   const depth = o.caps.color;
@@ -107,7 +109,7 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
   const pos = new Map<string, { x: number; y: number }>();
   layers.forEach((layer, li) => {
     const offset = Math.floor(((rows - layer.length) * slot) / 2);
-    layer.forEach((n, i) => pos.set(n.key, { x: li * (colW + G) + Math.floor((colW - (n.real ? boxOf(n.key).w : 0)) / 2), y: offset + i * slot }));
+    layer.forEach((n, i) => pos.set(n.key, { x: li * (colW + G), y: offset + i * slot + (n.real && n.key === INTEGRATION ? Math.floor((card.h - hubH) / 2) : 0) }));
   });
   const realOf = (key: string) => layers.flat().find((n) => n.key === key)?.real ?? null;
   const midY = (key: string) => { const p = pos.get(key)!; const h = boxOf(key).h; return p.y + Math.floor(h / 2); };
@@ -170,6 +172,7 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
 
   // ── nodes ──
   const reduce = o.still || o.caps.motion === "off";
+  const uni = o.caps.unicode;
   for (const layer of layers) {
     for (const ln of layer) {
       if (!ln.real) continue;
@@ -182,28 +185,99 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
       const sel = o.selected === node.id;
       let base: Rgb = TOKENS[look.token];
       if (fx?.flash) base = mix(base, fx.flash.color, fx.flash.k);
-      const selBg = sel ? sgr(TOKENS.surface, depth, true) : "";
-      const outline = sel ? st(sgr(TOKENS.text, depth), "1") : st(sgr(base, depth), isHub ? "2" : "");
-      if (sel) c.fill(p.x + 2, p.y + 1, m.w - 4, m.h - 2, selBg);
-      const ring = drawHexagon(c, p.x, p.y, m, outline, node.state === "queued");
-      if (sel) for (const [rx, ry] of ring) c.styles[ry]![rx] = st(c.styles[ry]![rx]!, selBg);
-      geom.nodes.set(node.id, { x: p.x, y: p.y, w: m.w, h: m.h, cx: p.x + Math.floor(m.w / 2), cy: p.y + Math.floor(m.h / 2) });
+      const bg = sel ? sgr(TOKENS.surface, depth, true) : "";
+      const outline = sel ? st(sgr(TOKENS.text, depth), "1", bg) : st(sgr(base, depth), isHub || node.state === "queued" ? "2" : "", bg);
+      const sty = (...x: string[]) => st(...x, bg);
+      const x0 = p.x, y0 = p.y, x1 = p.x + m.w - 1, y1 = p.y + m.h - 1;
+      const dashed = node.state === "queued";
 
-      // labels (information hierarchy: id & state first, then role/provider/model, then title)
-      const sty = (...x: string[]) => st(...x, selBg);
-      const glyph = o.caps.unicode ? look.symbol : look.ascii;
-      const labels: HexLabel[] = isHub
-        ? [{ key: "id", text: "INTEGRATION", style: sty(sgr(TOKENS.brand2, depth), "1") }, { key: "state", text: `${glyph} ${look.label}`, style: sty(sgr(base, depth), "1") }]
-        : [
-          { key: "id", text: node.id, style: sty(sgr(TOKENS.text, depth), "1") },
-          { key: "role", text: node.role, style: sty(sgr(TOKENS.brand, depth)) },
-          { key: "title", text: node.title, style: sty(sgr(TOKENS.text, depth)) },
-          { key: "provider", text: [node.provider, node.cli].filter(Boolean).join(" · ") || "no agent yet", style: sty(sgr(TOKENS.muted, depth)) },
-          { key: "model", text: node.provider || node.cli ? (node.runtimeModel ? node.runtimeModel : "CLI-managed") : "", style: sty(sgr(TOKENS.muted, depth)) },
-          { key: "state", text: node.quota ? `${glyph} ${node.quota}` : `${glyph} ${compact ? look.label.split(" ")[0] : look.label}${node.fixCycle ? ` ·fix ${node.fixCycle}` : ""}`, style: sty(sgr(base, depth), "1") },
-          { key: "bar", text: node.progress != null ? ((b) => `${b.fill}${b.rest}${b.label}`)(bar(node.progress, Math.max(6, m.top))) : "", style: sty(sgr(base, depth)) },
-        ].filter((l) => l.text);
-      placeLabels(c, p.x, p.y, m, labels, ["id", "state", "role", "bar", "provider", "model", "title"]);
+      // frame (square corners; dashed while queued)
+      c.fill(x0, y0, m.w, m.h, sty(), " ");
+      const ring: [number, number][] = [];
+      for (let x = x0; x <= x1; x++) { c.set(x, y0, dashed ? "┄" : "─", outline); ring.push([x, y0]); }
+      for (let y = y0 + 1; y <= y1; y++) { c.set(x1, y, dashed ? "┆" : "│", outline); ring.push([x1, y]); }
+      for (let x = x1 - 1; x >= x0; x--) { c.set(x, y1, dashed ? "┄" : "─", outline); ring.push([x, y1]); }
+      for (let y = y1 - 1; y > y0; y--) { c.set(x0, y, dashed ? "┆" : "│", outline); ring.push([x0, y]); }
+      c.set(x0, y0, "┌", outline); c.set(x1, y0, "┐", outline); c.set(x0, y1, "└", outline); c.set(x1, y1, "┘", outline);
+      geom.nodes.set(node.id, { x: x0, y: y0, w: m.w, h: m.h, cx: x0 + Math.floor(m.w / 2), cy: y0 + Math.floor(m.h / 2) });
+
+      const glyph = uni ? look.symbol : look.ascii;
+      const inner = m.w - 4; // text columns between the rail gutter and the right border
+      const tx = x0 + 3;
+      const text = (y: number, t: string, style: string) => c.text(tx, y, clip(t, inner), style, x1);
+      const boldText = sty(sgr(TOKENS.text, depth), "1");
+      const mutedText = sty(sgr(TOKENS.muted, depth));
+      const stateCol = sty(sgr(base, depth), "1");
+
+      if (isHub) {
+        c.text(tx, y0 + 1, clip("INTEGRATION", inner), sty(sgr(TOKENS.brand2, depth), "1"), x1);
+        text(y0 + 2, `${glyph} ${look.label}`, stateCol);
+        continue;
+      }
+
+      // title row sits in the border: id · role
+      c.text(x0 + 2, y0, clip(` ${node.id} · ${node.role} `, m.w - 4), sty(sgr(TOKENS.text, depth), "1"), x1);
+      const bar2 = node.progress != null ? bar(node.progress, Math.max(6, inner - 5)) : null;
+      const state = node.quota ? `${glyph} ${node.quota}` : `${glyph} ${look.label}${node.fixCycle ? ` · fix ${node.fixCycle}` : ""}`;
+      const idLine = [node.provider, node.cli].filter(Boolean).join(" · ") || "no agent yet";
+      const modelLine = node.provider || node.cli ? `model: ${node.runtimeModel ?? "CLI-managed"}` : "";
+      const pct = node.progress != null ? `${Math.round(node.progress * 100)}%` : "";
+      let sepY: number, revY: number;
+      if (card.level === 0) {
+        text(y0 + 1, node.title, boldText);
+        text(y0 + 2, idLine, mutedText);
+        text(y0 + 3, modelLine, mutedText);
+        text(y0 + 4, state, stateCol);
+        if (bar2) { const bx = c.text(tx, y0 + 5, bar2.fill, sty(sgr(base, depth)), x1); const bx2 = c.text(bx, y0 + 5, bar2.rest, sty(sgr(TOKENS.border, depth)), x1); c.text(bx2, y0 + 5, bar2.label, mutedText, x1); }
+        sepY = y0 + 6; revY = y0 + 7;
+      } else if (card.level === 1) {
+        text(y0 + 1, node.title, boldText);
+        text(y0 + 2, idLine, mutedText);
+        text(y0 + 3, state, stateCol);
+        if (pct) c.text(x1 - 1 - pct.length, y0 + 3, pct, mutedText, x1);
+        sepY = y0 + 4; revY = y0 + 5;
+      } else {
+        text(y0 + 1, node.title, boldText);
+        text(y0 + 2, state, stateCol);
+        if (pct) c.text(x1 - 1 - pct.length, y0 + 2, pct, mutedText, x1);
+        sepY = -1; revY = y0 + 3;
+      }
+
+      // review footer: its status is always written out, never only coloured
+      const rv = fx?.reviewer;
+      const verdict: { sym: string; text: string; tok: Token } =
+        fx?.review === "rejected" ? { sym: uni ? "▲" : "^", text: "REJECTED → developer", tok: "warning" }
+        : fx?.review === "approved" ? { sym: uni ? "✔" : "+", text: "APPROVED → integration", tok: "success" }
+        : node.state === "reviewing" ? { sym: uni ? "◐" : "~", text: "in review", tok: "brand2" }
+        : node.state === "merging" || node.state === "done" ? { sym: uni ? "✔" : "+", text: "approved", tok: "success" }
+        : node.fixCycle ? { sym: uni ? "↩" : "<", text: `changes requested (fix ${node.fixCycle})`, tok: "warning" }
+        : { sym: uni ? "○" : "o", text: "not reviewed yet", tok: "muted" };
+      const vcol = rv ? mix(TOKENS[verdict.tok], rv.color, rv.k) : TOKENS[verdict.tok];
+      if (sepY >= 0) {
+        c.set(x0, sepY, "├", outline); c.set(x1, sepY, "┤", outline);
+        for (let x = x0 + 1; x < x1; x++) c.set(x, sepY, "─", sty(sgr(TOKENS.border, depth)));
+        c.text(x0 + 2, sepY, " REVIEW ", sty(sgr(TOKENS.muted, depth), "1"), x1);
+      }
+      const label = sepY >= 0 ? `${verdict.sym} ${verdict.text}` : `${verdict.sym} ${verdict.text}`;
+      c.text(tx, revY, clip(label, inner), sty(sgr(vcol, depth), rv || fx?.review || node.state === "reviewing" ? "1" : ""), x1);
+
+      // review lanes. Rejection lane: a rail in the left gutter from the review row up to the work area.
+      // Approval lane: out of the card on the right edge at the review row.
+      const railX = x0 + 1;
+      const top = y0 + 1;
+      const railOn = node.state === "reviewing" || Boolean(node.fixCycle) || fx?.review === "rejected";
+      if (railOn) {
+        for (let y = top; y <= revY; y++) c.set(railX, y, "╎", sty(sgr(mix(TOKENS.border, TOKENS.warning, node.fixCycle || fx?.review === "rejected" ? 0.7 : 0), depth)));
+        c.set(railX, top, uni ? "▲" : "^", sty(sgr(node.fixCycle || fx?.review === "rejected" ? TOKENS.warning : TOKENS.muted, depth)));
+      }
+      const approved = node.state === "merging" || node.state === "done" || fx?.review === "approved";
+      if (approved) c.set(x1, revY, uni ? "▸" : ">", sty(sgr(TOKENS.success, depth), "1"));
+      const ya = y0 + Math.floor(m.h / 2);
+      geom.reviewers.set(node.id, {
+        cell: [railX, revY],
+        stem: new Path([[railX, revY], [railX, top]]),
+        exit: new Path([[x1 - 1, revY], [x1 + 1, revY], [x1 + 1, ya]]),
+      });
 
       // perimeter highlight: activity arc and one-shot activation sweep
       if (!reduce && ring.length) {
@@ -212,25 +286,12 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
             const [rx, ry] = ring[(((head - i) % ring.length) + ring.length) % ring.length]!;
             const k = 1 - i / len;
             if (rx < 0 || rx >= c.w || !c.styles[ry]) continue;
-            c.styles[ry]![rx] = st(sgr(mix(base, col, 0.35 + 0.65 * k), depth), bold && i < 2 ? "1" : "");
+            c.styles[ry]![rx] = st(sgr(mix(base, col, 0.35 + 0.65 * k), depth), bold && i < 2 ? "1" : "", bg);
           }
         };
         if (ACTIVE.has(node.state)) arc(Math.floor((o.now / 1000) * 14), Math.max(4, Math.round(ring.length / 5)), TOKENS.text, true);
-        else if (node.state === "waiting_quota") arc(Math.floor((o.now / 1000) * 3), 3, TOKENS.waiting, false); // slow, restrained
+        else if (node.state === "waiting_quota") arc(Math.floor((o.now / 1000) * 3), 3, TOKENS.waiting, false);
         if (fx?.sweep != null) arc(Math.floor(fx.sweep * ring.length), Math.max(5, Math.round(ring.length / 4)), TOKENS.text, true);
-      }
-
-      // reviewer satellite + stem
-      if (sat && !isHub) {
-        const cx = p.x + Math.floor(m.w / 2);
-        const sy = p.y + m.h + 2;
-        const rv = fx?.reviewer;
-        const col = rv ? mix(TOKENS.brand2, rv.color, rv.k) : node.state === "reviewing" ? TOKENS.brand2 : TOKENS.border;
-        c.set(cx, p.y + m.h, "│", st(sgr(TOKENS.border, depth)));
-        c.set(cx, p.y + m.h + 1, "│", st(sgr(TOKENS.border, depth)));
-        c.set(cx, sy, o.caps.unicode ? (rv || node.state === "reviewing" ? "⬢" : "⬡") : "R", st(sgr(col, depth), rv || node.state === "reviewing" ? "1" : ""));
-        if (m.w >= 12 && !compact) c.text(cx + 2, sy, clip(node.reviewOpen ? `review · ${node.reviewOpen} open` : node.state === "done" ? "approved" : "review", m.w - 4), st(sgr(TOKENS.muted, depth)));
-        geom.reviewers.set(node.id, { cell: [cx, sy], stem: new Path([[cx, sy], [cx, p.y + m.h]]) });
       }
     }
   }

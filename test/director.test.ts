@@ -9,9 +9,9 @@ const st = (task_id: string, state: AgentState, extra: Record<string, unknown> =
 const ev = (task_id: string, event: Record<string, unknown>) => ({ task_id, ts: new Date().toISOString(), event }) as unknown as StampedEvent;
 
 const geom = (): Geometry => ({
-  canvas: null as never, hex: null, compact: false, nodes: new Map(),
+  canvas: null as never, card: null, compact: false, nodes: new Map(),
   edges: [{ from: "T-1", to: "T-2", path: new Path([[0, 0], [12, 0]]) }],
-  reviewers: new Map([["T-1", { cell: [4, 8], stem: new Path([[4, 8], [4, 6]]) }], ["T-2", { cell: [20, 8], stem: new Path([[20, 8], [20, 6]]) }]]),
+  reviewers: new Map([["T-1", { cell: [4, 8], stem: new Path([[4, 8], [4, 6]]), exit: new Path([[8, 8], [10, 8], [10, 4]]) }], ["T-2", { cell: [20, 8], stem: new Path([[20, 8], [20, 6]]), exit: new Path([[24, 8], [26, 8], [26, 4]]) }]]),
 });
 
 function setup(motion: "full" | "reduced" | "off" = "full") {

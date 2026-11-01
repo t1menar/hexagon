@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DagNode } from "../src/tui/dag.js";
-import { detectCaps, type Caps } from "../src/tui/theme.js";
+import { asciiFold, detectCaps, type Caps } from "../src/tui/theme.js";
 import { renderNetwork, type NodeFx } from "../src/tui/network.js";
 import { renderStartup, startupProgress } from "../src/tui/startup.js";
 import { Canvas } from "../src/tui/canvas.js";
@@ -101,5 +101,47 @@ describe("startup sequence", () => {
   it("deterministic: same time, same frame", () => {
     const clock = new FakeClock(); clock.advance(500);
     expect(plain(renderStartup(100, 30, clock.now(), full, 2))).toBe(plain(renderStartup(100, 30, 500, full, 2)));
+  });
+});
+
+describe("square cards", () => {
+  it("draw rectangular frames, with an explicit review footer in text", () => {
+    const g = render({ still: true });
+    const out = plain(g.canvas);
+    expect(g.card).not.toBeNull();
+    expect(out).not.toMatch(/[⬡⬢╱╲]/); // no hexagon shapes or symbols
+    expect(out).toMatch(/┌.*T-1/);
+    expect(out).toMatch(/REVIEW/);
+    expect(out).toMatch(/not reviewed yet|in review|approved/);
+    for (const r of g.nodes.values()) expect(r.w).toBe(g.card!.w);
+  });
+  it("review verdicts are written out, not only coloured", () => {
+    const rejected = new Map<string, NodeFx>([["T-2", { review: "rejected" }]]);
+    const approved = new Map<string, NodeFx>([["T-2", { review: "approved" }]]);
+    expect(plain(render({ still: true, fx: rejected }).canvas)).toMatch(/REJECTED → developer/);
+    expect(plain(render({ still: true, fx: approved }).canvas)).toMatch(/APPROVED → integration/);
+    expect(plain(render({ still: true }).canvas)).toMatch(/in review/); // T-2 is reviewing in the fixture
+  });
+  it("review lanes exist for every card and stay inside the card's column range", () => {
+    const g = render({ still: true });
+    for (const id of ["T-1", "T-2", "T-3", "T-4"]) {
+      const r = g.reviewers.get(id)!, n = g.nodes.get(id)!;
+      expect(r).toBeDefined();
+      expect(r.stem.pts[0]![0]).toBeGreaterThan(n.x);
+      expect(r.stem.pts[0]![0]).toBeLessThan(n.x + n.w);
+      expect(r.exit.pts.at(-1)![0]).toBe(n.x + n.w);
+    }
+  });
+  it("ASCII fold leaves no unmapped characters", () => {
+    const c = render({ still: true }).canvas;
+    const folded = c.lines(false).map((l) => [...l].map(asciiFold).join("")).join("");
+    expect(folded).not.toContain("?");
+  });
+  it("all card sizes fit: large, medium, compact", () => {
+    for (const [w, h] of [[160, 50], [100, 24], [70, 14]] as const) {
+      const g = render({ maxW: w, maxH: h, still: true });
+      expect(g.canvas.w).toBeLessThanOrEqual(w); expect(g.canvas.h).toBeLessThanOrEqual(h);
+      expect(plain(g.canvas)).toContain("T-1");
+    }
   });
 });

@@ -60,6 +60,15 @@ export class Director {
     this.m.tween(tag, ms, (v) => { f[key] = v >= 1 ? null : { color, k: ease.pulse(v) }; }, { easing: ease.linear });
   }
 
+  /** Spell the verdict out on the card's review footer while the particles carry it. */
+  private note(id: string, kind: "rejected" | "approved", ms: number) {
+    const f = this.fxOf(id);
+    const tag = `note:${id}`;
+    this.m.cancel(tag);
+    f.review = kind;
+    this.m.tween(tag, ms, (v) => { if (v >= 1) f.review = null; }, { easing: ease.linear });
+  }
+
   private sweep(id: string, ms = 700) {
     const f = this.fxOf(id);
     const tag = `sweep:${id}`;
@@ -111,10 +120,11 @@ export class Director {
         if (prev === "reviewing") {
           this.log(name, "review", "review approved — integrating", "success");
           this.flash(id, TOKENS.success, 900, "reviewer");
+          this.note(id, "approved", 1800);
           const r = this.geometry?.reviewers.get(id);
           const outs = this.outgoing(id);
-          if (r && outs.length) for (const [i, p] of outs.slice(0, 2).entries()) for (let k = 0; k < 3; k++) this.m.spawn("completion", r.stem.reversed().concat(p), { delay: k * 140 + i * 60, tag: `done:${id}` });
-          else if (r) for (let k = 0; k < 3; k++) this.m.spawn("completion", r.stem.reversed(), { delay: k * 140, tag: `done:${id}` });
+          if (r && outs.length) for (const [i, p] of outs.slice(0, 2).entries()) for (let k = 0; k < 3; k++) this.m.spawn("completion", r.exit.concat(p), { delay: k * 140 + i * 60, tag: `done:${id}` });
+          else if (r) for (let k = 0; k < 3; k++) this.m.spawn("completion", r.exit, { delay: k * 140, tag: `done:${id}` });
         }
         break;
       }
@@ -163,7 +173,7 @@ export class Director {
         if (this.last.get(id) === "reviewing") {
           this.log(id, "review", `review rejected — returned to the developer (fix cycle ${ev.n})`, "warning");
           this.flash(id, TOKENS.warning, 900, "reviewer");
-          this.flash(id, TOKENS.warning, 900);
+          this.note(id, "rejected", 2400);
           const r = this.geometry?.reviewers.get(id);
           if (r) for (let k = 0; k < 4; k++) this.m.spawn("review", r.stem, { delay: k * 130, tag: `rej:${id}` });
         } else this.log(id, "error", `verification failed — fix cycle ${ev.n}`, "warning");

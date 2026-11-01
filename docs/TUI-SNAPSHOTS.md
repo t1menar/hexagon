@@ -80,89 +80,65 @@ Short brand assembly; any key skips it; `ui.startup_animation = false` disables 
 Nothing is running: static, zero redraws.
 
 ```text
-                           ╌╌╌╌╌╌╌╌╌
-                          ╱   T-2   ╲
-                         ╱implementer╲
-                        ╱Build the API╲
-                    ╭─▸ ╲openai · cod…╱ ───╮
-                    │    ╲CLI-managed╱     │
-    ╌╌╌╌╌╌╌╌╌       │     ╲○ QUEUED ╱      │       ╌╌╌╌╌╌╌
-   ╱   T-1   ╲      │      ╌╌╌╌╌╌╌╌╌       │      ╱       ╲
-  ╱implementer╲     │          │           │     ╱INTEGRAT…╲
- ╱Parse the sp…╲    │          │           ├───▸ ╲○ QUEUED ╱
- ╲anthropic · …╱ ───┤          ⬡ review    │      ╲       ╱
-  ╲CLI-managed╱     │                      │       ╌╌╌╌╌╌╌
-   ╲○ QUEUED ╱      │      ╌╌╌╌╌╌╌╌╌       │
-    ╌╌╌╌╌╌╌╌╌       │     ╱   T-3   ╲      │
-        │           │    ╱implementer╲     │
-        │           │   ╱Build the UI ╲    │
-        ⬡ review    ╰─▸ ╲xai · grok 1…╱ ───╯
-                         ╲CLI-managed╱
-                          ╲○ QUEUED ╱
-                           ╌╌╌╌╌╌╌╌╌
-                               │
-                               │
-                               ⬡ review
+                                ┌┄ T-2 · implementer ┄┄┄┄┐
+                                ┆  Build the API         ┆
+                                ┆  openai · codex 0.9    ┆
+                             ╭─▸┆  ○ QUEUED              ┆───╮
+┌┄ T-1 · implementer ┄┄┄┄┐   │  ├─ REVIEW ───────────────┤   │
+┆  Parse the spec        ┆   │  ┆  ○ not reviewed yet    ┆   │  ┌┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
+┆  anthropic · claude-co…┆   │  └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘   │  ┆  INTEGRATION           ┆
+┆  ○ QUEUED              ┆───┤                               ├─▸┆  ○ QUEUED              ┆
+├─ REVIEW ───────────────┤   │  ┌┄ T-3 · implementer ┄┄┄┄┐   │  └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+┆  ○ not reviewed yet    ┆   │  ┆  Build the UI          ┆   │
+└┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘   │  ┆  xai · grok 1.0        ┆   │
+                             ╰─▸┆  ○ QUEUED              ┆───╯
+                                ├─ REVIEW ───────────────┤
+                                ┆  ○ not reviewed yet    ┆
+                                └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
 ```
 
 ### Agent starting (activation sweep)
 
-A single sweep travels around the outline when an agent starts.
+A single sweep travels around the frame when an agent starts.
 
 ```text
-                           ╌╌╌╌╌╌╌╌╌
-                          ╱   T-2   ╲
-                         ╱implementer╲
-                        ╱Build the API╲
-                    ╭─▸ ╲openai · cod…╱ ───╮
-                    │    ╲CLI-managed╱     │
-    ─────────       │     ╲○ QUEUED ╱      │       ───────
-   ╱   T-1   ╲      │      ╌╌╌╌╌╌╌╌╌       │      ╱       ╲
-  ╱implementer╲     │          │           │     ╱INTEGRAT…╲
- ╱anthropic · …╲    │          │           ├───▸ ╲⇢ INTEGR…╱
- ╲ CLI-managed ╱ ───┤          ⬡ review    │      ╲       ╱
-  ╲ ● WORKING ╱     │                      │       ───────
-   ╲━━─── 35%╱      │      ╌╌╌╌╌╌╌╌╌       │
-    ─────────       │     ╱   T-3   ╲      │
-        │           │    ╱implementer╲     │
-        │           │   ╱Build the UI ╲    │
-        ⬡ review    ╰─▸ ╲xai · grok 1…╱ ───╯
-                         ╲CLI-managed╱
-                          ╲○ QUEUED ╱
-                           ╌╌╌╌╌╌╌╌╌
-                               │
-                               │
-                               ⬡ review
+                                ┌┄ T-2 · implementer ┄┄┄┄┐
+                                ┆  Build the API         ┆
+                                ┆  openai · codex 0.9    ┆
+                             ╭─▸┆  ○ QUEUED              ┆───╮
+┌─ T-1 · implementer ────┐   │  ├─ REVIEW ───────────────┤   │
+│  Parse the spec        │   │  ┆  ○ not reviewed yet    ┆   │  ┌────────────────────────┐
+│  anthropic · claude-co…│   │  └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘   │  │  INTEGRATION           │
+│  ● WORKING         35% │───┤                               ├─▸│  ⇢ INTEGRATING         │
+├─ REVIEW ───────────────┤   │  ┌┄ T-3 · implementer ┄┄┄┄┐   │  └────────────────────────┘
+│  ○ not reviewed yet    │   │  ┆  Build the UI          ┆   │
+└────────────────────────┘   │  ┆  xai · grok 1.0        ┆   │
+                             ╰─▸┆  ○ QUEUED              ┆───╯
+                                ├─ REVIEW ───────────────┤
+                                ┆  ○ not reviewed yet    ┆
+                                └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
 ```
 
 ### Active implementation
 
-A short highlight arc circles the perimeter of every working agent (hold at the manager's fps).
+A short highlight arc circles the frame of every working agent (hold at the manager's fps).
 
 ```text
-                           ╌╌╌╌╌╌╌╌╌
-                          ╱   T-2   ╲
-                         ╱implementer╲
-                        ╱Build the API╲
-                    ╭─▸ ╲openai · cod…╱ ───╮
-                    │    ╲CLI-managed╱     │
-    ─────────       │     ╲○ QUEUED ╱      │       ───────
-   ╱   T-1   ╲      │      ╌╌╌╌╌╌╌╌╌       │      ╱       ╲
-  ╱implementer╲     │          │           │     ╱INTEGRAT…╲
- ╱anthropic · …╲    │          │           ├───▸ ╲⇢ INTEGR…╱
- ╲ CLI-managed ╱ ───┤          ⬡ review    │      ╲       ╱
-  ╲ ● WORKING ╱     │                      │       ───────
-   ╲━━─── 35%╱      │      ╌╌╌╌╌╌╌╌╌       │
-    ─────────       │     ╱   T-3   ╲      │
-        │           │    ╱implementer╲     │
-        │           │   ╱Build the UI ╲    │
-        ⬡ review    ╰─▸ ╲xai · grok 1…╱ ───╯
-                         ╲CLI-managed╱
-                          ╲○ QUEUED ╱
-                           ╌╌╌╌╌╌╌╌╌
-                               │
-                               │
-                               ⬡ review
+                                ┌┄ T-2 · implementer ┄┄┄┄┐
+                                ┆  Build the API         ┆
+                                ┆  openai · codex 0.9    ┆
+                             ╭─▸┆  ○ QUEUED              ┆───╮
+┌─ T-1 · implementer ────┐   │  ├─ REVIEW ───────────────┤   │
+│  Parse the spec        │   │  ┆  ○ not reviewed yet    ┆   │  ┌────────────────────────┐
+│  anthropic · claude-co…│   │  └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘   │  │  INTEGRATION           │
+│  ● WORKING         35% │───┤                               ├─▸│  ⇢ INTEGRATING         │
+├─ REVIEW ───────────────┤   │  ┌┄ T-3 · implementer ┄┄┄┄┐   │  └────────────────────────┘
+│  ○ not reviewed yet    │   │  ┆  Build the UI          ┆   │
+└────────────────────────┘   │  ┆  xai · grok 1.0        ┆   │
+                             ╰─▸┆  ○ QUEUED              ┆───╯
+                                ├─ REVIEW ───────────────┤
+                                ┆  ○ not reviewed yet    ┆
+                                └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
 ```
 
 ### Communication / execution particles
@@ -170,89 +146,65 @@ A short highlight arc circles the perimeter of every working agent (hold at the 
 Particles follow the real dependency edge T-1 → T-2 (the same path that is drawn).
 
 ```text
-                           ─────────
-                          ╱   T-2   ╲
-                         ╱implementer╲
-                        ╱openai · cod…╲
-                    ╭─▸ ╲ CLI-managed ╱ ───╮
-                    │    ╲ ● WORKING ╱     │
-    ─────────       │     ╲━──── 10%╱      │       ───────
-   ╱   T-1   ╲      │      ─────────       │      ╱       ╲
-  ╱implementer╲     │          │           │     ╱INTEGRAT…╲
- ╱anthropic · …╲    ⬡          │           ├───▸ ╲⇢ INTEGR…╱
- ╲ CLI-managed ╱ ───┤          ⬡ review    │      ╲       ╱
-  ╲  ✔ DONE   ╱     ║                      │       ───────
-   ╲━━━━ 100%╱      ║      ╌╌╌╌╌╌╌╌╌       │
-    ─────────       ║     ╱   T-3   ╲      │
-        │           ║    ╱implementer╲     │
-        │           ║   ╱Build the UI ╲    │
-        ⬡ approved  ╚═▸ ╲xai · grok 1…╱ ───╯
-                         ╲CLI-managed╱
-                          ╲○ QUEUED ╱
-                           ╌╌╌╌╌╌╌╌╌
-                               │
-                               │
-                               ⬡ review
+                                ┌─ T-2 · implementer ────┐
+                                │  Build the API         │
+                                │  openai · codex 0.9    │
+                             ╭─▸│  ● WORKING         10% │───╮
+┌─ T-1 · implementer ────┐   │  ├─ REVIEW ───────────────┤   │
+│  Parse the spec        │   │  │  ○ not reviewed yet    │   │  ┌────────────────────────┐
+│  anthropic · claude-co…│   ■  └────────────────────────┘   │  │  INTEGRATION           │
+│  ✔ DONE           100% │───┤                               ├─▸│  ⇢ INTEGRATING         │
+├─ REVIEW ───────────────┤   ║  ┌┄ T-3 · implementer ┄┄┄┄┐   │  └────────────────────────┘
+│  ✔ approved            ▸   ║  ┆  Build the UI          ┆   │
+└────────────────────────┘   ║  ┆  xai · grok 1.0        ┆   │
+                             ╚═▸┆  ○ QUEUED              ┆───╯
+                                ├─ REVIEW ───────────────┤
+                                ┆  ○ not reviewed yet    ┆
+                                └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
 ```
 
 ### Reviewer rejection
 
-A stream of review particles flows from the reviewer satellite back up to the developer; amber flash on both.
+Particles climb the rejection rail (left gutter) from the review row to the work area; the footer spells out REJECTED → developer.
 
 ```text
-                           ─────────
-                          ╱   T-2   ╲
-                         ╱implementer╲
-                        ╱openai · cod…╲
-                    ╭─▸ ╲ CLI-managed ╱ ───╮
-                    │    ╲◐ IN REVIEW╱     │
-    ─────────       │     ╲━━━━─ 80%╱      │       ───────
-   ╱   T-1   ╲      │      ─────────       │      ╱       ╲
-  ╱implementer╲     │          ⬢           │     ╱INTEGRAT…╲
- ╱anthropic · …╲    │          ⬢           ├───▸ ╲⇢ INTEGR…╱
- ╲ CLI-managed ╱ ───┤          ⬢ review    │      ╲       ╱
-  ╲  ✔ DONE   ╱     ║                      │       ───────
-   ╲━━━━ 100%╱      ║      ╌╌╌╌╌╌╌╌╌       │
-    ─────────       ║     ╱   T-3   ╲      │
-        │           ║    ╱implementer╲     │
-        │           ║   ╱Build the UI ╲    │
-        ⬡ approved  ╚═▸ ╲xai · grok 1…╱ ───╯
-                         ╲CLI-managed╱
-                          ╲○ QUEUED ╱
-                           ╌╌╌╌╌╌╌╌╌
-                               │
-                               │
-                               ⬡ review
+                                ┌─ T-2 · implementer ────┐
+                                │▲ Build the API         │
+                                │■ openai · codex 0.9    │
+                             ╭─▸│╎ ◐ IN REVIEW       80% │───╮
+┌─ T-1 · implementer ────┐   │  ├■ REVIEW ───────────────┤   │
+│  Parse the spec        │   │  │▪ ▲ REJECTED → developer│   │  ┌────────────────────────┐
+│  anthropic · claude-co…│   │  └────────────────────────┘   │  │  INTEGRATION           │
+│  ✔ DONE           100% │───┤                               ├─▸│  ⇢ INTEGRATING         │
+├─ REVIEW ───────────────┤   ║  ┌┄ T-3 · implementer ┄┄┄┄┐   │  └────────────────────────┘
+│  ✔ approved            ▸   ║  ┆  Build the UI          ┆   │
+└────────────────────────┘   ║  ┆  xai · grok 1.0        ┆   │
+                             ╚═▸┆  ○ QUEUED              ┆───╯
+                                ├─ REVIEW ───────────────┤
+                                ┆  ○ not reviewed yet    ┆
+                                └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
 ```
 
 ### Reviewer approval
 
-Completion particles leave the satellite and continue along the outgoing edge toward integration.
+Particles leave the review row through the right border and follow the outgoing edge; the footer spells out APPROVED → integration.
 
 ```text
-                           ─────────
-                          ╱   T-2   ╲
-                         ╱implementer╲
-                        ╱openai · cod…╲
-                    ╭─▸ ╲ CLI-managed ╱ ───╮
-                    │    ╲⇢ INTEGRAT…╱     │
-    ─────────       │     ╲━━━━━ 95%╱      │       ───────
-   ╱   T-1   ╲      │      ─────────       │      ╱       ╲
-  ╱implementer╲     │          ⬡           │     ╱INTEGRAT…╲
- ╱anthropic · …╲    │          ⬢           ├───▸ ╲⇢ INTEGR…╱
- ╲ CLI-managed ╱ ───┤          ⬢⬢review    │      ╲       ╱
-  ╲  ✔ DONE   ╱     ║                      │       ───────
-   ╲━━━━ 100%╱      ║      ╌╌╌╌╌╌╌╌╌       │
-    ─────────       ║     ╱   T-3   ╲      │
-        │           ║    ╱implementer╲     │
-        │           ║   ╱Build the UI ╲    │
-        ⬡ approved  ╚═▸ ╲xai · grok 1…╱ ───╯
-                         ╲CLI-managed╱
-                          ╲○ QUEUED ╱
-                           ╌╌╌╌╌╌╌╌╌
-                               │
-                               │
-                               ⬡ review
+                                ┌─ T-2 · implementer ────┐
+                                │  Build the API         │
+                                │  openai · codex 0.9    │
+                             ╭─▸│  ⇢ INTEGRATING     95% │─■─╮
+┌─ T-1 · implementer ────┐   │  ├─ REVIEW ───────────────┤   │
+│  Parse the spec        │   │  │  ✔ APPROVED → integrat…▸■  │  ┌────────────────────────┐
+│  anthropic · claude-co…│   │  └────────────────────────┘   │  │  INTEGRATION           │
+│  ✔ DONE           100% │───┤                               ├─▸│  ⇢ INTEGRATING         │
+├─ REVIEW ───────────────┤   ║  ┌┄ T-3 · implementer ┄┄┄┄┐   │  └────────────────────────┘
+│  ✔ approved            ▸   ║  ┆  Build the UI          ┆   │
+└────────────────────────┘   ║  ┆  xai · grok 1.0        ┆   │
+                             ╚═▸┆  ○ QUEUED              ┆───╯
+                                ├─ REVIEW ───────────────┤
+                                ┆  ○ not reviewed yet    ┆
+                                └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
 ```
 
 ### Quota wait
@@ -260,29 +212,21 @@ Completion particles leave the satellite and continue along the outgoing edge to
 Restrained: a slow arc, no particles, the reset time as text. The label states it resumes automatically.
 
 ```text
-                           ─────────
-                          ╱   T-2   ╲
-                         ╱implementer╲
-                        ╱openai · cod…╲
-                    ╭─▸ ╲ CLI-managed ╱ ───╮
-                    │    ╲⇢ INTEGRAT…╱     │
-    ─────────       │     ╲━━━━━ 95%╱      │       ───────
-   ╱   T-1   ╲      │      ─────────       │      ╱       ╲
-  ╱implementer╲     │          │           │     ╱INTEGRAT…╲
- ╱anthropic · …╲    │          │           ├───▸ ╲⇢ INTEGR…╱
- ╲ CLI-managed ╱ ───┤          ⬡ review    │      ╲       ╱
-  ╲  ✔ DONE   ╱     │                      │       ───────
-   ╲━━━━ 100%╱      │      ─────────       │
-    ─────────       │     ╱   T-3   ╲      │
-        │           │    ╱implementer╲     │
-        │           │   ╱xai · grok 1…╲    │
-        ⬡ approved  ╰─▸ ╲ CLI-managed ╱ ───╯
-                         ╲ ◷ 15:04~  ╱
-                          ╲━━─── 30%╱
-                           ─────────
-                               │
-                               │
-                               ⬡ review
+                                ┌─ T-2 · implementer ────┐
+                                │  Build the API         │
+                                │  openai · codex 0.9    │
+                             ╭─▸│  ⇢ INTEGRATING     95% │───╮
+┌─ T-1 · implementer ────┐   │  ├─ REVIEW ───────────────┤   │
+│  Parse the spec        │   │  │  ✔ approved            ▸   │  ┌────────────────────────┐
+│  anthropic · claude-co…│   │  └────────────────────────┘   │  │  INTEGRATION           │
+│  ✔ DONE           100% │───┤                               ├─▸│  ⇢ INTEGRATING         │
+├─ REVIEW ───────────────┤   │  ┌─ T-3 · implementer ────┐   │  └────────────────────────┘
+│  ✔ approved            ▸   │  │  Build the UI          │   │
+└────────────────────────┘   │  │  xai · grok 1.0        │   │
+                             ╰─▸│  ◷ 15:04~          30% │───╯
+                                ├─ REVIEW ───────────────┤
+                                │  ○ not reviewed yet    │
+                                └────────────────────────┘
 ```
 
 ### Recovery
@@ -290,29 +234,21 @@ Restrained: a slow arc, no particles, the reset time as text. The label states i
 On a real wait→running transition: a brand-coloured sweep and flash, and recovery particles along the incoming edge.
 
 ```text
-                           ─────────
-                          ╱   T-2   ╲
-                         ╱implementer╲
-                        ╱openai · cod…╲
-                    ╭─▸ ╲ CLI-managed ╱ ───╮
-                    │    ╲⇢ INTEGRAT…╱     │
-    ─────────       │     ╲━━━━━ 95%╱      │       ───────
-   ╱   T-1   ╲      │      ─────────       │      ╱       ╲
-  ╱implementer╲     │          │           │     ╱INTEGRAT…╲
- ╱anthropic · …╲    │          │           ├───▸ ╲⇢ INTEGR…╱
- ╲ CLI-managed ╱ ───┤          ⬡ review    │      ╲       ╱
-  ╲  ✔ DONE   ╱     │                      │       ───────
-   ╲━━━━ 100%╱      ⬢      ─────────       │
-    ─────────       │     ╱   T-3   ╲      │
-        │           │    ╱implementer╲     │
-        │           │   ╱xai · grok 1…╲    │
-        ⬡ approved  ╰─▸ ╲ CLI-managed ╱ ───╯
-                         ╲ ● WORKING ╱
-                          ╲━━─── 30%╱
-                           ─────────
-                               │
-                               │
-                               ⬡ review
+                                ┌─ T-2 · implementer ────┐
+                                │  Build the API         │
+                                │  openai · codex 0.9    │
+                             ╭─▸│  ⇢ INTEGRATING     95% │───╮
+┌─ T-1 · implementer ────┐   │  ├─ REVIEW ───────────────┤   │
+│  Parse the spec        │   │  │  ✔ approved            ▸   │  ┌────────────────────────┐
+│  anthropic · claude-co…│   │  └────────────────────────┘   │  │  INTEGRATION           │
+│  ✔ DONE           100% │───┤                               ├─▸│  ⇢ INTEGRATING         │
+├─ REVIEW ───────────────┤   │  ┌─ T-3 · implementer ────┐   │  └────────────────────────┘
+│  ✔ approved            ▸   ■  │  Build the UI          │   │
+└────────────────────────┘   │  │  xai · grok 1.0        │   │
+                             ╰─▸│  ● WORKING         30% │───╯
+                                ├─ REVIEW ───────────────┤
+                                │  ○ not reviewed yet    │
+                                └────────────────────────┘
 ```
 
 ### Task completion
@@ -320,29 +256,21 @@ On a real wait→running transition: a brand-coloured sweep and flash, and recov
 Green flash and sweep per completed agent; the integration hub completes.
 
 ```text
-                           ─────────
-                          ╱   T-2   ╲
-                         ╱implementer╲
-                        ╱openai · cod…╲
-                    ╔═▸ ╲ CLI-managed ╱ ═══╗
-                    ║    ╲  ✔ DONE   ╱     ║
-    ─────────       ║     ╲━━━━ 100%╱      ║       ───────
-   ╱   T-1   ╲      ║      ─────────       ║      ╱       ╲
-  ╱implementer╲     ║          │           ║     ╱INTEGRAT…╲
- ╱anthropic · …╲    ║          │           ╠═══▸ ╲ ✔ DONE  ╱
- ╲ CLI-managed ╱ ═══╣          ⬡ approved  ║      ╲       ╱
-  ╲  ✔ DONE   ╱     ║                      ║       ───────
-   ╲━━━━ 100%╱      ║      ─────────       ║
-    ─────────       ║     ╱   T-3   ╲      ║
-        │           ║    ╱implementer╲     ║
-        │           ║   ╱xai · grok 1…╲    ║
-        ⬡ approved  ╚═▸ ╲ CLI-managed ╱ ═══╝
-                         ╲  ✔ DONE   ╱
-                          ╲━━━━ 100%╱
-                           ─────────
-                               │
-                               │
-                               ⬡ approved
+                                ┌─ T-2 · implementer ────┐
+                                │  Build the API         │
+                                │  openai · codex 0.9    │
+                             ╔═▸│  ✔ DONE           100% │═══╗
+┌─ T-1 · implementer ────┐   ║  ├─ REVIEW ───────────────┤   ║
+│  Parse the spec        │   ║  │  ✔ approved            ▸   ║  ┌────────────────────────┐
+│  anthropic · claude-co…│   ║  └────────────────────────┘   ║  │  INTEGRATION           │
+│  ✔ DONE           100% │═══╣                               ╠═▸│  ✔ DONE                │
+├─ REVIEW ───────────────┤   ║  ┌─ T-3 · implementer ────┐   ║  └────────────────────────┘
+│  ✔ approved            ▸   ║  │  Build the UI          │   ║
+└────────────────────────┘   ║  │  xai · grok 1.0        │   ║
+                             ╚═▸│  ✔ DONE           100% │═══╝
+                                ├─ REVIEW ───────────────┤
+                                │  ✔ approved            ▸
+                                └────────────────────────┘
 ```
 
 ### Failure (static)
@@ -350,27 +278,19 @@ Green flash and sweep per completed agent; the integration hub completes.
 No animation: a failure never pulses or flashes after the initial log entry.
 
 ```text
-                           ─────────
-                          ╱   T-2   ╲
-                         ╱implementer╲
-                        ╱openai · cod…╲
-                    ╔═▸ ╲ CLI-managed ╱ ═══╗
-                    ║    ╲  ✔ DONE   ╱     ║
-    ─────────       ║     ╲━━━━ 100%╱      ║       ╌╌╌╌╌╌╌
-   ╱   T-1   ╲      ║      ─────────       ║      ╱       ╲
-  ╱implementer╲     ║          │           ║     ╱INTEGRAT…╲
- ╱anthropic · …╲    ║          │           ╠═══▸ ╲○ QUEUED ╱
- ╲ CLI-managed ╱ ═══╣          ⬡ approved  │      ╲       ╱
-  ╲  ✔ DONE   ╱     ║                      │       ╌╌╌╌╌╌╌
-   ╲━━━━ 100%╱      ║      ─────────       │
-    ─────────       ║     ╱   T-3   ╲      │
-        │           ║    ╱implementer╲     │
-        │           ║   ╱xai · grok 1…╲    │
-        ⬡ approved  ╚═▸ ╲ CLI-managed ╱ ───╯
-                         ╲ ✖ FAILED  ╱
-                          ╲━━─── 30%╱
-                           ─────────
-                               │
-                               │
-                               ⬡ review
+                                ┌─ T-2 · implementer ────┐
+                                │  Build the API         │
+                                │  openai · codex 0.9    │
+                             ╔═▸│  ✔ DONE           100% │═══╗
+┌─ T-1 · implementer ────┐   ║  ├─ REVIEW ───────────────┤   ║
+│  Parse the spec        │   ║  │  ✔ approved            ▸   ║  ┌┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
+│  anthropic · claude-co…│   ║  └────────────────────────┘   ║  ┆  INTEGRATION           ┆
+│  ✔ DONE           100% │═══╣                               ╠═▸┆  ○ QUEUED              ┆
+├─ REVIEW ───────────────┤   ║  ┌─ T-3 · implementer ────┐   │  └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+│  ✔ approved            ▸   ║  │  Build the UI          │   │
+└────────────────────────┘   ║  │  xai · grok 1.0        │   │
+                             ╚═▸│  ✖ FAILED          30% │───╯
+                                ├─ REVIEW ───────────────┤
+                                │  ○ not reviewed yet    │
+                                └────────────────────────┘
 ```
