@@ -337,4 +337,60 @@ describe("dashboard (real App, fake daemon)", () => {
     for (const w of ["WORKSPACE", ".hexagon/worktrees/R1/T-2-a1", "hexagon/R1/T-2-a1", "2 files"]) expect(text(), w).toContain(w);
     exit();
   });
+
+  it("input grows to several lines (Alt-Enter, Ctrl-J, trailing backslash) and sends them as one message", async () => {
+    const { app, client, exit } = await boot({ "T-1": "done", "T-2": "working" });
+    const a = app as never as { onKey(s: string | undefined, k: Record<string, unknown>): void };
+    const type = (t: string) => { for (const ch of t) a.onKey(ch, { name: ch }); };
+    type("first");
+    a.onKey("\r", { name: "return", meta: true });
+    type("second");
+    a.onKey("\n", { name: "enter" });
+    type("third\\");
+    a.onKey("\r", { name: "return" }); // trailing backslash continues
+    type("fourth");
+    await settle(40);
+    const rows = text().split("\n");
+    const at = rows.findIndex((r) => r.includes("first"));
+    expect(rows.slice(at, at + 4).map((r) => r.replace(/^.*[›·]\s?/, "").trim())).toEqual(["first", "second", "third", "fourth"]);
+    expect(rows[at + 4]).toContain("Alt-Enter"); // key hint sits below the last input row
+    a.onKey("\r", { name: "return" });
+    await vi.waitFor(() => expect(client.calls.find((c) => c.m === "chat.send")).toBeTruthy());
+    expect((client.calls.find((c) => c.m === "chat.send")!.p as { text: string }).text).toBe("first\nsecond\nthird\nfourth");
+    exit();
+  });
+
+  it("up/down move between lines of a multiline input instead of switching agent", async () => {
+    const { app, exit } = await boot({ "T-1": "done", "T-2": "working" });
+    const a = app as never as { onKey(s: string | undefined, k: Record<string, unknown>): void; cursor: number; selected: string };
+    for (const ch of "ab") a.onKey(ch, { name: ch });
+    a.onKey("\r", { name: "return", meta: true });
+    for (const ch of "cd") a.onKey(ch, { name: ch });
+    const sel = a.selected;
+    a.onKey(undefined, { name: "up" });
+    expect(a.cursor).toBe(2);
+    expect(a.selected).toBe(sel);
+    exit();
+  });
+
+  it("the wheel scrolls the chat and a click on an agent selects it", async () => {
+    const { app, exit } = await boot({ "T-1": "done", "T-2": "working", "T-3": "queued" });
+    const a = app as never as { onMouse(e: unknown): void; hits: { x: number; y: number; w: number; select?: string; scroll?: string }[]; selected: string; scroll: number };
+    a.onMouse({ kind: "wheel", button: 0, dir: -1, x: 100, y: 40 });
+    expect(a.scroll).toBe(3);
+    a.onMouse({ kind: "wheel", button: 0, dir: 1, x: 100, y: 40 });
+    a.onMouse({ kind: "wheel", button: 0, dir: 1, x: 100, y: 40 });
+    expect(a.scroll).toBe(0); // never below the newest line
+    await settle(40);
+    const row = a.hits.find((h) => h.select === "T-3" && h.scroll === "agents")!;
+    expect(row).toBeTruthy();
+    a.onMouse({ kind: "press", button: 0, x: row.x + 3, y: (row as { y: number }).y });
+    expect(a.selected).toBe("T-3");
+    // a click on the network card selects too
+    const card = a.hits.find((h) => h.select === "T-2" && !h.scroll)!;
+    expect(card).toBeTruthy();
+    a.onMouse({ kind: "press", button: 0, x: card.x + 2, y: (card as { y: number }).y + 1 });
+    expect(a.selected).toBe("T-2");
+    exit();
+  });
 });

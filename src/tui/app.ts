@@ -9,11 +9,13 @@ import { TERMINAL_STATES } from "../contracts/types.js";
 import type { SessionStatus } from "../core/solo.js";
 import type { Draft, PermissionRequest, Push, RunChanges, Snapshot } from "../daemon/orchestrator.js";
 import { hexagonCommand, openTerminal } from "../shell/open.js";
+import { layoutInput, lineBounds, moveVertical, windowRows } from "./editor.js";
+import { MOUSE_OFF, MOUSE_ON, MouseFilter, type MouseEvent } from "./input.js";
 import { Canvas, clip, padTo, S, st, wrap } from "./canvas.js";
 import { AnimationManager } from "./motion.js";
 import { AmbientField } from "./ambient.js";
 import { Director } from "./director.js";
-import { computeLayout, type Region } from "./layout.js";
+import { computeLayout, MAX_INPUT_ROWS, type Region } from "./layout.js";
 import { renderNetwork, type NetNode } from "./network.js";
 import { renderStartup, startupProgress, STARTUP_MS } from "./startup.js";
 import { asciiFold, detectCaps, GROUPS, groupOfRole, STATE_LOOK, TOKENS, sgr, type Caps, type Group, type Token } from "./theme.js";
@@ -137,6 +139,9 @@ function gitBranch(root: string): string {
 }
 
 /** Full-screen dashboard: task graph, active agents, the selected agent's feed, and an input line. */
+/** A screen rectangle that reacts to the mouse: a click selects `select`; the wheel scrolls what `scroll` names. */
+interface Hit { x: number; y: number; w: number; h: number; select?: string; scroll?: "agents" | "feed" }
+
 export class App {
   private snap!: Snapshot;
   private full = new Map<string, AgentStatus>();
@@ -177,6 +182,12 @@ export class App {
   private agentInfoAt = 0;
   private housekeeping: NodeJS.Timeout | undefined;
   private keyHandler = (s: string | undefined, k: readline.Key | undefined) => this.onKey(s, k);
+  private mouseHandler = (e: MouseEvent) => this.onMouse(e);
+  /** Key decoder input: stdin with mouse reports taken out. */
+  private kin: MouseFilter | null = null;
+  private mouseOn = true;
+  /** Clickable / scrollable regions of the last frame. */
+  private hits: Hit[] = [];
   private resizeHandler = () => { this.prev = []; this.invalidate(); };
   private notice: { text: string; level: string; at: number } | null = null;
   private prev: string[] = [];
@@ -197,6 +208,7 @@ export class App {
     try { ui = { ...ui, ...loadConfig(path.join(this.root, ".hexagon", "config.toml")).ui }; } catch { /* defaults */ }
     this.caps = detectCaps(process.env, Boolean(process.stdout.isTTY), { animation: ui.animation, startup: ui.startup_animation });
     this.inspectorOn = ui.inspector;
+    this.mouseOn = (ui as { mouse?: boolean }).mouse !== false && process.env.HEXAGON_MOUSE !== "off";
     this.ambientOn = ui.ambient && process.env.HEXAGON_AMBIENT !== "off";
     this.mgr = new AnimationManager({ motion: this.caps.motion, fps: this.caps.fps || undefined, onFrame: () => this.render() });
     this.director = new Director(this.mgr);
@@ -218,8 +230,7 @@ export class App {
     this.log(this.welcome(), S.gray);
 
     this.enter();
-    readline.emitKeypressEvents(process.stdin);
-    process.stdin.on("keypress", this.keyHandler);
+    this.attachInput();
     process.stdout.on("resize", this.resizeHandler);
     // One scheduler for every animation; idle means no timer is armed. A slow housekeeping tick refreshes the clock and expires notices.
     this.housekeeping = setInterval(() => {
@@ -248,7 +259,7 @@ export class App {
   }
 
   private enter() {
-    process.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[2J");
+    process.stdout.write(`\x1b[?1049h\x1b[?25l\x1b[?2004h${this.mouseOn ? MOUSE_ON : ""}\x1b[2J`);
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     process.stdin.resume();
     this.prev = [];
@@ -258,14 +269,14 @@ export class App {
 
   private leave() {
     this.suspended = true;
-    process.stdout.write("\x1b[?2004l\x1b[?25h\x1b[?1049l");
+    process.stdout.write(`${this.mouseOn ? MOUSE_OFF : ""}\x1b[?2004l\x1b[?25h\x1b[?1049l`);
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
   }
 
   private exit(msg?: string) {
     if (this.timer) clearInterval(this.timer);
     if (this.housekeeping) clearInterval(this.housekeeping);
-    process.stdin.off("keypress", this.keyHandler);
+    this.detachInput();
     process.stdout.off("resize", this.resizeHandler);
     this.director?.dispose();
     this.mgr?.dispose();
@@ -282,15 +293,51 @@ export class App {
   /** Leave the full-screen UI to run something interactive in this terminal. */
   private async suspend(fn: () => Promise<unknown>): Promise<void> {
     this.leave();
-    process.stdin.removeAllListeners("keypress");
+    this.detachInput();
     try {
       await fn();
     } catch (e) {
       this.flash(e instanceof Error ? e.message : String(e), "error");
     }
-    readline.emitKeypressEvents(process.stdin);
-    process.stdin.on("keypress", this.keyHandler);
+    this.attachInput();
     this.enter();
+  }
+
+  private attachInput() {
+    this.detachInput();
+    const f = new MouseFilter();
+    this.kin = f;
+    process.stdin.pipe(f);
+    readline.emitKeypressEvents(f);
+    f.on("keypress", this.keyHandler);
+    f.on("mouse", this.mouseHandler);
+  }
+
+  private detachInput() {
+    const f = this.kin;
+    if (!f) return;
+    this.kin = null;
+    process.stdin.unpipe(f);
+    f.removeAllListeners();
+    f.destroy();
+  }
+
+  /** Wheel scrolls the panel under the pointer; a click selects the agent under it. */
+  private onMouse(e: MouseEvent) {
+    if (this.suspended) return;
+    this.lastInput = Date.now();
+    const hit = [...this.hits].reverse().find((h) => e.x >= h.x && e.x < h.x + h.w && e.y >= h.y && e.y < h.y + h.h);
+    if (e.kind === "wheel") {
+      const step = 3;
+      if (hit?.scroll === "agents") this.cycle(e.dir === -1 ? -1 : 1);
+      else if (e.dir === -1) this.scroll += step;
+      else this.scroll = Math.max(0, this.scroll - step);
+      return this.invalidate();
+    }
+    if (e.kind === "press" && e.button === 0 && hit?.select) {
+      this.select(hit.select);
+      this.invalidate();
+    }
   }
 
   // ───────────── data ─────────────
@@ -341,7 +388,7 @@ export class App {
       case "session": this.sessions.set(p.data.id, p.data); break;
       case "permissions": this.snap.permissions = p.data; break;
       case "proposals": {
-        const fresh = p.data.filter((x) => !this.snap.proposals.some((y) => y.id === x.id));
+        const fresh = p.data.filter((x) => !(this.snap.proposals ?? []).some((y) => y.id === x.id));
         this.snap.proposals = p.data;
         for (const x of fresh) {
           this.log(`${x.id}${x.destructive ? " (destructive)" : ""} proposed by the assistant:\n${x.diff.map((d) => `  ${d}`).join("\n")}`, S.orange);
@@ -578,9 +625,10 @@ export class App {
         case "t": return void this.command(`/takeover`);
         case "o": return void this.command(`/open`);
         case "d": return void this.command(`/diff`);
-        case "u": this.input = this.input.slice(this.cursor); this.cursor = 0; return;
-        case "a": this.cursor = 0; return;
-        case "e": this.cursor = this.input.length; return;
+        case "u": { const { start } = lineBounds(this.input, this.cursor); this.input = this.input.slice(0, start) + this.input.slice(this.cursor); this.cursor = start; return; }
+        case "a": this.cursor = lineBounds(this.input, this.cursor).start; return;
+        case "e": this.cursor = lineBounds(this.input, this.cursor).end; return;
+        case "j": return this.insert("\n");
         case "w": {
           const before = this.input.slice(0, this.cursor).replace(/\S+\s*$/, "");
           this.input = before + this.input.slice(this.cursor);
@@ -601,7 +649,14 @@ export class App {
       return;
     }
     switch (name) {
-      case "return": case "enter": {
+      case "enter": return this.insert("\n"); // Ctrl-J / LF: a new line, not a send
+      case "return": {
+        // Alt-Enter, or a trailing backslash, continues on a new line.
+        if (k?.meta) return this.insert("\n");
+        if (this.input[this.cursor - 1] === "\\" && !this.menuOpen()) {
+          this.input = this.input.slice(0, this.cursor - 1) + "\n" + this.input.slice(this.cursor);
+          return;
+        }
         if (this.menuOpen()) {
           const c = this.completions();
           if (!c.items.some((i) => i.value.toLowerCase() === c.token.toLowerCase())) return void this.accept(true);
@@ -624,10 +679,12 @@ export class App {
       case "up":
         if (this.menuOpen()) { const n = this.completions().items.length; this.menuIdx = (this.menuIdx - 1 + n) % n; return; }
         if (!this.input) return this.cycle(-1);
+        { const to = moveVertical(this.input, this.cursor, -1); if (to !== null) this.cursor = to; }
         return;
       case "down":
         if (this.menuOpen()) { const n = this.completions().items.length; this.menuIdx = (this.menuIdx + 1) % n; return; }
         if (!this.input) return this.cycle(1);
+        { const to = moveVertical(this.input, this.cursor, 1); if (to !== null) this.cursor = to; }
         return;
       case "pageup": this.scroll += 10; return;
       case "pagedown": this.scroll = Math.max(0, this.scroll - 10); return;
@@ -635,8 +692,8 @@ export class App {
       case "right":
         if (this.cursor === this.input.length && this.menuOpen()) return void this.accept();
         this.cursor = Math.min(this.input.length, this.cursor + 1); return;
-      case "home": this.cursor = 0; return;
-      case "end": this.cursor = this.input.length; return;
+      case "home": this.cursor = lineBounds(this.input, this.cursor).start; return;
+      case "end": this.cursor = lineBounds(this.input, this.cursor).end; return;
       case "backspace":
         if (this.cursor > 0) { this.input = this.input.slice(0, this.cursor - 1) + this.input.slice(this.cursor); this.cursor--; }
         this.menuIdx = 0;
@@ -1135,8 +1192,9 @@ export class App {
   }
 
   private dashboard(cv: Canvas, W: number, H: number) {
-    const L = computeLayout(W, H, { inspector: this.inspectorOn });
+    const L = computeLayout(W, H, { inspector: this.inspectorOn, inputRows: this.inputView(W).rows.length });
     this.layoutMode = L.mode;
+    this.hits = [];
     this.header(cv, W);
     if (L.agents) this.agentNavigator(cv, L.agents.x, L.agents.y, L.agents.w, L.agents.h);
     if (L.strip) this.stripRow(cv, L.strip);
@@ -1250,6 +1308,7 @@ export class App {
     }
     this.netTopo = topo;
     this.netScreen = new Map([...geom.nodes].map(([id, q]) => [id, { x: q.x + ox, y: q.y + oy }]));
+    for (const [id, q] of geom.nodes) if (this.full.has(id) || this.plan()?.tasks.some((t) => t.id === id)) this.hits.push({ x: q.x + ox, y: q.y + oy, w: q.w, h: q.h, select: id });
     this.netEdges = new Set(geom.edges.map((e) => `${e.from}>${e.to}`));
     const shown = this.morph && this.morph.k < 1 ? renderNetwork(nodes, { ...opts, morph: this.morph }) : geom;
     if (this.mgr.enabled) this.mgr.particles.draw(shown.canvas, this.now, { depth: this.caps.color, unicode: this.caps.unicode });
@@ -1381,6 +1440,7 @@ export class App {
       const yy = y + 1 + i;
       if (row.kind === "group") { cv.text(x + 2, yy, row.text, this.tk("muted", S.bold)); return; }
       const sel = row.id === this.selected;
+      this.hits.push({ x: x + 1, y: yy, w: w - 2, h: 1, select: row.id, scroll: "agents" });
       const bg = sel ? S.bgSel : "";
       if (sel) { cv.fill(x + 1, yy, w - 2, 1, S.bgSel); cv.set(x + 1, yy, this.caps.unicode ? "▌" : "|", st(sgr(TOKENS.brand, this.caps.color), bg)); }
       let cx = x + 3;
@@ -1515,6 +1575,7 @@ export class App {
   }
 
   private feedPanel(cv: Canvas, x: number, y: number, w: number, h: number) {
+    this.hits.push({ x, y, w, h, scroll: "feed" });
     const sel = this.selected;
     const inner = w - 4;
     const head: [string, string][] = [];
@@ -1592,6 +1653,15 @@ export class App {
     if (!lines.length) cv.text(x + 2, yy, sel === HEX ? "" : a && a.state === "queued" ? "waiting to start — messages you send now are delivered when it starts" : "no messages yet", S.gray);
   }
 
+  /** Column where the typed text starts (after the recipient chip and the prompt mark). */
+  private inputLeft(): number {
+    return 1 + [` ${this.recipient().label} `].join("").length + 3;
+  }
+
+  private inputView(W: number) {
+    return layoutInput(this.input, this.cursor, Math.max(10, W - this.inputLeft() - 1));
+  }
+
   private bottom(cv: Canvas, y: number, W: number) {
     // Line 1: question / notice / command completion.
     const q = this.openQuestion();
@@ -1604,33 +1674,36 @@ export class App {
     } else if (q) {
       cv.text(1, y, clip(`? ${q.from} asks (${q.id}): ${q.prompt}${q.options.length ? "  " + q.options.map((o) => `${o.id}) ${o.label}`).join("  ") : ""}`, W - 2), st(S.orange, S.bold));
     }
-    // Line 2: input.
+    // The input: one or more rows (Alt-Enter / Ctrl-J add a line), wrapped; the first row carries the recipient chip.
     const iy = y + 1;
-    cv.fill(0, iy, W, 1, S.bgBar);
     const chip = this.recipient();
-    let ix = cv.text(1, iy, ` ${chip.label} `, st(chip.style, S.inverse, S.bold));
-    ix = cv.text(ix + 1, iy, "›", st(S.cyan, S.bold, S.bgBar)) + 1;
-    const shown = this.input.replace(/\n/g, "↵");
-    const maxW = W - ix - 1;
-    const startAt = Math.max(0, this.cursor - maxW + 1);
+    const ix = this.inputLeft();
+    const view = this.inputView(W);
+    const { rows, top } = windowRows(view, MAX_INPUT_ROWS);
+    for (let i = 0; i < rows.length; i++) cv.fill(0, iy + i, W, 1, S.bgBar);
+    if (top === 0) {
+      cv.text(1, iy, ` ${chip.label} `, st(chip.style, S.inverse, S.bold));
+      cv.text(ix - 2, iy, "›", st(S.cyan, S.bold, S.bgBar));
+    }
+    for (let i = (top === 0 ? 1 : 0); i < rows.length; i++) cv.text(ix - 2, iy + i, top + i === 0 ? "›" : "·", st(S.gray, S.bgBar));
     if (!this.input) {
       cv.set(ix, iy, " ", st(S.inverse, S.bgBar));
-      cv.text(ix + 1, iy, clip(this.placeholder(), maxW - 1), st(S.gray, S.bgBar));
+      cv.text(ix + 1, iy, clip(this.placeholder(), W - ix - 2), st(S.gray, S.bgBar));
     } else {
-      const vis = [...shown].slice(startAt, startAt + maxW);
-      vis.forEach((ch, i) => cv.set(ix + i, iy, ch, st(S.white, S.bgBar)));
-      const cx = ix + this.cursor - startAt;
+      rows.forEach((row, i) => cv.text(ix, iy + i, row, st(S.white, S.bgBar), W - 1));
+      const cy = iy + view.cursorRow - top, cx = ix + view.cursorCol;
       // Ghost text: the rest of the selected completion.
       const comp = this.menuOpen() ? this.completions() : null;
       const pick = comp?.items[Math.min(this.menuIdx, comp.items.length - 1)];
-      if (pick && pick.value.toLowerCase().startsWith(comp!.token.toLowerCase())) cv.text(cx, iy, pick.value.slice(comp!.token.length), st(S.gray, S.bgBar), W - 1);
-      cv.set(cx, iy, [...shown][this.cursor] ?? pick?.value.slice(comp!.token.length)[0] ?? " ", st(S.inverse, S.bgBar));
+      if (pick && pick.value.toLowerCase().startsWith(comp!.token.toLowerCase())) cv.text(cx, cy, pick.value.slice(comp!.token.length), st(S.gray, S.bgBar), W - 1);
+      const under = [...(rows[view.cursorRow - top] ?? "")][view.cursorCol];
+      cv.set(cx, cy, under ?? pick?.value.slice(comp!.token.length)[0] ?? " ", st(S.inverse, S.bgBar));
     }
-    // Line 3: keys.
+    // Last line: keys.
     const keys = this.menuOpen()
       ? "Tab/→ complete · ↑↓ choose · Enter accept · Esc close"
-      : "Tab/↑↓ agent · Enter send · F1 help · F2 inspector · F3 motion · F4 agents · PgUp/Dn scroll · ^T take over · ^O window · ^D diff · / cmds · ^C quit";
-    cv.text(1, y + 2, clip(keys, W - 2), S.gray);
+      : "Tab/↑↓ agent · Enter send · Alt-Enter new line · F1 help · F2 inspector · F3 motion · F4 agents · PgUp/Dn scroll · ^T take over · ^O window · ^D diff · / cmds · ^C quit";
+    cv.text(1, iy + rows.length, clip(keys, W - 2), S.gray);
     if (this.menuOpen()) this.menu(cv, y, W);
   }
 

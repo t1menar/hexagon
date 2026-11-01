@@ -17,9 +17,12 @@ export interface DashLayout {
   input: Region;
 }
 
-export function computeLayout(W: number, H: number, o: { inspector?: boolean } = {}): DashLayout {
+/** Rows the input box may grow to (a notice line above and a key hint below come on top). */
+export const MAX_INPUT_ROWS = 6;
+
+export function computeLayout(W: number, H: number, o: { inspector?: boolean; inputRows?: number } = {}): DashLayout {
   const mode: LayoutMode = W >= 150 && H >= 30 ? "large" : W >= 100 && H >= 22 ? "medium" : "small";
-  const inputH = 3;
+  const inputH = 2 + Math.max(1, Math.min(MAX_INPUT_ROWS, o.inputRows ?? 1));
   const header: Region = { x: 0, y: 0, w: W, h: 1 };
   const input: Region = { x: 0, y: H - inputH, w: W, h: inputH };
   const body = H - 1 - inputH;
