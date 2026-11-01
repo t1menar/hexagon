@@ -9,10 +9,18 @@ import type { SessionStatus } from "../core/solo.js";
 import type { Draft, PermissionRequest, Push, Snapshot } from "../daemon/orchestrator.js";
 import { hexagonCommand, openTerminal } from "../shell/open.js";
 import { Canvas, clip, padTo, S, st, wrap } from "./canvas.js";
+import { AnimationManager } from "./motion.js";
+import { Director } from "./director.js";
+import { computeLayout, type Region } from "./layout.js";
+import { renderNetwork, type NetNode } from "./network.js";
+import { renderStartup, startupProgress, STARTUP_MS } from "./startup.js";
+import { asciiFold, detectCaps, GROUPS, groupOfRole, STATE_LOOK, TOKENS, sgr, type Caps, type Group, type Token } from "./theme.js";
+import { cellAspect } from "./hex.js";
+import { loadConfig } from "../core/config.js";
 import type { AgentInfo } from "../daemon/orchestrator.js";
 import { formatAgent } from "../shell/agents.js";
-import { agentIdentity, modelLine, quotaLabel, recoveryLine } from "./identity.js";
-import { ACTIVE, bar, glyph, progressOf, renderDag, spinner, STATE_COLOR, type DagNode } from "./dag.js";
+import { modelLine, quotaLabel, recoveryLine } from "./identity.js";
+import { ACTIVE, bar, glyph, progressOf, spinner, STATE_COLOR } from "./dag.js";
 import { takeoverInTerminal } from "./takeover.js";
 import { projectStack, taskStack, toolsUsed } from "./stack.js";
 import { fmtTokens } from "../util/term.js";
@@ -42,7 +50,7 @@ const COMMANDS: [string, string][] = [
   ["/clean", "remove worktrees of finished runs (and close the run)"],
   ["/close", "hide the finished run from the dashboard (without merging)"],
   ["/model [role] [model]", "show or set a model override per role (default = the CLI's own) · /agents lists agents, versions and discovered models"],
-  ["/animate [on|off]", "turn the molecule animations (orbiting electrons, flowing bonds) on or off"],
+  ["/animate [full|reduced|off]", "set the motion level (F3 toggles); reduced = fewer frames, off = static"],
   ["/agents", "agents, providers, CLI versions, auth and what each CLI reports about models"],
   ["/allow <cmd…> | all", "let agents run these commands (e.g. /allow brew curl), or everything"],
   ["/install <tool>", "install go, node, java or maven for agents (official release, no Homebrew)"],
@@ -113,6 +121,13 @@ export function eventLine(e: StampedEvent): FeedLine | null {
   }
 }
 
+function gitBranch(root: string): string {
+  try {
+    const head = fs.readFileSync(path.join(root, ".git", "HEAD"), "utf8").trim();
+    return head.startsWith("ref: refs/heads/") ? head.slice(16) : head.slice(0, 7);
+  } catch { return ""; }
+}
+
 /** Full-screen dashboard: task graph, active agents, the selected agent's feed, and an input line. */
 export class App {
   private snap!: Snapshot;
@@ -130,7 +145,21 @@ export class App {
   private history: string[] = [];
   private histIdx = -1;
   private scroll = 0;
-  private frame = 0;
+  private frames = 0;
+  private lastMinute = Math.floor(Date.now() / 60_000);
+  private caps: Caps = detectCaps();
+  private mgr!: AnimationManager;
+  private director!: Director;
+  private startup: { t0: number } | null = null;
+  private inspectorOn = true;
+  private activityFilter = "";
+  private layoutMode = "large";
+  private branch = "";
+  private agentInfo: AgentInfo[] = [];
+  private agentInfoAt = 0;
+  private housekeeping: NodeJS.Timeout | undefined;
+  private keyHandler = (s: string | undefined, k: readline.Key | undefined) => this.onKey(s, k);
+  private resizeHandler = () => { this.prev = []; this.invalidate(); };
   private notice: { text: string; level: string; at: number } | null = null;
   private prev: string[] = [];
   private dirty = true;
@@ -146,7 +175,20 @@ export class App {
 
   async start(): Promise<void> {
     this.snap = await this.client.call<Snapshot>("ui.snapshot");
+    let ui = { animation: "auto", startup_animation: true, inspector: true };
+    try { ui = { ...ui, ...loadConfig(path.join(this.root, ".hexagon", "config.toml")).ui }; } catch { /* defaults */ }
+    this.caps = detectCaps(process.env, Boolean(process.stdout.isTTY), { animation: ui.animation, startup: ui.startup_animation });
+    this.inspectorOn = ui.inspector;
+    this.mgr = new AnimationManager({ motion: this.caps.motion, fps: this.caps.fps || undefined, onFrame: () => this.render() });
+    this.director = new Director(this.mgr);
     for (const a of this.snap.agents) this.setFull(a);
+    this.director.seed(this.full.values());
+    this.branch = gitBranch(this.root);
+    if (this.caps.startupAnimation && this.caps.motion !== "off" && process.stdout.isTTY) {
+      this.startup = { t0: this.mgr.clock.now() };
+      this.mgr.hold("startup", this.caps.fps || 8);
+      this.mgr.tween("startup-end", STARTUP_MS, () => {}, { onDone: () => { this.startup = null; this.mgr.release("startup"); this.invalidate(); } });
+    }
     for (const s of this.snap.sessions) this.sessions.set(s.id, s);
     try { this.history = fs.readFileSync(path.join(this.root, ".hexagon", "shell_history"), "utf8").split("\n").filter(Boolean).slice(-200); } catch { /* none */ }
     await this.client.subscribe();
@@ -158,13 +200,21 @@ export class App {
 
     this.enter();
     readline.emitKeypressEvents(process.stdin);
-    process.stdin.on("keypress", (s: string | undefined, k: readline.Key | undefined) => this.onKey(s, k));
-    process.stdout.on("resize", () => { this.prev = []; this.render(); });
-    this.timer = setInterval(() => {
-      this.frame++;
-      if (this.notice && Date.now() - this.notice.at > 10_000) { this.notice = null; this.dirty = true; }
-      if (this.dirty || this.anyActive() || this.frame % 10 === 0) this.render();
-    }, 100);
+    process.stdin.on("keypress", this.keyHandler);
+    process.stdout.on("resize", this.resizeHandler);
+    // One scheduler for every animation; idle means no timer is armed. A slow housekeeping tick refreshes the clock and expires notices.
+    this.housekeeping = setInterval(() => {
+      // Redraw only when something visible changed: the minute on the clock, an expiring notice, or a live run's elapsed time.
+      let changed = false;
+      if (this.notice && Date.now() - this.notice.at > 10_000) { this.notice = null; changed = true; }
+      const minute = Math.floor(Date.now() / 60_000);
+      if (minute !== this.lastMinute) { this.lastMinute = minute; changed = true; }
+      if (this.snap?.run?.state === "running") changed = true;
+      void this.refreshAgentInfo();
+      if (changed) this.invalidate();
+    }, 1000);
+    this.housekeeping.unref();
+    void this.refreshAgentInfo();
     await new Promise<void>((r) => (this.done = r));
   }
 
@@ -192,6 +242,11 @@ export class App {
 
   private exit(msg?: string) {
     if (this.timer) clearInterval(this.timer);
+    if (this.housekeeping) clearInterval(this.housekeeping);
+    process.stdin.off("keypress", this.keyHandler);
+    process.stdout.off("resize", this.resizeHandler);
+    this.director?.dispose();
+    this.mgr?.dispose();
     this.leave();
     try { fs.writeFileSync(path.join(this.root, ".hexagon", "shell_history"), this.history.slice(-200).join("\n") + "\n"); } catch { /* ignore */ }
     if (msg) console.log(msg);
@@ -212,7 +267,7 @@ export class App {
       this.flash(e instanceof Error ? e.message : String(e), "error");
     }
     readline.emitKeypressEvents(process.stdin);
-    process.stdin.on("keypress", (s: string | undefined, k: readline.Key | undefined) => this.onKey(s, k));
+    process.stdin.on("keypress", this.keyHandler);
     this.enter();
   }
 
@@ -224,11 +279,12 @@ export class App {
   }
 
   private onPush(p: Push) {
-    this.dirty = true;
+    this.invalidate();
     switch (p.event) {
       case "status": {
         const prevAttempt = this.full.get(p.data.task_id)?.attempt;
         this.setFull(p.data);
+        this.director.status(p.data);
         if (prevAttempt !== undefined && p.data.attempt > prevAttempt) this.loaded.delete(p.data.task_id);
         break;
       }
@@ -239,13 +295,13 @@ export class App {
           this.loaded.clear();
           this.events.clear();
           if (TASK_RE.test(this.selected)) this.selected = HEX;
-          void this.client.call<Snapshot>("ui.snapshot").then((s) => { this.snap = s; this.dirty = true; });
+          void this.client.call<Snapshot>("ui.snapshot").then((s) => { this.snap = s; this.invalidate(); });
           break;
         }
         if (this.snap.run?.run_id !== p.data.run_id) {
           this.full.clear();
           this.loaded.clear();
-          void this.client.call<Snapshot>("ui.snapshot").then((s) => { this.snap = s; for (const a of s.agents) this.setFull(a); this.dirty = true; });
+          void this.client.call<Snapshot>("ui.snapshot").then((s) => { this.snap = s; for (const a of s.agents) this.setFull(a); this.invalidate(); });
         }
         this.snap.run = p.data;
         break;
@@ -254,9 +310,10 @@ export class App {
         list.push(p.data);
         if (list.length > 3000) list.splice(0, list.length - 3000);
         this.events.set(p.data.task_id, list);
+        this.director.event(p.data);
         break;
       }
-      case "message": this.onMessage(p.data); break;
+      case "message": this.onMessage(p.data); this.director.message(p.data); break;
       case "notice": this.log(p.data.text, p.data.level === "info" ? S.cyan : S.orange); this.flash(p.data.text, p.data.level); break;
       case "session": this.sessions.set(p.data.id, p.data); break;
       case "permissions": this.snap.permissions = p.data; break;
@@ -292,12 +349,12 @@ export class App {
 
   private log(text: string, style = "") {
     this.push(HEX, { ts: new Date().toISOString(), text, style });
-    this.dirty = true;
+    this.invalidate();
   }
 
   private flash(text: string, level = "info") {
     this.notice = { text, level, at: Date.now() };
-    this.dirty = true;
+    this.invalidate();
   }
 
   private runAgents(): RunStatus["agents"] {
@@ -320,7 +377,24 @@ export class App {
   }
 
   /** Animations off (HEXAGON_ANIMATION=off, NO_MOTION, or /animate off): static glyphs, no particles. */
-  still = process.env.HEXAGON_ANIMATION === "off" || Boolean(process.env.NO_MOTION);
+  get still(): boolean { return !this.mgr?.enabled; }
+
+  private setMotion(arg: string) {
+    const mode = arg === "on" ? "full" : arg;
+    if (!["full", "reduced", "off"].includes(mode)) return this.flash("usage: /animate [full|reduced|off]");
+    this.mgr.motion = mode as "full" | "reduced" | "off";
+    this.mgr.fps = mode === "full" ? 24 : mode === "reduced" ? 8 : 0;
+    if (mode === "off") this.mgr.cancelAll();
+    this.caps = { ...this.caps, motion: mode as Caps["motion"] };
+    this.prev = [];
+    this.flash(`motion: ${mode}`);
+  }
+
+  private async refreshAgentInfo() {
+    if (Date.now() - this.agentInfoAt < 90_000) return;
+    this.agentInfoAt = Date.now();
+    try { this.agentInfo = await this.client.call<AgentInfo[]>("agents.list"); this.invalidate(); } catch { /* daemon busy */ }
+  }
 
   private anyActive(): boolean {
     return this.runAgents().some((a) => ACTIVE.has(a.state)) || [...this.sessions.values()].some((s) => s.state === "running");
@@ -335,17 +409,19 @@ export class App {
     }
     const plan = this.plan();
     if (this.snap.run && !this.showingDraft()) for (const t of plan?.tasks ?? this.runAgents().map((a) => ({ id: a.task_id }))) out.push(t.id);
-    return out;
+    // Same order as the grouped navigator, so Tab/arrows move visually down the list.
+    const rank = (id: string) => GROUPS.findIndex((g) => g.id === this.groupOf(id));
+    return out.map((id, i) => ({ id, i })).sort((x, y) => rank(x.id) - rank(y.id) || x.i - y.i).map((x) => x.id);
   }
 
   private select(id: string) {
     this.selected = id;
     this.scroll = 0;
-    this.dirty = true;
+    this.invalidate();
     if (TASK_RE.test(id) && !this.loaded.has(id) && this.snap.run) {
       this.loaded.add(id);
       void this.client.call<StampedEvent[]>("agent.events", { task: id, limit: 400 })
-        .then((evs) => { this.events.set(id, evs); this.dirty = true; })
+        .then((evs) => { this.events.set(id, evs); this.invalidate(); })
         .catch(() => this.loaded.delete(id));
     }
   }
@@ -404,8 +480,13 @@ export class App {
 
   private onKey(s: string | undefined, k: readline.Key | undefined) {
     if (this.suspended) return;
-    this.dirty = true;
+    this.invalidate();
     const name = k?.name;
+    if (this.startup) { this.startup = null; this.mgr.cancel("startup-end"); this.mgr.release("startup"); }
+    if (name === "f1") return void this.command("/help");
+    if (name === "f2") { this.inspectorOn = !this.inspectorOn; this.prev = []; return; }
+    if (name === "f3") return this.setMotion(this.still ? "full" : "off");
+    if (name === "f4") return void this.command("/agents");
     if (name === "paste-start") { this.pasting = true; return; }
     if (name === "paste-end") { this.pasting = false; return; }
     if (k?.ctrl && name === "c") {
@@ -709,9 +790,7 @@ export class App {
           return;
         }
         case "/animate":
-          this.still = args[0] ? args[0] === "off" : !this.still;
-          this.prev = [];
-          this.flash(`animations ${this.still ? "off" : "on"}`);
+          this.setMotion(args[0] ?? (this.still ? "full" : "off"));
           return;
         case "/agents": {
           const list = await c.call<AgentInfo[]>("agents.list");
@@ -814,87 +893,111 @@ export class App {
 
   // ───────────── rendering ─────────────
 
+  // ───────────── dashboard (design system: see theme.ts / docs/TUI.md) ─────────────
+
+  private get now(): number { return this.mgr.clock.now(); }
+  private spin(): number { return this.mgr.enabled ? Math.floor(this.now / 90) : 0; }
+  private invalidate() { this.dirty = true; this.mgr?.invalidate(); }
+  private tk(t: Token, ...extra: string[]): string { return st(sgr(TOKENS[t], this.caps.color), ...extra); }
+  private look(state: AgentState) { const l = STATE_LOOK[state]; return { sym: this.caps.unicode ? l.symbol : l.ascii, label: l.label, style: this.tk(l.token) }; }
+
   private render() {
-    if (this.suspended) return;
     this.dirty = false;
     const W = Math.max(40, process.stdout.columns || 100);
     const H = Math.max(16, process.stdout.rows || 30);
-    const cv = new Canvas(W, H);
-    this.header(cv, W);
-
-    const bottomH = 3;
-    const bodyH = H - 1 - bottomH;
-    const plan = this.plan();
-    const dagNodes = this.dagNodes(plan);
-    let planH: number;
-    if (dagNodes.length) {
-      const probe = renderDag(dagNodes, { maxW: W - 4, maxH: Math.floor(bodyH * 0.5) - 2, frame: this.frame, selected: this.selected, still: this.still });
-      planH = Math.min(Math.floor(bodyH * 0.5), probe.h + 2 + (this.showingDraft() ? 1 : 0));
-      this.planPanel(cv, 1, W, planH, probe);
-    } else {
-      planH = Math.min(7, Math.floor(bodyH * 0.4));
-      this.placeholderPanel(cv, 1, W, planH);
+    let cv = new Canvas(W, H);
+    const su = this.startup ? startupProgress(this.now - this.startup.t0) : null;
+    if (su?.done) { this.startup = null; this.mgr.release("startup"); }
+    if (su && !su.done && su.reveal === 0) cv = renderStartup(W, H, this.now - this.startup!.t0, this.caps, cellAspect());
+    else {
+      this.dashboard(cv, W, H);
+      if (su && !su.done) {
+        // Panels reveal top-down while the molecule dissolves below them.
+        const sc = renderStartup(W, H, this.now - this.startup!.t0, this.caps, cellAspect());
+        for (let y = Math.floor(su.reveal * H); y < H; y++) for (let x = 0; x < W; x++) { cv.chars[y]![x] = sc.chars[y]![x]!; cv.styles[y]![x] = sc.styles[y]![x]!; }
+      }
     }
-    const midY = 1 + planH;
-    const midH = bodyH - planH;
-    const listW = Math.min(64, Math.max(34, Math.floor(W * 0.42)));
-    this.agentList(cv, 0, midY, listW, midH);
-    this.feedPanel(cv, listW, midY, W - listW, midH);
-    this.bottom(cv, H - bottomH, W);
-
+    if (!this.caps.unicode) for (let y = 0; y < cv.h; y++) for (let x = 0; x < cv.w; x++) cv.chars[y]![x] = asciiFold(cv.chars[y]![x]!);
     const lines = cv.lines(true);
     let out = "\x1b[?2026h";
     for (let i = 0; i < lines.length; i++) if (this.prev[i] !== lines[i]) out += `\x1b[${i + 1};1H${lines[i]}`;
     out += "\x1b[?2026l";
     this.prev = lines;
+    this.frames++;
     process.stdout.write(out);
+  }
+
+  private dashboard(cv: Canvas, W: number, H: number) {
+    const L = computeLayout(W, H, { inspector: this.inspectorOn });
+    this.layoutMode = L.mode;
+    this.header(cv, W);
+    if (L.agents) this.agentNavigator(cv, L.agents.x, L.agents.y, L.agents.w, L.agents.h);
+    if (L.strip) this.stripRow(cv, L.strip);
+    this.networkPanel(cv, L.network);
+    if (L.inspector) this.inspectorPanel(cv, L.inspector);
+    if (L.activity) this.activityPanel(cv, L.activity);
+    this.feedPanel(cv, L.chat.x, L.chat.y, L.chat.w, L.chat.h);
+    this.bottom(cv, L.input.y, W);
   }
 
   private header(cv: Canvas, W: number) {
     cv.fill(0, 0, W, 1, S.bgBar);
-    // The logo "breathes" (⬡ ⬢) while agents work.
-    const logo = this.anyActive() ? ["⬡", "⬢"][Math.floor(this.frame / 5) % 2]! : "⬡";
-    let x = cv.text(1, 0, `${logo} HEXAGON`, st(S.bold, S.cyan, S.bgBar));
-    x = cv.text(x + 2, 0, path.basename(this.root), st(S.white, S.bgBar));
+    const bar = (s: string) => st(s, S.bgBar);
+    const logo = this.caps.unicode ? (this.anyActive() && this.mgr.enabled && Math.floor(this.now / 700) % 2 ? "⬢" : "⬡") : "H";
+    let x = cv.text(1, 0, `${logo} HEXAGON`, bar(this.tk("brand", S.bold)));
+    x = cv.text(x + 2, 0, path.basename(this.root), bar(this.tk("text")));
+    if (this.branch) x = cv.text(x + 1, 0, ` ⎇ ${this.branch}`.replace("⎇", this.caps.unicode ? "⎇" : "@"), bar(this.tk("muted")));
     const r = this.snap.run;
     const parts: [string, string][] = [];
     if (r) {
       const done = r.counts.done ?? 0;
+      const running = r.agents.filter((a) => ["starting", "running", "verifying", "reviewing", "merging"].includes(a.state)).length;
+      const waiting = r.agents.filter((a) => a.state === "waiting_quota").length;
       const need = r.attention.filter((a) => a.kind === "question").length;
       const failed = (r.counts.failed ?? 0) + (r.counts.blocked ?? 0);
-      parts.push([`${r.state === "running" ? spinner(this.frame) : r.state === "done" ? "✔" : r.state === "paused" ? "‖" : "−"} ${r.state}`, r.state === "running" ? S.blue : r.state === "done" ? S.green : S.magenta]);
-      parts.push([`${done}/${r.agents.length} done`, S.white]);
-      if (need) parts.push([`${need} need${need === 1 ? "s" : ""} you`, st(S.orange, S.bold)]);
-      if (failed) parts.push([`${failed} failed`, S.red]);
-      const total = spent(r.totals);
-      const ctx = r.totals.input_tokens + r.totals.cache_read_tokens;
-      parts.push([`${tok(total)}${r.budget_tokens ? ` / ${tok(r.budget_tokens)}` : ""} tokens`, S.white]);
-      parts.push([`${tok(r.totals.output_tokens)} out${ctx ? ` · ${Math.round((100 * r.totals.cache_read_tokens) / ctx)}% cached` : ""}`, S.gray]);
+      const rs = r.state === "running" ? this.look("running") : r.state === "done" ? this.look("done") : r.state === "paused" ? this.look("paused") : this.look("cancelled");
+      parts.push([`${rs.sym} ${r.state.toUpperCase()}`, rs.style]);
+      parts.push([`${running} running`, running ? this.tk("active") : this.tk("muted")]);
+      parts.push([`${done}/${r.agents.length} done`, this.tk("text")]);
+      if (waiting) parts.push([`${this.look("waiting_quota").sym} ${waiting} waiting`, this.tk("waiting")]);
+      if (need) parts.push([`${need} need${need === 1 ? "s" : ""} you`, this.tk("warning", S.bold)]);
+      if (failed) parts.push([`${failed} failed`, this.tk("error")]);
+      parts.push([`${tok(spent(r.totals))}${r.budget_tokens ? ` / ${tok(r.budget_tokens)}` : ""} tok`, this.tk("muted")]);
       const start = Date.parse(r.started_at ?? "") || 0;
       const end = r.state === "done" || r.state === "aborted" ? Date.parse(r.updated_at) : Date.now();
-      parts.push([`⏱ ${dur(start ? end - start : r.totals.wall_ms)}`, S.gray]);
-    } else if (this.snap.draft) parts.push(["plan awaiting approval", S.orange]);
-    else if (this.plannerBusy()) parts.push([`${spinner(this.frame)} planning`, S.blue]);
-    for (const [t, s] of parts) {
-      x = cv.text(x + 1, 0, " │ ", st(S.gray, S.bgBar));
-      x = cv.text(x, 0, t, st(s, S.bgBar));
+      parts.push([`${this.caps.unicode ? "⏱" : "t"} ${dur(start ? end - start : r.totals.wall_ms)}`, this.tk("muted")]);
+    } else if (this.snap.draft) parts.push(["plan awaiting approval", this.tk("warning")]);
+    else if (this.plannerBusy()) parts.push([`${this.look("running").sym} planning`, this.tk("active")]);
+    else parts.push(["idle", this.tk("muted")]);
+    if (this.agentInfo.length) {
+      const seen = new Set<string>();
+      const prov = this.agentInfo.filter((a) => a.adapter !== "mock" && !seen.has(a.provider) && seen.add(a.provider));
+      if (prov.length) parts.push([prov.map((a) => `${a.provider} ${a.diagnostics?.installed && a.diagnostics.auth !== "unauthenticated" ? (this.caps.unicode ? "✔" : "+") : (this.caps.unicode ? "✖" : "x")}`).join("  "), this.tk("muted")]);
     }
-    cv.text(W - 10, 0, "/help  ", st(S.gray, S.bgBar));
+    for (const [t, s] of parts) {
+      if (x + t.length + 4 >= W - 8) break;
+      x = cv.text(x + 1, 0, " │ ", bar(this.tk("border")));
+      x = cv.text(x, 0, t, bar(s));
+    }
+    const clock = new Date().toLocaleTimeString("en-GB", { hour12: false }).slice(0, 5);
+    cv.text(W - clock.length - 2, 0, clock, bar(this.tk("muted")));
   }
 
-  private dagNodes(plan: Plan | null): DagNode[] {
+  private dagNodes(plan: Plan | null): NetNode[] {
     if (!plan) return [];
     const brief = new Map(this.runAgents().map((a) => [a.task_id, a]));
+    const live = Boolean(this.snap.run) && !this.showingDraft();
     return plan.tasks.map((t) => {
       const a = this.full.get(t.id);
+      const state = (live ? a?.state ?? brief.get(t.id)?.state ?? "queued" : "queued") as AgentState;
       return {
-      provider: a?.agent.provider ?? null, cli: a ? `${a.agent.adapter ?? a.agent.id}${a.agent.cli_version ? ` ${a.agent.cli_version}` : ""}` : null,
-      runtimeModel: a?.agent.runtime_model ?? null, fixCycle: a?.fix_cycle ?? null,
-      quota: a?.state === "waiting_quota" ? quotaLabel(a).replace("resumes ", "") : null,
-      id: t.id, title: t.title, role: t.role, deps: t.depends_on,
-      state: (this.snap.run && !this.showingDraft() ? this.full.get(t.id)?.state ?? brief.get(t.id)?.state ?? "queued" : "queued") as AgentState,
-      progress: this.snap.run && !this.showingDraft() ? this.progress(t.id) : null,
-    }; });
+        provider: a?.agent.provider ?? null, cli: a ? `${a.agent.adapter ?? a.agent.id}${a.agent.cli_version ? ` ${a.agent.cli_version}` : ""}` : null,
+        runtimeModel: a?.agent.runtime_model ?? null, fixCycle: a?.fix_cycle ?? null, reviewOpen: a?.fix_cycle ?? null,
+        quota: a?.state === "waiting_quota" ? quotaLabel(a).replace("resumes ", "") : null,
+        id: t.id, title: t.title, role: t.role, deps: t.depends_on, state,
+        progress: live ? this.progress(t.id) : null,
+      };
+    });
   }
 
   /** Pipeline progress of a task's agent (never goes backwards while it runs). */
@@ -907,136 +1010,249 @@ export class App {
     return p;
   }
 
-  private planPanel(cv: Canvas, y: number, W: number, h: number, dag: Canvas) {
+  private panelBox(cv: Canvas, r: Region, title: string, right = "", focus = false) {
+    cv.box(r.x, r.y, r.w, r.h, focus ? this.tk("brand") : this.tk("border"), title, this.tk("text", S.bold));
+    if (right) cv.text(r.x + r.w - 2 - [...right].length, r.y, right, this.tk("muted"), r.x + r.w - 1);
+  }
+
+  private networkPanel(cv: Canvas, r: Region) {
     const d = this.snap.draft;
     const draft = this.showingDraft();
-    const title = draft && d ? `Draft plan · ${clip(d.goal, 50)}` : this.snap.run ? `Task graph · ${this.snap.run.run_id}` : "Plan";
-    const color = draft ? S.orange : S.gray;
-    cv.box(0, y, W, h, color, title, st(S.bold, draft ? S.orange : S.white));
-    const ox = Math.max(2, Math.floor((W - dag.w) / 2));
-    cv.blit(dag, ox, y + 1, 0, 0, Math.min(dag.w, W - 4), Math.min(dag.h, h - 2));
+    const title = draft && d ? `DRAFT PLAN · ${clip(d.goal, 40)}` : this.snap.run ? "AGENT NETWORK" : "AGENT NETWORK";
+    this.panelBox(cv, r, title, this.snap.run ? this.snap.run.run_id : "", false);
+    const nodes = this.dagNodes(this.plan());
+    if (!nodes.length) { this.director.setGeometry(null); this.placeholder2(cv, r); return; }
+    const reserve = d && draft ? 3 : 0;
+    const geom = renderNetwork(nodes, { maxW: r.w - 2, maxH: r.h - 2 - reserve, caps: this.caps, now: this.now, selected: this.selected, still: !this.mgr.enabled, fx: this.director.fx });
+    this.director.setGeometry(geom);
+    if (this.mgr.enabled) this.mgr.particles.draw(geom.canvas, this.now, { depth: this.caps.color, unicode: this.caps.unicode });
+    const ox = r.x + 1 + Math.max(0, Math.floor((r.w - 2 - geom.canvas.w) / 2));
+    const oy = r.y + 1 + Math.max(0, Math.floor((r.h - 2 - reserve - geom.canvas.h) / 2));
+    cv.blit(geom.canvas, ox, oy, 0, 0, Math.min(geom.canvas.w, r.w - 2), Math.min(geom.canvas.h, r.h - 2 - reserve));
     if (d && draft) {
       const c = d.check;
       const msg = c.errors.length ? `✖ ${c.errors[0]}` : c.warnings.length ? `! ${c.warnings.length} warning(s): ${c.warnings[0]}` : `✔ ${d.plan.tasks.length} tasks · spec ${path.relative(this.root, d.spec_path)}`;
-      cv.text(2, y + h - 2, clip(msg, W - 4), c.errors.length ? S.red : c.warnings.length ? S.orange : S.green);
-      cv.text(2, y + h - 1, " Enter run · type to revise · /spec · /plan · /discard ", st(S.orange, S.bold), W - 2);
+      cv.text(r.x + 2, r.y + r.h - 3, clip(msg, r.w - 4), c.errors.length ? this.tk("error") : c.warnings.length ? this.tk("warning") : this.tk("success"));
+      cv.text(r.x + 2, r.y + r.h - 2, clip("Enter run · type to revise · /spec · /plan · /discard", r.w - 4), this.tk("warning", S.bold));
     }
   }
 
-  private placeholderPanel(cv: Canvas, y: number, W: number, h: number) {
+  private placeholder2(cv: Canvas, r: Region) {
     const p = this.sessions.get("planner");
-    cv.box(0, y, W, h, S.gray, "Plan", st(S.bold, S.white));
     const lines: [string, string][] = [];
     if (p && (p.state === "running" || p.state === "waiting_input")) {
-      lines.push([`${p.state === "running" ? spinner(this.frame) : "?"} The planner is writing a spec and task graph…`, st(S.blue, S.bold)]);
-      lines.push([p.question ? `It asks: ${p.question.prompt}` : p.activity ?? "", p.question ? S.orange : S.gray]);
+      lines.push([`${p.state === "running" ? this.look("running").sym : "?"} The planner is writing a spec and task graph…`, this.tk("active", S.bold)]);
+      lines.push([p.question ? `It asks: ${p.question.prompt}` : p.activity ?? "", p.question ? this.tk("warning") : this.tk("muted")]);
     } else if (p?.state === "failed") {
-      lines.push([`✖ Planning failed: ${p.error ?? ""}`, S.red], ["Describe the goal again, or adjust it.", S.gray]);
+      lines.push([`${this.look("failed").sym} Planning failed: ${p.error ?? ""}`, this.tk("error")], ["Describe the goal again, or adjust it.", this.tk("muted")]);
     } else {
-      lines.push(["Chat with Claude below: it answers questions and makes changes directly in this repo.", st(S.white, S.bold)]);
-      lines.push(["For bigger work, /sdd <goal>: a planner writes a spec and a task graph, you approve it, agents build it in parallel.", S.gray]);
-      if (!this.snap.has_context) lines.push(["Tip: /init lets an agent study this repo and write HEXAGON.md first.", S.cyan]);
+      lines.push(["No agent network yet.", this.tk("text", S.bold)]);
+      lines.push(["Chat with Claude below: it answers questions and edits this repo directly.", this.tk("muted")]);
+      lines.push(["For bigger work, /sdd <goal>: a planner writes a spec and task graph, you approve it, agents build it in parallel.", this.tk("muted")]);
+      if (!this.snap.has_context) lines.push(["Tip: /init lets an agent study this repo and write HEXAGON.md first.", this.tk("info")]);
     }
-    lines.slice(0, h - 2).forEach(([t, s], i) => cv.text(3, y + 1 + i, clip(t, W - 6), s));
+    lines.slice(0, r.h - 2).forEach(([t, s], i) => cv.text(r.x + 3, r.y + 2 + i, clip(t, r.w - 6), s));
+    // A resting molecule: static, so an idle screen costs nothing.
+    if (r.h >= 12 && r.w >= 40) {
+      const sc = renderStartup(r.w - 2, r.h - 8, 1500, this.caps, cellAspect());
+      cv.blit(sc, r.x + 1, r.y + 7, 0, 0, r.w - 2, r.h - 8);
+    }
   }
 
-  private agentList(cv: Canvas, x: number, y: number, w: number, h: number) {
-    cv.box(x, y, w, h, S.gray, "Agents", st(S.bold, S.white));
-    type Seg = [string, string];
-    // A card: a title line (glyph, readable name, progress bar) and detail lines below it.
-    const cards: { id: string; title: Seg[]; bar?: number | null; barStyle?: string; lines: Seg[][] }[] = [];
-    const project = this.projectStackCached();
-    for (const id of this.entries()) {
-      const perm = this.permFor(id);
-      if (id === HEX) {
-        const cs = this.sessions.get(HEX);
-        const busy = cs?.state === "running";
-        cards.push({
-          id,
-          title: [[busy ? spinner(this.frame) : "◆", S.cyan], [" Claude", S.bold], ["  chat", S.gray]],
-          lines: [
-            [["works directly in this repo", S.gray], [cs ? ` · ${tok(sessTok(cs))} tokens` : "", S.gray]],
-            [[perm ? `⚠ approve: ${perm.command}` : busy ? cs?.activity ?? "thinking…" : this.notice?.text ?? "ask anything · /sdd <goal> for agents", perm ? S.orange : S.gray]],
-            ...(project.length ? [[[project.join(" · "), S.cyan] as Seg]] : []),
-          ],
-        });
-        continue;
-      }
-      const s = this.sessions.get(id);
-      if (s) {
-        const g = s.state === "running" ? spinner(this.frame) : s.state === "waiting_input" ? "?" : s.state === "done" ? "✔" : s.state === "failed" ? "✖" : "−";
-        const col = s.state === "running" ? S.blue : s.state === "waiting_input" ? S.orange : s.state === "done" ? S.green : S.red;
-        const name = SESSION_NAMES[id] ?? [id, ""];
-        cards.push({
-          id,
-          title: [[g, col], [` ${name[0]}`, S.bold]],
-          lines: [
-            [[`${name[1]} · ${s.agent} · ${tok(sessTok(s))} tokens`, S.gray]],
-            [[perm ? `⚠ approve: ${perm.command}` : s.question ? `asks: ${s.question.prompt}` : s.error ?? s.activity ?? s.state, s.question || perm ? S.orange : s.error ? S.red : S.gray]],
-          ],
-        });
-        continue;
-      }
-      const a = this.full.get(id);
-      const b = this.runAgents().find((x) => x.task_id === id);
-      const t = this.plan()?.tasks.find((x) => x.id === id);
-      const state = (a?.state ?? b?.state ?? "queued") as AgentState;
-      const flags: Seg[] = [];
-      if (a?.needs_input) flags.push([" ?", st(S.orange, S.bold)]);
-      if (perm) flags.push([" ⚠", st(S.orange, S.bold)]);
-      if (a?.inbox.pending) flags.push([` ✉${a.inbox.pending}`, S.cyan]);
-      if (a?.controller === "user") flags.push([" you", S.magenta]);
-      const ac = a?.progress && a.progress.total ? ` · ${a.progress.done}/${a.progress.total} AC` : "";
-      const model = a ? agentIdentity(a) : "";
-      const now = perm ? `⚠ approve: ${perm.command}`
-        : state === "queued" || TERMINAL_STATES.has(state) ? `${state.replace("_", " ")}${a?.state_reason ? ` — ${a.state_reason}` : ""}`
-        : a?.activity ?? b?.activity ?? state;
-      const stack = t ? taskStack(t, project) : [];
-      const tools = toolsUsed(this.events.get(id) ?? []).slice(0, 4);
-      cards.push({
-        id,
-        bar: this.progress(id),
-        barStyle: STATE_COLOR[state],
-        title: [[glyph(state, this.frame), STATE_COLOR[state]], [` ${t?.title ?? id}`, S.bold], ...flags],
-        lines: [
-          [[`${id} · ${a?.role ?? b?.role ?? t?.role ?? ""} · ${tok(a ? spent(a.usage) : b?.tokens ?? 0)} tokens${ac}${model ? ` · ${model}` : ""}`, S.gray]],
-          ...wrap(now, Math.max(10, w - 7)).slice(0, state === "failed" || state === "blocked" ? 3 : 1).map((l) => [[l, perm || state === "failed" || state === "blocked" ? S.orange : S.white]] as Seg[]),
-          ...(a ? [[[modelLine(a), S.gray] as Seg]] : []),
-          ...(a?.state === "waiting_quota" || a?.recovery ? [[[recoveryLine(a), a.state === "waiting_quota" ? S.orange : S.gray] as Seg]] : []),
-          [[stack.join(" · "), S.cyan], [tools.length ? `${stack.length ? "  " : ""}⚒ ${tools.map((u) => `${u.name}${u.n > 1 ? `×${u.n}` : ""}`).join(" ")}` : "", S.gray]],
-        ],
-      });
+  // ── agent navigator ──
+
+  private meta(agentId: string): AgentInfo | undefined { return this.agentInfo.find((a) => a.id === agentId); }
+
+  private groupOf(id: string): Group {
+    if (id === HEX || this.sessions.has(id)) return "analysis";
+    const role = this.full.get(id)?.role ?? this.runAgents().find((a) => a.task_id === id)?.role ?? this.plan()?.tasks.find((t) => t.id === id)?.role ?? "implementer";
+    return groupOfRole(role);
+  }
+
+  private card(id: string): { sym: string; symStyle: string; title: string; l2: string; l2b: string; l3: [string, string][]; detail: [string, string][]; pct: number | null } {
+    const perm = this.permFor(id);
+    const muted = this.tk("muted");
+    if (id === HEX) {
+      const cs = this.sessions.get(HEX);
+      const busy = cs?.state === "running";
+      const m = this.meta(cs?.agent ?? "claude");
+      return {
+        sym: busy ? this.look("running").sym : this.caps.unicode ? "◆" : "*", symStyle: busy ? this.tk("active") : this.tk("brand"), title: "Claude chat",
+        l2: m ? m.provider : "works in this repo", l2b: m ? `${m.adapter}${m.diagnostics?.version ? ` ${m.diagnostics.version}` : ""}` : "",
+        l3: [[perm ? `approve: ${perm.command}` : busy ? (cs?.activity ?? "THINKING").slice(0, 40) : "READY", perm ? this.tk("warning") : busy ? this.tk("active") : muted], [cs ? `  ${tok(sessTok(cs))} tok` : "", muted]],
+        detail: [[`model: ${m?.selection?.mode === "cli-default" || !m ? "CLI-managed" : (m.selection as { identifier?: string }).identifier ?? "CLI-managed"}`, muted]], pct: null,
+      };
     }
-    // Big cards when they fit; otherwise title + current activity only.
+    const s = this.sessions.get(id);
+    if (s) {
+      const name = SESSION_NAMES[id] ?? [id, ""];
+      const st2: AgentState = s.state === "running" ? "running" : s.state === "waiting_input" ? "waiting_input" : s.state === "done" ? "done" : s.state === "failed" ? "failed" : "cancelled";
+      const lk = this.look(st2);
+      const m = this.meta(s.agent);
+      return {
+        sym: lk.sym, symStyle: lk.style, title: name[0],
+        l2: m ? m.provider : s.agent, l2b: m ? `${m.adapter}${m.diagnostics?.version ? ` ${m.diagnostics.version}` : ""}` : "",
+        l3: [[perm ? `approve: ${perm.command}` : s.question ? `asks: ${s.question.prompt}` : s.error ?? lk.label, perm || s.question ? this.tk("warning") : s.error ? this.tk("error") : lk.style]],
+        detail: [[`${name[1]} · ${tok(sessTok(s))} tok`, muted]], pct: null,
+      };
+    }
+    const a = this.full.get(id);
+    const b = this.runAgents().find((x) => x.task_id === id);
+    const t = this.plan()?.tasks.find((x) => x.id === id);
+    const state = (a?.state ?? b?.state ?? "queued") as AgentState;
+    const lk = this.look(state);
+    const flags = `${a?.needs_input ? " ?" : ""}${perm ? " !" : ""}${a?.inbox.pending ? ` ✉${a.inbox.pending}` : ""}${a?.controller === "user" ? " you" : ""}`;
+    const role = a?.role ?? b?.role ?? t?.role ?? "";
+    const detail: [string, string][] = [];
+    if (a) {
+      detail.push([modelLine(a), muted]);
+      if (a.state === "waiting_quota" || a.recovery) detail.push([recoveryLine(a), a.state === "waiting_quota" ? this.tk("waiting") : muted]);
+      if (a.state_reason && (state === "failed" || state === "blocked")) detail.push([a.state_reason, this.tk(state === "failed" ? "error" : "warning")]);
+    } else if (state === "queued") detail.push([a ? "" : "waiting for an agent to be assigned", muted]);
+    return {
+      sym: lk.sym, symStyle: lk.style, title: `${t?.title ?? id}${flags}`,
+      l2: a ? `${role} · ${a.agent.provider}` : role,
+      l2b: a ? `${a.agent.adapter ?? a.agent.id}${a.agent.cli_version ? ` ${a.agent.cli_version}` : ""} · ${a.agent.runtime_model ?? "CLI-managed"}` : "",
+      l3: [[perm ? `approve: ${perm.command}` : lk.label, perm ? this.tk("warning") : lk.style], [`  ${id}`, muted]],
+      detail, pct: this.progress(id),
+    };
+  }
+
+  private agentNavigator(cv: Canvas, x: number, y: number, w: number, h: number) {
+    const ids = this.entries();
+    this.panelBox(cv, { x, y, w, h }, "AGENTS", String(ids.length).padStart(2, "0"), true);
     const inner = h - 2;
-    const full = cards.reduce((n, c) => n + 1 + c.lines.length + 1, 0) - 1 <= inner;
-    const sizeOf = (c: (typeof cards)[number]) => (full ? 1 + c.lines.length + 1 : 2);
-    const selIdx = Math.max(0, cards.findIndex((c) => c.id === this.selected));
-    let start = 0;
-    while (start < selIdx && cards.slice(start, selIdx + 1).reduce((n, c) => n + sizeOf(c), 0) > inner) start++;
-    let yy = y + 1;
-    for (const card of cards.slice(start)) {
-      const lines = full ? card.lines : [card.lines[1] ?? []];
-      const hgt = 1 + lines.length;
-      if (yy + hgt > y + h - 1) break;
-      const sel = card.id === this.selected;
-      const bg = sel ? S.bgSel : "";
-      if (sel) { cv.fill(x + 1, yy, w - 2, hgt, S.bgSel); for (let i = 0; i < hgt; i++) cv.set(x + 1, yy + i, "▌", st(S.cyan, bg)); }
-      const barW = card.bar != null && w >= 34 ? Math.min(18, Math.floor(w / 3)) : 0;
-      let cx = x + 3;
-      for (const [t, sty] of card.title) cx = cv.text(cx, yy, t, st(sty, bg), x + w - 3 - barW);
-      if (barW) {
-        const b = bar(card.bar!, barW);
-        let bx = cv.text(x + w - 1 - barW, yy, b.fill, st(card.barStyle ?? S.blue, bg));
-        bx = cv.text(bx, yy, b.rest, st(S.gray, S.dim, bg));
-        cv.text(bx, yy, b.label, st(card.bar === 1 ? S.green : S.gray, bg));
+    type Row = { kind: "group"; text: string } | { kind: "line"; id: string; idx: number; segs: [string, string][]; pct?: number | null; title?: boolean };
+    const build = (level: 0 | 1 | 2): { rows: Row[]; first: Map<string, number> } => {
+      const rows: Row[] = [];
+      const first = new Map<string, number>();
+      for (const g of GROUPS) {
+        const members = ids.filter((id) => this.groupOf(id) === g.id);
+        if (!members.length) continue;
+        rows.push({ kind: "group", text: g.title });
+        for (const id of members) {
+          const c = this.card(id);
+          const sel = id === this.selected;
+          first.set(id, rows.length);
+          rows.push({ kind: "line", id, idx: 0, title: true, segs: [[c.sym, c.symStyle], [` ${c.title}`, sel ? this.tk("text", S.bold) : this.tk("text")]], pct: c.pct });
+          if (level < 2) rows.push({ kind: "line", id, idx: 1, segs: [[`  ${c.l2}`, this.tk("muted")]] });
+          if (level < 1 && c.l2b) rows.push({ kind: "line", id, idx: 1, segs: [[`  ${c.l2b}`, this.tk("muted")]] });
+          rows.push({ kind: "line", id, idx: 2, segs: [["  ", ""], ...c.l3] });
+          if (sel && level < 2) for (const d of c.detail.filter(([t]) => t)) for (const wl of wrap(d[0], Math.max(8, w - 8)).slice(0, 2)) rows.push({ kind: "line", id, idx: 3, segs: [[`  ${wl}`, d[1]]] });
+        }
       }
-      lines.forEach((segs, i) => {
-        let lx = x + 5;
-        for (const [t, sty] of segs) if (t) lx = cv.text(lx, yy + 1 + i, clip(t, Math.max(0, x + w - 2 - lx)), st(sty, bg), x + w - 1);
-      });
-      yy += hgt + (full ? 1 : 0);
+      return { rows, first };
+    };
+    let { rows, first } = build(0);
+    if (rows.length > inner) ({ rows, first } = build(1));
+    if (rows.length > inner) ({ rows, first } = build(2));
+    const selRow = first.get(this.selected) ?? 0;
+    let start = 0;
+    while (start < selRow - 1 && rows.length - start > inner && selRow - start >= inner - 3) start++;
+    rows.slice(start, start + inner).forEach((row, i) => {
+      const yy = y + 1 + i;
+      if (row.kind === "group") { cv.text(x + 2, yy, row.text, this.tk("muted", S.bold)); return; }
+      const sel = row.id === this.selected;
+      const bg = sel ? S.bgSel : "";
+      if (sel) { cv.fill(x + 1, yy, w - 2, 1, S.bgSel); cv.set(x + 1, yy, this.caps.unicode ? "▌" : "|", st(sgr(TOKENS.brand, this.caps.color), bg)); }
+      let cx = x + 3;
+      const pctW = row.title && row.pct != null ? 5 : 0;
+      for (const [t, sty] of row.segs) if (t) cx = cv.text(cx, yy, clip(t, Math.max(0, x + w - 2 - pctW - cx)), st(sty, bg), x + w - 2 - pctW);
+      if (pctW) cv.text(x + w - 2 - pctW, yy, `${Math.round(row.pct! * 100)}%`.padStart(pctW - 1), st(row.pct === 1 ? sgr(TOKENS.success, this.caps.color) : sgr(TOKENS.muted, this.caps.color), bg));
+    });
+    if (start > 0) cv.text(x + w - 4, y, "↑", this.tk("muted"));
+    if (start + inner < rows.length) cv.text(x + w - 4, y + h - 1, "↓", this.tk("muted"));
+  }
+
+  private stripRow(cv: Canvas, r: Region) {
+    cv.fill(r.x, r.y, r.w, 1, S.bgSel);
+    const c = this.card(this.selected);
+    const t = `${c.title}  ${c.l2}  ${c.l3.map(([s]) => s).join("")}${c.pct != null ? `  ${Math.round(c.pct * 100)}%` : ""}`;
+    let x = cv.text(r.x + 1, r.y, c.sym, st(c.symStyle, S.bgSel));
+    cv.text(x + 1, r.y, clip(t, r.w - 4), st(sgr(TOKENS.text, this.caps.color), S.bgSel));
+  }
+
+  // ── inspector ──
+
+  private kv(cv: Canvas, x: number, y: number, w: number, k: string, v: string, style = this.tk("text")): number {
+    cv.text(x, y, k.padEnd(11), this.tk("muted"));
+    const lines = wrap(v, Math.max(6, w - 12));
+    lines.slice(0, 2).forEach((l, i) => cv.text(x + 11, y + i, clip(l, w - 11), style));
+    return Math.min(2, lines.length);
+  }
+
+  private inspectorPanel(cv: Canvas, r: Region) {
+    const id = this.selected;
+    this.panelBox(cv, r, `INSPECTOR`, id === HEX ? "chat" : id);
+    const x = r.x + 2, w = r.w - 4;
+    let y = r.y + 1;
+    const end = r.y + r.h - 1;
+    const sec = (t: string) => { if (y < end) cv.text(x, y++, t, this.tk("muted", S.bold)); };
+    const row = (k: string, v: string, style?: string) => { if (y < end) y += this.kv(cv, x, y, w, k, v, style); };
+    const a = this.full.get(id);
+    const s = this.sessions.get(id);
+    if (!a) {
+      const m = this.meta(s?.agent ?? "claude");
+      sec("IDENTITY");
+      row("Agent", s?.agent ?? "claude");
+      row("Provider", m?.provider ?? "unknown");
+      row("CLI", m ? `${m.adapter}${m.diagnostics?.version ? ` ${m.diagnostics.version}` : ""}` : "unknown");
+      row("Model", m?.selection?.mode === "cli-default" ? "CLI default (selection)" : m?.selection ? `override ${(m.selection as { identifier?: string }).identifier}` : "CLI-managed");
+      row("Discovery", m?.capabilities?.supportsModelDiscovery ? "supported" : "unsupported");
+      if (s) { y++; sec("SESSION"); row("State", s.state); row("Tokens", `${tok(sessTok(s))} (${s.tokens?.steps ?? 0} steps)`); }
+      return;
     }
+    const m = this.meta(a.agent.id);
+    const lk = this.look(a.state);
+    sec("IDENTITY");
+    row("Role", a.role);
+    row("Agent", a.agent.id);
+    row("Provider", a.agent.provider);
+    row("CLI", `${a.agent.adapter ?? a.agent.id}${a.agent.cli_version ? ` ${a.agent.cli_version}` : " (version unknown)"}`);
+    row("Selection", a.agent.model_mode === "cli-default" || !a.agent.model ? "native CLI default" : `${a.agent.model_mode}: ${a.agent.model}`);
+    row("Runtime", a.agent.runtime_model ?? "unknown (CLI-managed)", a.agent.runtime_model ? this.tk("text") : this.tk("muted"));
+    row("Discovery", m?.capabilities?.supportsModelDiscovery ? "supported" : m ? "unsupported" : "unknown");
+    y++; sec("EXECUTION");
+    row("State", `${lk.sym} ${lk.label}${a.state_reason ? ` — ${a.state_reason}` : ""}`, lk.style);
+    row("Task", `${a.task_id} ${this.taskTitle(a.task_id)}`);
+    const p = this.progress(id);
+    if (y < end) { cv.text(x, y, "Progress".padEnd(11), this.tk("muted")); if (p != null) { const b = bar(p, Math.max(8, w - 12)); const bx = cv.text(x + 11, y, b.fill, st(lk.style)); const bx2 = cv.text(bx, y, b.rest, this.tk("border")); cv.text(bx2, y, b.label, this.tk("muted")); } else cv.text(x + 11, y, "n/a", this.tk("muted")); y++; }
+    if (a.progress && a.progress.total) row("Criteria", `${a.progress.done}/${a.progress.total} done`);
+    row("Attempt", `${a.attempt}${a.fix_cycle ? ` · fix cycle ${a.fix_cycle}` : ""}`);
+    row("Tokens", a.usage.turns ? `${tok(spent(a.usage))} (${tok(a.usage.output_tokens)} out) · ${a.usage.turns} steps` : "unavailable");
+    row("Elapsed", dur(Date.now() - Date.parse(a.state_since)) + " in state");
+    if (a.recovery) { y++; sec("RECOVERY"); row("Reason", a.recovery.cls.replace(/_/g, " ")); row("Resumes", a.recovery.next_retry_at ? `${a.recovery.next_retry_at.slice(11, 16)}Z (${a.recovery.reset_source === "provider" ? "provider-reported" : "estimated"})` : a.recovery.status === "blocked" ? "needs you" : "—"); row("Auto", a.state === "waiting_quota" ? "automatic, work preserved" : a.recovery.status); }
+    // history
+    y++; sec("HISTORY");
+    const hist = (this.events.get(id) ?? []).filter((e) => ["state", "recovery", "fix_cycle", "error"].includes(e.event.type));
+    const items: [string, string, string][] = hist.map((e) => {
+      const ev = e.event;
+      const t = time(e.ts);
+      if (ev.type === "state") return [t, `${this.look(ev.state).sym} ${ev.state.replace(/_/g, " ")}${ev.reason ? ` — ${ev.reason}` : ""}`, this.look(ev.state).style] as [string, string, string];
+      if (ev.type === "fix_cycle") return [t, `↻ fix cycle ${ev.n}`, this.tk("warning")] as [string, string, string];
+      if (ev.type === "recovery") return [t, `◷ ${ev.phase}: ${ev.message}`, this.tk("waiting")] as [string, string, string];
+      return [t, `${this.look("failed").sym} ${(ev as { message: string }).message}`, this.tk("error")] as [string, string, string];
+    });
+    const room = Math.max(0, end - y);
+    items.slice(-room).forEach(([t, text, sty], i) => { cv.text(x, y + i, t, this.tk("muted")); cv.text(x + 9, y + i, clip(text, w - 9), sty); });
+  }
+
+  // ── activity timeline ──
+
+  private activityPanel(cv: Canvas, r: Region) {
+    this.panelBox(cv, r, "ACTIVITY", this.activityFilter ? `filter: ${this.activityFilter}` : "");
+    const items = this.director.activity.filter((a) => !this.activityFilter || `${a.task} ${a.text} ${a.kind}`.toLowerCase().includes(this.activityFilter.toLowerCase()));
+    const inner = r.h - 2;
+    const w = r.w - 4;
+    const lines: { t: string; task: string; text: string; token: Token }[] = [];
+    for (const it of items) for (const [i, wl] of wrap(it.text, Math.max(10, w - 18)).entries()) lines.push({ t: i === 0 ? time(it.ts) : "", task: i === 0 ? it.task : "", text: wl, token: it.token });
+    if (!lines.length) { cv.text(r.x + 2, r.y + 1, "Waiting for agent events…", this.tk("muted")); return; }
+    lines.slice(-inner).forEach((l, i) => {
+      const yy = r.y + 1 + i;
+      cv.text(r.x + 2, yy, l.t, this.tk("muted"));
+      cv.text(r.x + 11, yy, l.task, this.tk("text", S.bold));
+      cv.text(r.x + 17, yy, clip(l.text, w - 15), this.tk(l.token));
+    });
   }
 
   private taskTitle(id: string): string {
@@ -1065,7 +1281,7 @@ export class App {
       const items = [...(cs ? itemsFromSession(cs) : []), ...notes].sort((x, y) => x.ts.localeCompare(y.ts));
       chat = chatLines(items, inner, "Claude");
       const r = this.snap.run;
-      head.push([cs ? `${cs.state === "running" ? `${spinner(this.frame)} thinking` : cs.state} · ${tokLine(cs.tokens)}` : "Ask Claude anything or ask for a change: it works directly in this repo. /sdd <goal> runs the spec-driven flow.", S.gray]);
+      head.push([cs ? `${cs.state === "running" ? `${spinner(this.spin())} thinking` : cs.state} · ${tokLine(cs.tokens)}` : "Ask Claude anything or ask for a change: it works directly in this repo. /sdd <goal> runs the spec-driven flow.", S.gray]);
       if (r) head.push([`run ${r.run_id} · ${r.state} · ${r.integration_branch} → ${r.base_branch}`, S.gray]);
     } else if (s) {
       title = `Chat · ${(SESSION_NAMES[s.id] ?? [s.id])[0]} · ${s.agent}`;
@@ -1077,7 +1293,7 @@ export class App {
       const conv = itemsFromEvents(this.events.get(sel) ?? []);
       chat = chatLines(conv.items, inner, `${a.task_id} ${clip(this.taskTitle(a.task_id), 28)}`, conv.acked, TERMINAL_STATES.has(a.state));
       const since = Date.now() - Date.parse(a.state_since);
-      head.push([`${glyph(a.state, this.frame)} ${a.state.replace("_", " ")} ${dur(since)}${a.state_reason ? ` — ${a.state_reason}` : ""} · ${a.usage.turns} step(s)`, STATE_COLOR[a.state]]);
+      head.push([`${glyph(a.state, this.spin())} ${a.state.replace("_", " ")} ${dur(since)}${a.state_reason ? ` — ${a.state_reason}` : ""} · ${a.usage.turns} step(s)`, STATE_COLOR[a.state]]);
       head.push([tokLine({ input: a.usage.input_tokens, cache_read: a.usage.cache_read_tokens, output: a.usage.output_tokens, steps: a.usage.turns }), S.gray]);
       if (a.checklist?.length) head.push([a.checklist.map((i) => `${i.status === "done" ? "✔" : i.status === "failed" ? "✖" : "○"} ${i.id}`).join("  "), S.green]);
       if (a.needs_input) head.push([`? ${a.needs_input.question_id} ${a.needs_input.prompt}${a.needs_input.options?.length ? "  " + a.needs_input.options.map((o) => `${o.id}) ${o.label}`).join("  ") : ""}`, st(S.orange, S.bold)]);
@@ -1159,7 +1375,7 @@ export class App {
     // Line 3: keys.
     const keys = this.menuOpen()
       ? "Tab/→ complete · ↑↓ choose · Enter accept · Esc close"
-      : "Enter send · Tab/↑↓ switch agent · PgUp/PgDn scroll · ^T takeover · ^O window · ^D diff · / commands · @ mention · ^C quit";
+      : "Tab/↑↓ agent · Enter send · F1 help · F2 inspector · F3 motion · F4 agents · PgUp/Dn scroll · ^T take over · ^O window · ^D diff · / cmds · ^C quit";
     cv.text(1, y + 2, clip(keys, W - 2), S.gray);
     if (this.menuOpen()) this.menu(cv, y, W);
   }

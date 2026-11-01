@@ -15,8 +15,11 @@ Claude Code (or any other coding CLI), each in its own git worktree.
   report back by running plain shell commands (`hexagon report|ask|note|done`). Any other
   non-interactive CLI can be plugged in with `adapter = "exec"`.
 - **See everything.** A full-screen dashboard shows:
-  - a live task graph (boxes and arrows, state per task);
-  - the active agents, with what each is doing and the tokens it has used;
+  - a live **agent network**: regular hexagon nodes joined by bonds, a reviewer satellite
+    per node and an integration hub, animated only by real events (see [docs/TUI.md](docs/TUI.md));
+  - an **agent navigator** grouped by role (analysis, implementation, review, integration)
+    with provider, CLI, version, model, state and progress, plus an inspector and an
+    activity timeline;
   - a **chat with the selected agent**: its replies, your messages (✓ once received),
     Hexagon's instructions, and its tool steps folded into compact lines.
 - **Steer and take over.** Message any agent mid-task, answer its questions, pause it, or
