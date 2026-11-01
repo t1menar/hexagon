@@ -71,18 +71,18 @@ describe("end to end with the mock agent", () => {
     git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "context");
   });
 
-  it("chats with Claude (persistent session, tokens per step)", async () => {
+  it("chats with the assistant (persistent session, tokens per step)", async () => {
     type Snap = { sessions: { id: string; state: string; feed: { kind: string; text: string }[]; tokens: { output: number; steps: number } }[] };
     await client.call("chat.send", { text: "how are you doing" });
-    const s1 = await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.state === "idle" && s.feed.some((f) => f.text.includes("how are you doing") && f.kind === "agent")));
+    const s1 = await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "control" && s.state === "idle" && s.feed.some((f) => f.text.includes("how are you doing") && f.kind === "agent")));
     expect(s1.tokens.steps).toBeGreaterThan(0);
     await client.call("chat.send", { text: "second message" });
-    await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.feed.some((f) => f.kind === "agent" && f.text.includes("second message"))));
+    await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "control" && s.feed.some((f) => f.kind === "agent" && f.text.includes("second message"))));
     // A denied command becomes an approval request; approving tells the live session (no restart, same process).
     await client.call("chat.send", { text: "check go\n@needs: curl -sO https://go.dev/dl" });
-    const perm = await until(async () => (await client.call<{ permissions: { id: string; agent: string }[] }>("ui.snapshot")).permissions.find((p) => p.agent === "claude"));
+    const perm = await until(async () => (await client.call<{ permissions: { id: string; agent: string }[] }>("ui.snapshot")).permissions.find((p) => p.agent === "control"));
     await client.call("question.answer", { question_id: perm.id, answer: "1" });
-    await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.state === "idle" && s.feed.some((f) => f.text.includes("approved") && f.text.includes("hexagon exec"))));
+    await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "control" && s.state === "idle" && s.feed.some((f) => f.text.includes("approved") && f.text.includes("hexagon exec"))));
   });
 
   it("rejects protocol calls from unknown agents", async () => {

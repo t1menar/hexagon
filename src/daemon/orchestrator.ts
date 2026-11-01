@@ -24,6 +24,8 @@ import { MessageRouter } from "../core/router.js";
 import { formatTrace, trace, type TaskEvidence } from "../core/trace.js";
 import { WaitStore } from "../core/recovery.js";
 import { AgentBus, type BusActivity, type Envelope } from "../core/bus.js";
+import { commandDocs } from "../core/commands.js";
+import { ControlService, type Proposal } from "./control.js";
 import { Approvals, ARTIFACT, checkStage, specHash, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
@@ -89,7 +91,8 @@ export type Push =
   | { event: "session"; data: SessionStatus }
   | { event: "draft"; data: Draft | null }
   | { event: "spec_review"; data: SpecReview | null }
-  | { event: "permissions"; data: PermissionRequest[] };
+  | { event: "permissions"; data: PermissionRequest[] }
+  | { event: "proposals"; data: Proposal[] };
 
 export interface Snapshot {
   root: string;
@@ -101,6 +104,8 @@ export interface Snapshot {
   spec_review: SpecReview | null;
   has_context: boolean;
   permissions: PermissionRequest[];
+  /** Changes the control agent proposed, waiting for your confirmation. */
+  proposals: Proposal[];
 }
 
 /** Where the run's work lives and how much of it there is. Nothing here touches the user's own branch until /merge. */
@@ -122,7 +127,7 @@ export interface RunChanges {
 /** An agent was refused a command; the user decides. */
 export interface PermissionRequest {
   id: string;
-  /** Task id (T-2) or session id (claude, planner, init). */
+  /** Task id (T-2) or session id (control, planner, init). */
   agent: string;
   kind: "task" | "session";
   command: string;
@@ -157,6 +162,7 @@ export class Orchestrator extends EventEmitter {
   current: ActiveRun | null = null;
   draft: Draft | null = null;
   specReview: SpecReview | null = null;
+  readonly control: ControlService = new ControlService(this, (list) => this.push({ event: "proposals", data: list }));
   /** The stage the analyst is in (drives what `hexagon plan-check` validates). */
   private stage: Stage = "analyze";
   readonly approvals: Approvals;
@@ -360,7 +366,19 @@ export class Orchestrator extends EventEmitter {
     if (!id) id = [...this.sessions.values()].find((s) => s.status.state === "running" || s.status.state === "waiting_input")?.id ?? null;
     if (!id) return { ok: false, message: "Hexagon could not tell which agent you are (HEXAGON_AGENT is not set)." };
     if (op === "exec" || op === "install" || op === "sudo") return this.brokerCall(id, cwd, op, args);
+    if (op === "command") return this.agentCommand(id, args);
     return this.registry.call(id, op, args);
+  }
+
+  /** `hexagon do …` from an agent. Only the control agent may use the command API, and it only proposes. */
+  private async agentCommand(agent: string, args: Record<string, unknown>): Promise<Reply> {
+    if (agent !== "control") return { ok: false, message: "`hexagon do` is only for the Hexagon Assistant." };
+    try {
+      const r = await this.control.exec(String(args.name ?? ""), (args.args as Record<string, unknown>) ?? {}, "agent");
+      return r.status === "done" ? { ok: true, message: JSON.stringify(r.result, null, 1) } : { ok: true, message: r.message };
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
   }
 
   // ───────────── snapshot for UIs ─────────────
@@ -376,6 +394,7 @@ export class Orchestrator extends EventEmitter {
       spec_review: this.specReview,
       has_context: contextFile(this.root) !== null,
       permissions: [...this.permissions.values()],
+      proposals: this.control.list(),
     };
   }
 
@@ -386,7 +405,7 @@ export class Orchestrator extends EventEmitter {
 
   // ───────────── solo sessions: init & planner ─────────────
 
-  private solo(id: "init" | "planner" | "claude", role: Role, opts: { system: string; env: Record<string, string>; allowCommands: string[]; validate?: () => Reply; conversational?: boolean; readOnly?: boolean }): SoloSession {
+  private solo(id: "init" | "planner" | "control", role: Role, opts: { system: string; env: Record<string, string>; allowCommands: string[]; validate?: () => Reply; conversational?: boolean; readOnly?: boolean }): SoloSession {
     const prev = this.sessions.get(id);
     if (prev?.alive) throw new Error(`the ${id} agent is already running`);
     const adapter = this.adapterFor(role);
@@ -430,7 +449,7 @@ export class Orchestrator extends EventEmitter {
     // Nothing to study in an empty repository, and nothing to ask: write a stub the first code fills in.
     if (!description?.trim() && isEmptyProject(this.root)) {
       if (!contextFile(this.root)) fs.writeFileSync(path.join(this.root, "HEXAGON.md"), stubContext(this.root));
-      this.notice("info", "Empty repository: wrote a stub HEXAGON.md. Tell Claude what to build in the chat (or /sdd <goal>); the stack gets filled in as code lands.");
+      this.notice("info", "Empty repository: wrote a stub HEXAGON.md. Tell the assistant what to build in the chat (or /sdd <goal>); the stack gets filled in as code lands.");
       return { id: "init", skipped: true };
     }
     const s = this.solo("init", "bootstrap", {
@@ -662,7 +681,7 @@ export class Orchestrator extends EventEmitter {
     return this.draft;
   }
 
-  async approve(opts: { max_parallel?: number; agent?: string | null } = {}): Promise<string> {
+  async approve(opts: { max_parallel?: number; agent?: string | null; only?: string[] } = {}): Promise<string> {
     const d = this.draft;
     if (!d) throw new Error("no plan waiting for approval");
     if (d.check.errors.length) throw new Error(`plan has errors: ${d.check.errors.join("; ")}`);
@@ -880,7 +899,7 @@ export class Orchestrator extends EventEmitter {
   /** `to`: "T-7" | "@implementers" | "@all" | "@lead" | "blackboard" | "planner" | "init". */
   async send(to: string, body: string): Promise<{ messages: Message[]; answer?: string }> {
     const target = to.trim();
-    if (/^@?(lead|claude)$/i.test(target)) { this.chat(body); return { messages: [] }; }
+    if (/^@?(lead|control|assistant|claude)$/i.test(target)) { this.chat(body); return { messages: [] }; }
     if (/^@?planner$/i.test(target)) { this.revise(body); return { messages: [] }; }
     if (/^@?init$/i.test(target)) { this.session("init").say(body); return { messages: [] }; }
     const r = this.requireRun();
@@ -968,7 +987,7 @@ export class Orchestrator extends EventEmitter {
         else if (r.scheduler.run(s.task_id)) this.tellAgent(s.task_id, note); // still alive: same session, no restart
       }
     }
-    const chat = this.sessions.get("claude");
+    const chat = this.sessions.get("control");
     if (chat?.alive && !opts.except) chat.restart(`${key} ${t.version} is now installed (on PATH: ${t.bin}). Run what needed it again and continue.`, chat.allowCommands);
     const msg = `${key} ${t.version} installed for agents.`;
     this.notice("info", msg);
@@ -1208,15 +1227,15 @@ export class Orchestrator extends EventEmitter {
     const changed = summary !== this.lastChatState;
     this.lastChatState = summary;
     const context = changed ? `<hexagon_state>\n${summary}\n</hexagon_state>` : "";
-    const cur = this.sessions.get("claude");
+    const cur = this.sessions.get("control");
     if (cur?.alive) return cur.say(text, context);
     this.reloadConfig();
-    const s = cur ?? this.solo("claude", "control", {
-      system: this.roleSystem("control"),
-      env: this.agentEnv("claude"),
-      allowCommands: ["hexagon", ...new Set([...this.cfg.sandbox.allow_commands, ...PLANNER_COMMANDS, "git diff", "git show", "git status", "git log", "git add", "git commit"])],
+    const s = cur ?? this.solo("control", "control", {
+      system: `${this.roleSystem("control")}\n\n<commands>\nUse \`hexagon do <name> --param value\`.\n${commandDocs()}\n</commands>`,
+      env: this.agentEnv("control"),
+      allowCommands: ["hexagon", ...new Set([...PLANNER_COMMANDS.filter((c) => c !== "mkdir"), "git diff", "git show", "git status", "git log"])],
       conversational: true,
-      readOnly: false,
+      readOnly: true,
     });
     s.logUser(text);
     const first = `${context ? `${context}\n` : ""}<user_message>\n${text}\n</user_message>`;
