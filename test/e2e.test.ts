@@ -217,6 +217,20 @@ describe("end to end with the mock agent", () => {
     const agents = fs.readdirSync(path.join(root, ".hexagon/runs", runs.at(-1)!, "agents"));
     expect(agents.filter((d) => d.startsWith("T-2-"))).toEqual(["T-2-a1"]);
   });
+  it("reports where the work lives: integration branch, worktrees, files and lines not yet in your branch", async () => {
+    type Changes = { run_id: string; base_branch: string; integration_branch: string; integration_worktree: string; merged: boolean; files: number; insertions: number; file_list: { path: string }[]; agents: { task_id: string; worktree: string | null; branch: string | null }[] } | null;
+    const c = await client.call<Changes>("run.changes");
+    expect(c).not.toBeNull();
+    expect(c!.integration_branch).toContain(c!.run_id);
+    expect(c!.merged).toBe(false);
+    expect(c!.files).toBeGreaterThanOrEqual(2);
+    expect(c!.insertions).toBeGreaterThan(0);
+    expect(c!.file_list.map((f) => f.path)).toEqual(expect.arrayContaining(["hexagon-mock/dep-1.md", "hexagon-mock/dep-2.md"]));
+    expect(fs.existsSync(path.join(root, c!.integration_worktree))).toBe(true);
+    expect(c!.agents.find((a) => a.task_id === "T-1")!.worktree).toContain(".hexagon/worktrees/");
+    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toBe("# demo\n"); // your own branch is untouched
+    expect(fs.existsSync(path.join(root, "hexagon-mock/dep-1.md"))).toBe(false);
+  });
   it("an agent returns a defect to the task that owns the code, then continues with the fix", async () => {
     const planFile = path.join(root, ".hexagon/return-plan.json");
     fs.writeFileSync(planFile, JSON.stringify({
