@@ -6,8 +6,9 @@ over cells, which regular hexagon geometry and particle paths need, and avoids a
 
 ## Visual identity
 
-- **Hexagon as the unit.** Agents are regular hexagons ("molecules"); reviewer satellites are small `⬡/⬢`; particles
-  are micro hexagons/dots. Bonds are box-drawing lines (`═`/`║` once the source task is done).
+- **Square cards as the unit.** Agents are plain rectangular cards (square corners; dashed while queued). Edges are box-drawing
+  lines (`═`/`║` once the source task is done), particles are small squares. The hexagon appears only in the brand mark
+  (header logo, startup sequence).
 - **Semantic colour tokens** (`src/tui/theme.ts`): `brand`, `brand2`, `text`, `muted`, `border`, `surface`,
   `success`, `warning`, `error`, `active`, `waiting`, `info`. Components use tokens, never raw colour codes.
   Colour depth: truecolor → 256 → 16 → none; `NO_COLOR` is honoured (bold/dim attributes only).
@@ -29,13 +30,32 @@ height is short: 4 lines per agent → 3 → 2, scrolling to keep the selection 
 The **inspector** separates *selection* (config: "native CLI default" or an override) from *runtime* model (what the
 process reported, or "unknown (CLI-managed)"). Models are never hardcoded; they come from config, CLI discovery or runtime.
 
-## Node geometry (`src/tui/hex.ts`, `network.ts`)
+## Node cards (`src/tui/network.ts`)
 
-Terminal cells are ~2× taller than wide, so a hexagon must be corrected for the cell aspect (auto-detected, or
-`HEXAGON_CELL_ASPECT`). For `r` rows per half and `k` columns per row, the flat-top outline has `top = round(r·hypot(k, aspect))`,
-width `top + 2rk`, height `2r`; tests assert all six sides are within ~12% of equal physical length. The network picks the
-largest `r` (5→2) that fits; below that it is compact (title/provider dropped first, id and state kept). A graph that still
-does not fit is clipped without malformed shapes: only fully visible nodes are reported and a "+N more" hint is shown.
+```text
+┌─ T-2 · implementer ────────┐   id · role in the frame
+│  Build the API             │   task title
+│  openai · codex 0.9        │   provider · CLI (text, never colour alone)
+│  model: CLI-managed        │   runtime model only if the process reported it
+│  ● WORKING                 │   state symbol + label (+ fix cycle)
+│  ━━━━━━━────────── 40%     │   progress
+├─ REVIEW ───────────────────┤
+│  ○ not reviewed yet        │   review verdict, always in words
+└────────────────────────────┘
+```
+
+Three sizes (30×9, 26×7, 20×5) are chosen to fit the panel; the compact card drops model and bar first and keeps id, state and review.
+Graphs that still do not fit are clipped without malformed shapes: only fully visible cards are reported and a "+N more" hint is shown.
+
+### Review design
+
+Review is part of the card, so it is always clear which agent a verdict belongs to. The footer says one of:
+`○ not reviewed yet` · `◐ in review` · `↩ changes requested (fix N)` · `✔ approved`. Two lanes carry the movement:
+
+- **Rejection lane:** a dotted rail `╎` in the card's left gutter from the review row up to the work area, with `▲` at the top.
+  On a rejection, particles climb the rail and the footer reads `▲ REJECTED → developer` for a couple of seconds.
+- **Approval lane:** out of the review row through the right border (`▸`) and along the card's real outgoing edges toward integration;
+  the footer reads `✔ APPROVED → integration`.
 
 ## Animation architecture (`src/tui/motion.ts`)
 
@@ -51,7 +71,7 @@ One `AnimationManager` owns all animation:
 
 ### Particles
 
-A pool of 48 (bounded, priority replacement: review/completion/recovery beat execution/information beat ambient).
+A pool of 48 small squares (bounded, priority replacement: review/completion/recovery beat execution/information beat ambient).
 Paths are polylines taken from the *real drawn edges* of the network (`Geometry.edges`, `Geometry.reviewers`). Particles are
 drawn onto the network canvas **before** it is blitted, and only land on blank cells or connection lines, so they can never
 cover a label or node outline.
@@ -66,10 +86,10 @@ Nothing animates on a timer of its own and nothing is invented; if an event lack
 | agent working | perimeter arc (hold) |
 | `tool_call` | one small execution pulse (rate-limited) |
 | message between agents with a dependency edge | information particles along that edge, flash |
-| `reviewing` | reviewer satellite highlight |
-| `fix_cycle` while `reviewing` | **rejection**: review particles from satellite back to the developer, warning flash |
+| `reviewing` | review footer highlight |
+| `fix_cycle` while `reviewing` | **rejection**: particles up the rejection rail, footer says REJECTED, warning flash |
 | `fix_cycle` otherwise | verification failure: logged only |
-| `reviewing → merging` | **approval**: completion particles from the satellite along outgoing edges |
+| `reviewing → merging` | **approval**: completion particles out of the review row and along outgoing edges |
 | `waiting_quota` | restrained: slow arc, reset time as text, no particles |
 | `waiting_quota → running` | recovery sweep + flash + recovery particles |
 | `done` | success flash and sweep |

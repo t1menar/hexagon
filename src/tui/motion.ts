@@ -60,11 +60,11 @@ export type ParticleKind = "information" | "execution" | "review" | "completion"
 
 interface KindLook { token: Token; glyph: [string, string]; ascii: string; priority: number; size: 1 | 2 }
 const KIND: Record<ParticleKind, KindLook> = {
-  information: { token: "info", glyph: ["⬢", "⬡"], ascii: "O", priority: 3, size: 2 },
-  execution: { token: "active", glyph: ["⬡", "·"], ascii: "o", priority: 2, size: 1 },
-  review: { token: "warning", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
-  completion: { token: "success", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
-  recovery: { token: "brand", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
+  information: { token: "info", glyph: ["■", "▪"], ascii: "#", priority: 3, size: 2 },
+  execution: { token: "active", glyph: ["■", "▪"], ascii: "#", priority: 2, size: 1 },
+  review: { token: "warning", glyph: ["■", "▪"], ascii: "#", priority: 4, size: 2 },
+  completion: { token: "success", glyph: ["■", "▪"], ascii: "#", priority: 4, size: 2 },
+  recovery: { token: "brand", glyph: ["■", "▪"], ascii: "#", priority: 4, size: 2 },
   ambient: { token: "border", glyph: ["·", "·"], ascii: ".", priority: 0, size: 1 },
 };
 
@@ -148,7 +148,7 @@ export class ParticleSystem {
     }
   }
 }
-const LINE_CELLS = new Set("─│╭╮╰╯├┤┬┴┼═║╔╗╚╝╠╣╦╩╬▸·•-|+>".split(""));
+const LINE_CELLS = new Set("╎─│╭╮╰╯├┤┬┴┼═║╔╗╚╝╠╣╦╩╬▸·•-|+>".split(""));
 
 // ───────────── tweens, timelines, scheduler ─────────────
 
