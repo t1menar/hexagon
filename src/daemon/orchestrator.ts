@@ -146,7 +146,7 @@ export interface PermissionRequest {
 
 const SUBCOMMAND_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "go", "cargo", "docker", "kubectl", "gh"]);
 
-/** The allow rule for a command: "brew", "git push", or null when Claude Code can't match it by prefix. */
+/** The allow rule for a command: "brew", "git push", or null when it can't be matched by prefix. */
 export function commandPrefix(command: string): string | null {
   const c = command.trim();
   if (!c || /[;&|`$<>()\n]/.test(c) || /^\w+=/.test(c)) return null;
@@ -910,7 +910,7 @@ export class Orchestrator extends EventEmitter {
   /** `to`: "T-7" | "@implementers" | "@all" | "@lead" | "blackboard" | "planner" | "init". */
   async send(to: string, body: string): Promise<{ messages: Message[]; answer?: string }> {
     const target = to.trim();
-    if (/^@?(lead|control|assistant|claude)$/i.test(target)) { this.chat(body); return { messages: [] }; }
+    if (/^@?(lead|control|assistant)$/i.test(target)) { this.chat(body); return { messages: [] }; }
     if (/^@?planner$/i.test(target)) { this.revise(body); return { messages: [] }; }
     if (/^@?init$/i.test(target)) { this.session("init").say(body); return { messages: [] }; }
     const r = this.requireRun();
@@ -1244,7 +1244,7 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
-   * Talk to Claude: a persistent Claude Code session in the project root (read-only). It
+   * Talk to the Hexagon Assistant: a persistent agent session in the project root (read-only). It
    * answers questions about the code and the run, and starts planning (`hexagon plan`) when
    * you ask for something to be built.
    */
@@ -1456,7 +1456,7 @@ function isEmptyProject(root: string): boolean {
 function stubContext(root: string): string {
   return `# ${path.basename(root)}
 New repository: no code yet, so the stack isn't chosen. Whoever adds the first code (you,
-Claude in the chat, or an /sdd run) fills in the sections below.
+the assistant in the chat, or an /sdd run) fills in the sections below.
 
 ## Stack
 (not chosen yet)

@@ -3,7 +3,7 @@
 A terminal dashboard that runs several coding agents in parallel on one goal. The agents are
 Claude Code (or any other coding CLI), each in its own git worktree.
 
-- **Chat with Claude by default.** Ask questions or ask for changes; Claude works directly
+- **chat with the assistant by default.** Ask questions or ask for changes; Claude works directly
   in your repository, like Claude Code.
 - **Spec-driven development when you want it.** `/sdd <goal>`: a planner agent writes a
   short spec and a task graph, and you approve it with Enter (or say what to change).
@@ -95,7 +95,7 @@ Try everything offline and free: set `agent = "mock"` for every role in `.hexago
 | 1 | **Header** | Project, run state (`● RUNNING`), counts (`2 running`, `0/3 done`), tokens, elapsed time, provider health (`anthropic ✔`), `Δ N files +x −y · not in main yet` (what the run changed and has not reached your branch), `⚠ N approvals waiting`. |
 | 2 | **Agents (navigator)** | Left column, grouped by lifecycle: ANALYSIS (chat, planner, init), IMPLEMENTATION, REVIEW, INTEGRATION. Each agent has a state glyph, progress, role, provider, CLI version and model. `Tab` / `↑↓` select. The selected agent decides what the chat, inspector and network highlight. |
 | 3 | **Agent network** | Middle top. One square card per task, joined by orthogonal edges that follow the task dependencies, and an `INTEGRATION` hub that closes the graph. Particles run along the real edge when an agent starts, finishes or is rejected. The footer of each card is its review: `○ not reviewed yet` · `◐ in review` · `↩ changes requested (fix N)` · `✔ approved`. A rejection runs up the rail on the left side of the card (`▲ REJECTED → developer`); an approval leaves through the right side (`✔ APPROVED → integration`). On a graph too large for the box you get `+N more agents not shown`. |
-| 4 | **Empty state** | With no network yet, the pane explains the two ways to start: type to chat with Claude, or `/sdd <goal>`. Nothing animates there. |
+| 4 | **Empty state** | With no network yet, the pane explains the two ways to start: type to chat with the assistant, or `/sdd <goal>`. Nothing animates there. |
 | 5 | **Inspector** (`F2`) | Right column. For the chat: identity, and **WHERE THE WORK IS** (your branch, integration branch, folder, size, next step). For a task agent: identity, session tokens, **WORKSPACE** (folder, branch, files changed). |
 | 6 | **Activity** | A timeline of real events: starts, reviews, rejections, approvals, quota waits, recoveries. |
 | 7 | **Chat** | The conversation with the selected agent: its replies, your messages (`✓` when received), Hexagon's notes and its tool steps folded into compact lines. `PgUp/PgDn` scroll. |

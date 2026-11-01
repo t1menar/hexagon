@@ -3,11 +3,11 @@ import readline from "node:readline/promises";
 import type { HexClient } from "../client/client.js";
 import { c } from "../util/term.js";
 
-/** Run the agent's own session (e.g. `claude --resume <id>`) in this terminal, then hand back. */
+/** Run the agent's own session (the CLI's own resume command) in this terminal, then hand back. */
 export async function takeoverInTerminal(client: HexClient, task: string): Promise<string> {
   const t = await client.call<{ worktree: string; branch: string; command: string[]; task_id: string }>("agent.takeover", { task });
   console.log(c.magenta(`\n── You have taken over ${t.task_id} ──`));
-  console.log(`The agent is paused. You are in its worktree (branch ${t.branch})${t.command[0]?.endsWith("claude") ? ", inside the same Claude Code conversation" : ""}.`);
+  console.log(`The agent is paused. You are in its worktree (branch ${t.branch}), in the agent's own session.`);
   console.log(c.dim(`$ ${t.command.join(" ")}\nExit it when you're done; then choose what happens next.\n`));
   const [bin, ...args] = t.command;
   await new Promise<void>((resolve) => {

@@ -44,9 +44,9 @@ export function classifyError(text: string): ClassifiedError {
 /** Common identity every integration exposes, independent of how it runs. */
 export interface AdapterIdentity {
   readonly id: string;
-  /** Vendor / model ecosystem (anthropic, openai, xai, …); a label, not used for behaviour. */
+  /** Vendor / model ecosystem; a label, not used for behaviour. */
   readonly provider: string;
-  /** Integration kind (claude-code, codex, grok, exec, mock). */
+  /** Integration kind (the name it registered under). */
   readonly adapterId: string;
   readonly displayName: string;
   readonly capabilities: AgentCapabilities;

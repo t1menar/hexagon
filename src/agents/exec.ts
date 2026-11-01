@@ -3,9 +3,10 @@ import { AdapterBase } from "./contracts/base.js";
 import { capabilities } from "./contracts/capabilities.js";
 import type { AdapterOutcome, AgentAdapter, AgentRunContext } from "./types.js";
 import { formatInjected } from "./types.js";
+import { registerAdapter } from "./adapter-registry.js";
 
 /**
- * Generic wrapper for any non-interactive coding CLI (e.g. `codex exec`, `gemini -p`, `aider --message`).
+ * Generic wrapper for any non-interactive coding CLI (anything that takes the prompt as an argument).
  * The prompt (system + task) is passed as an argument: `{prompt}` in the command is replaced, otherwise
  * it is appended. No live input: messages that arrive while it runs are delivered on the next run.
  * The agent reports back through the same `hexagon …` shell commands as every other agent.
@@ -57,3 +58,8 @@ export class ExecAdapter extends AdapterBase implements AgentAdapter {
     });
   }
 }
+
+registerAdapter("exec", (id, c) => {
+  if (!c.command?.length) throw new Error(`[agents.${id}] needs command = ["…"]`);
+  return new ExecAdapter(id, c.command, c.interactive ?? null, c.provider ?? "unknown");
+});

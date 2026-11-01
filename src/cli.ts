@@ -21,20 +21,20 @@ import { c } from "./util/term.js";
 
 const VERSION = (JSON.parse(readResource("package.json")) as { version: string }).version;
 
-const USAGE = `${c.bold("hexagon")} ${VERSION} — run several coding agents (Claude Code, …) on one goal, in parallel
+const USAGE = `${c.bold("hexagon")} ${VERSION} — run several coding agents on one goal, in parallel
 
 ${c.bold("Start")}
   hexagon init ["what you're building"]   set up .hexagon/ and let an agent write HEXAGON.md
-  hexagon                                 open the dashboard: chat with Claude; /sdd for parallel agents
+  hexagon                                 open the dashboard: chat with the assistant; /sdd for parallel agents
   hexagon sdd "<goal>"                    spec-driven: the analyst writes spec + task graph (alias: new)
-  hexagon chat "<message>"                talk to Claude (works directly in the repo)
+  hexagon chat "<message>"                talk to the Hexagon Assistant
   hexagon run [plan.json] [-j N] [--agent X] [--follow]   run the approved draft (or a plan file)
 
 ${c.bold("Watch & steer")}
   hexagon status [T-n] [--json]    ·  hexagon attach <T-n>  ·  hexagon open <T-n>
   hexagon tell <T-n|@role|@all> <text>  ·  hexagon answer <Q-n> <text>
   hexagon pause|resume|cancel <T-n>  ·  hexagon retry <T-n> [--agent X] [--effort E]
-  hexagon takeover <T-n>           continue the agent's own session yourself (claude --resume)
+  hexagon takeover <T-n>           continue the agent's own session yourself
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
   hexagon compact [agent|T-n]      compact an agent's session at its next safe point  ·  hexagon stats [--json]  tokens by cause
   hexagon bus send|read|subscribe  agents: structured messages between agents (handoff, decision, finding, question …)
@@ -445,7 +445,7 @@ async function init(args: string[]): Promise<void> {
   if (started.skipped) {
     client.close();
     console.log(`${c.blue("✔")} empty repository: wrote a stub HEXAGON.md (filled in as code lands)`);
-    console.log(`Next: run ${c.cyan("hexagon")} and tell Claude what to build, or ${c.cyan('hexagon sdd "<goal>"')} for the spec-driven flow.`);
+    console.log(`Next: run ${c.cyan("hexagon")} and tell the assistant what to build, or ${c.cyan('hexagon sdd "<goal>"')} for the spec-driven flow.`);
     return;
   }
   console.log(`${c.cyan("◆")} the init agent is studying the repository and writing HEXAGON.md ${c.dim("(Ctrl-C to stop)")}`);
@@ -453,7 +453,7 @@ async function init(args: string[]): Promise<void> {
   client.close();
   if (st.state !== "done") { process.exitCode = 1; return; }
   console.log(`\n${c.blue("✔")} HEXAGON.md written${st.summary ? ` — ${st.summary}` : ""} · ${st.tokens.input + st.tokens.cache_read + st.tokens.output} tokens`);
-  console.log(`Next: run ${c.cyan("hexagon")} and tell Claude what to build, or ${c.cyan('hexagon sdd "<goal>"')} for the spec-driven flow.`);
+  console.log(`Next: run ${c.cyan("hexagon")} and tell the assistant what to build, or ${c.cyan('hexagon sdd "<goal>"')} for the spec-driven flow.`);
 }
 
 async function newGoal(args: string[]): Promise<void> {

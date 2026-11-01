@@ -3,6 +3,7 @@ import { capabilities } from "./contracts/capabilities.js";
 import { selectionFrom, type ModelSelection } from "./contracts/model-selection.js";
 import { OneShotAdapter, safeJson, type OneShotSpec } from "./oneshot.js";
 import type { AgentAdapter, AgentRunContext } from "./types.js";
+import { registerAdapter } from "./adapter-registry.js";
 
 /**
  * OpenAI Codex CLI (`codex exec --json`). Flags used are those in the public documentation (exec, --json, -m/--model,
@@ -51,3 +52,5 @@ export class CodexAdapter extends OneShotAdapter implements AgentAdapter {
     else if (e.type === "error" || e.type === "turn.failed") ctx.host.emit({ type: "progress", text: String(e.message ?? e.error?.message ?? "error").slice(0, 200) });
   }
 }
+
+registerAdapter("codex", (id, c, o) => new CodexAdapter(id, c.command?.length ? c.command : ["codex"], selectionFrom(o || c.model), c.args ?? []));

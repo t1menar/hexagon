@@ -2,7 +2,7 @@ import type { AgentStatus } from "../contracts/types.js";
 
 type A = Pick<AgentStatus, "agent" | "state" | "recovery" | "fix_cycle">;
 
-/** "anthropic · claude-code 2.1.316": provider and CLI, never a model. */
+/** "<provider> · <cli> <version>": provider and CLI, never a model. */
 export function agentIdentity(a: A): string {
   const g = a.agent;
   return `${g.provider} · ${g.adapter ?? g.id}${g.cli_version ? ` ${g.cli_version}` : ""}`;

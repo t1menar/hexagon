@@ -6,6 +6,8 @@ import { classifyProviderError } from "./contracts/errors.js";
 import { selectionFrom, type ModelSelection } from "./contracts/model-selection.js";
 import type { AdapterOutcome, AgentAdapter, AgentRunContext } from "./types.js";
 import { formatInjected, MESSAGE_ID_RE } from "./types.js";
+import { registerAdapter } from "./adapter-registry.js";
+import type { AgentConfig } from "../core/config.js";
 
 export interface CliAgentConfig {
   /** Executable + fixed leading args, e.g. ["claude"]. */
@@ -329,3 +331,17 @@ export function askOnce(command: string[], model: string | null, system: string,
     child.stdin.end(question);
   });
 }
+
+const cmd = (c: AgentConfig, dflt: string) => (c.command?.length ? c.command : [dflt]);
+
+registerAdapter("claude-code", (id, c, o) => new ClaudeCodeAdapter(id, { command: cmd(c, "claude"), model: null, selection: selectionFrom(o || c.model), args: c.args ?? [] }), {
+  agentId: "claude",
+  primary: true,
+  defaultAgent: { adapter: "claude-code", provider: "anthropic", command: ["claude"] },
+  // v0.1 configs used an API adapter called "claude" with a full model id; it maps onto this CLI wrapper.
+  aliases: ["claude"],
+  migrate(a) {
+    a.command ??= ["claude"];
+    if (a.model?.startsWith("claude-")) delete a.model; // a full model id is not portable to the CLI: its own default applies
+  },
+});
