@@ -31,7 +31,7 @@ import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
 import { Scheduler, type PriorTask } from "../core/scheduler.js";
 import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
-import { SoloSession, type SessionStatus } from "../core/solo.js";
+import { SoloSession, sessionPush, type SessionStatus } from "../core/solo.js";
 import { StatusStore } from "../core/status.js";
 import type { RunContext } from "../core/supervisor.js";
 
@@ -405,16 +405,23 @@ export class Orchestrator extends EventEmitter {
 
   // ───────────── solo sessions: init & planner ─────────────
 
+  /** Feed position last pushed to subscribers, per session. */
+  private sentSeq = new Map<string, number>();
+
   private solo(id: "init" | "planner" | "control", role: Role, opts: { system: string; env: Record<string, string>; allowCommands: string[]; validate?: () => Reply; conversational?: boolean; readOnly?: boolean }): SoloSession {
     const prev = this.sessions.get(id);
     if (prev?.alive) throw new Error(`the ${id} agent is already running`);
+    this.sentSeq.delete(id);
     const adapter = this.adapterFor(role);
     const s = new SoloSession(id, role, adapter, {
       cwd: this.root, effort: roleConfig(this.cfg, role).effort, ...opts,
       sessions: this.agentSessions, promptHash: identityHash(this.paths, role, loadSkills(this.paths), this.cfg.roles[role]), windowTokens: this.cfg.context.assumed_window_tokens,
       nextQuestionId: () => `Q-S${this.nextSoloQuestion++}`,
     });
-    s.on("status", (st: SessionStatus) => this.push({ event: "session", data: st }));
+    s.on("status", (st: SessionStatus) => {
+      this.push({ event: "session", data: sessionPush(st, this.sentSeq.get(id)) });
+      this.sentSeq.set(id, st.feed_seq);
+    });
     s.on("permission", (command: string, tool: string) => this.requestPermission(id, "session", command, tool));
     s.on("missing", (command: string) => this.toolMissing(command));
     this.sessions.set(id, s);

@@ -6,7 +6,7 @@ import readline from "node:readline";
 import type { HexClient } from "../client/client.js";
 import type { AgentState, AgentStatus, Message, Plan, RunStatus, StampedEvent } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
-import type { SessionStatus } from "../core/solo.js";
+import { mergeSession, type SessionStatus } from "../core/solo.js";
 import type { Draft, PermissionRequest, Push, RunChanges, Snapshot } from "../daemon/orchestrator.js";
 import { hexagonCommand, openTerminal } from "../shell/open.js";
 import { layoutInput, lineBounds, moveVertical, windowRows } from "./editor.js";
@@ -101,7 +101,7 @@ const spent = (u: { input_tokens: number; cache_read_tokens: number; output_toke
 const sessTok = (s: SessionStatus) => (s.tokens ? s.tokens.input + s.tokens.cache_read + s.tokens.output : 0);
 const blankSession = (id: string, role: SessionStatus["role"]): SessionStatus => ({
   id, role, agent: "", state: "running", activity: "starting", question: null, cost_usd: 0,
-  tokens: { input: 0, cache_read: 0, output: 0, steps: 0 }, result_status: null, summary: null, error: null, feed: [], session_id: "",
+  tokens: { input: 0, cache_read: 0, output: 0, steps: 0 }, result_status: null, summary: null, error: null, feed: [], feed_seq: 0, session_id: "",
 });
 const dur = (ms: number) => {
   const s = Math.floor(ms / 1000);
@@ -385,7 +385,12 @@ export class App {
       }
       case "message": this.onMessage(p.data); this.director.message(p.data); break;
       case "notice": this.log(p.data.text, p.data.level === "info" ? S.cyan : S.orange); this.flash(p.data.text, p.data.level); break;
-      case "session": this.sessions.set(p.data.id, p.data); break;
+      case "session": {
+        const m = mergeSession(this.sessions.get(p.data.id), p.data);
+        this.sessions.set(p.data.id, m.status);
+        if (m.gap) void this.client.call<Snapshot>("ui.snapshot").then((s) => { for (const x of s.sessions) this.sessions.set(x.id, x); this.invalidate(); }).catch(() => {});
+        break;
+      }
       case "permissions": this.snap.permissions = p.data; break;
       case "proposals": {
         const fresh = p.data.filter((x) => !(this.snap.proposals ?? []).some((y) => y.id === x.id));
