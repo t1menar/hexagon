@@ -177,7 +177,7 @@ Hexagon has two surfaces: the **dashboard** (slash commands, type them in the in
 
 | Command | What it does |
 |---|---|
-| `hexagon init ["what you are building"]` | Creates `.hexagon/` (config, roles, specs), makes sure git exists, and lets an agent write `HEXAGON.md`. An empty repository gets a stub. |
+| `hexagon init ["what you are building"]` | Creates `.hexagon/` (config, roles, specs), makes sure git exists, and lets an agent write `HEXAGON.md`. An empty repository gets a stub. A folder that only *contains* repositories is refused (probably a missing `cd`) unless you pass `--here`. |
 | `hexagon` (also `hexagon ui`, `hexagon shell`) | Opens the dashboard. Without a terminal it prints the status table. |
 | `hexagon attach <T-n>` | Opens the dashboard with that agent selected. |
 | `hexagon sdd "<goal>"` (alias `new`) | Starts the planner; the draft appears for approval. |

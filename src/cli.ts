@@ -334,6 +334,21 @@ async function init(args: string[]): Promise<void> {
   const bare = bool(args, "--bare", "--no-agent");
   const agent = one(args, "--agent");
   const dir = process.cwd();
+  const here = bool(args, "--here", "--yes");
+  // A folder that holds several repositories is almost never the project itself (e.g. `mkdir app` without `cd app`).
+  if (!here && !fs.existsSync(path.join(dir, ".git")) && !fs.existsSync(path.join(dir, ".hexagon"))) {
+    const repos = fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && fs.existsSync(path.join(dir, e.name, ".git"))).map((e) => e.name);
+    if (repos.length) {
+      console.log(c.orange(`! ${dir} is not a project: it contains ${repos.length} git repositor${repos.length === 1 ? "y" : "ies"} (${repos.slice(0, 4).join(", ")}${repos.length > 4 ? ", …" : ""}).`));
+      let ok = false;
+      if (process.stdin.isTTY) {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        ok = /^y/i.test(await rl.question("Set up Hexagon (and git) in this folder anyway? [y/N] "));
+        rl.close();
+      }
+      if (!ok) { console.log(`Did you forget ${c.cyan("cd <project>")}? Use ${c.cyan("hexagon init --here")} to set up this folder anyway.`); process.exitCode = 1; return; }
+    }
+  }
   const created = scaffold(dir);
   console.log(created.length ? `${c.blue("✔")} created ${created.join(", ")}` : "Hexagon is already set up here");
   const setup = await ensureRepo(dir);

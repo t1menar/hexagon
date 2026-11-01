@@ -72,6 +72,8 @@ export class AgentRun {
   private blockingAsked = 0;
   private finished = false;
   private started = false;
+  /** The CLI confirmed it created the session, even if the run then ended in an error (a provider limit): resume it, never re-create it. */
+  private sessionSeen = false;
   private result: ResultEnvelope | undefined;
   private review: ReviewVerdict | undefined;
   private baseCommit = "";
@@ -291,6 +293,7 @@ export class AgentRun {
   /** Run the agent CLI until it finishes. Pause/takeover kill the process; resume continues the same session. */
   private async agentSegment(followUp?: string, quiet = false): Promise<AdapterOutcome> {
     let fu = followUp;
+    let resumedOnce = false;
     if (quiet) {
       // already shown in the chat as the user's message
     } else if (!this.started) {
@@ -302,6 +305,7 @@ export class AgentRun {
     for (;;) {
       this.st(this.questions.size ? "waiting_input" : "running");
       this.abort = new AbortController();
+      this.sessionSeen = false;
       const out = await this.adapter.run(this.ctx({
         role: this.task.role,
         sessionId: this.sessionId,
@@ -314,7 +318,9 @@ export class AgentRun {
         host: this.host(),
         agentId: this.agentRunId,
       }));
-      if (out.kind !== "error") this.started = true;
+      if (out.kind !== "error" || this.sessionSeen) this.started = true;
+      // Safety net: the CLI says this session exists although we thought it was new → continue it instead of failing the task.
+      if (out.kind === "error" && !resumedOnce && /session id .* is already in use/i.test(out.error?.message ?? "")) { resumedOnce = true; this.started = true; continue; }
       if (out.kind === "error" && this.rc.cfg.recovery.enabled && !this.cancelled && !this.userDone) {
         const next = await this.recoverFromLimit(out);
         if (next.retry) { fu = next.followUp; this.restarting = false; continue; }
@@ -632,7 +638,7 @@ export class AgentRun {
 
   private host(): AgentHost {
     return {
-      emit: (e) => this.ev(e),
+      emit: (e) => { if (e.type === "progress" && e.text === "session started") this.sessionSeen = true; this.ev(e); },
       drainInbox: () => this.drain(),
       onInbox: (cb) => {
         const listener = (m: Message) => {
