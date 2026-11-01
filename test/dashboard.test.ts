@@ -42,7 +42,7 @@ let screen: string[];
 let writes = 0;
 const saved: Record<string, unknown> = {};
 function setTerm(cols: number, rows: number, env: Record<string, string | undefined> = {}) {
-  Object.assign(process.env, { TERM: "xterm-256color", COLORTERM: "truecolor", LANG: "en_US.UTF-8", HEXAGON_STARTUP: "off", HEXAGON_ANIMATION: "auto", HEXAGON_AMBIENT: "off" }, env);
+  Object.assign(process.env, { TERM: "xterm-256color", COLORTERM: "truecolor", LANG: "en_US.UTF-8", HEXAGON_STARTUP: "off", HEXAGON_ANIMATION: "full", HEXAGON_AMBIENT: "off" }, env);
   for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k];
   Object.defineProperty(process.stdout, "columns", { value: cols, configurable: true });
   Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true });
