@@ -1,22 +1,11 @@
 /** A character grid with per-cell SGR styles, rendered to ANSI lines. */
 
-export const S = {
-  reset: "",
-  dim: "2",
-  bold: "1",
-  inverse: "7",
-  gray: "90",
-  blue: "34",
-  cyan: "36",
-  green: "32",
-  magenta: "35",
-  orange: "38;5;208",
-  yellow: "33",
-  red: "31",
-  white: "97",
-  bgSel: "48;5;236",
-  bgBar: "48;5;235",
-} as const;
+import { buildStyles, detectCaps, type Caps } from "./theme.js";
+
+/** Process-wide capabilities, detected once. Tests build their own with buildStyles/detectCaps. */
+export const CAPS: Caps = detectCaps();
+/** Style table: every entry resolves a semantic design token for this terminal (see theme.ts). */
+export const S = buildStyles(CAPS.color);
 
 export const st = (...codes: string[]) => codes.filter(Boolean).join(";");
 

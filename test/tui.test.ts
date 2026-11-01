@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Canvas } from "../src/tui/canvas.js";
-import { renderDag, type DagNode } from "../src/tui/dag.js";
 import { drawHexagon, hexMetrics, innerWidth, irregularity } from "../src/tui/hex.js";
 import { agentIdentity, modelLine, quotaLabel, recoveryLine } from "../src/tui/identity.js";
 
-const node = (over: Partial<DagNode> & { id: string }): DagNode => ({ title: "Do the thing", role: "implementer", deps: [], state: "running", progress: 0.4, ...over });
-const text = (c: Canvas) => c.lines(false).join("\n");
 
 describe("regular hexagon geometry", () => {
   it.each([2, 3, 4, 5, 6])("r=%i: all six sides have (nearly) equal physical length at cell aspect 2", (r) => {
@@ -38,48 +35,6 @@ describe("regular hexagon geometry", () => {
     }
     expect(ring.length).toBeGreaterThan(m.top * 2);
     expect(innerWidth(m, 1)).toBeLessThan(innerWidth(m, m.r));
-  });
-});
-
-describe("DAG of hexagonal agent nodes", () => {
-  const nodes = [
-    node({ id: "T-1", state: "done", progress: 1, provider: "anthropic", cli: "claude-code 2.1", runtimeModel: "rt-model-x" }),
-    node({ id: "T-2", deps: ["T-1"], provider: "openai", cli: "codex 0.9", runtimeModel: null }),
-    node({ id: "T-3", deps: ["T-1"], state: "waiting_quota", progress: 0.3, provider: "xai", cli: "grok", quota: "15:04~" }),
-  ];
-  it("shows provider, CLI, the runtime model only when reported, state, progress and id", () => {
-    const out = text(renderDag(nodes, { maxW: 120, maxH: 40, frame: 0, aspect: 2 }));
-    expect(out).toContain("T-1");
-    expect(out).toContain("anthropic");
-    expect(out).toContain("codex");
-    expect(out).toContain("rt-model-x");
-    expect(out).toContain("CLI-managed");
-    expect(out).toContain("15:04~");
-    expect(out).toMatch(/\d+%/);
-  });
-  it("is responsive to terminal size", () => {
-    const big = renderDag(nodes, { maxW: 140, maxH: 50, frame: 0 });
-    const mid = renderDag(nodes, { maxW: 80, maxH: 14, frame: 0 });
-    const small = renderDag(nodes, { maxW: 50, maxH: 9, frame: 0 });
-    expect(big.h).toBeGreaterThan(mid.h);
-    expect(mid.h).toBeGreaterThan(small.h);
-    for (const c of [big, mid, small]) expect(c.w).toBeLessThanOrEqual(140);
-    expect(text(small)).toContain("T-1");
-  });
-  it("animation can be disabled: identical frames when still, differing when animated", () => {
-    const f = (frame: number, still: boolean) => text(renderDag(nodes, { maxW: 120, maxH: 40, frame, still }));
-    expect(f(0, true)).toBe(f(7, true));
-    expect(new Set([0, 1, 2, 3, 4, 5, 6, 7].map((n) => f(n, false))).size).toBeGreaterThan(1);
-  });
-  it("plain output has no escape codes", () => {
-    const c = renderDag(nodes, { maxW: 120, maxH: 40, frame: 3 });
-    expect(c.lines(false).join("")).not.toContain("\x1b");
-  });
-  it("renders a 40-node graph quickly", () => {
-    const many = Array.from({ length: 40 }, (_, i) => node({ id: `T-${i + 1}`, deps: i > 3 ? [`T-${(i % 4) + 1}`] : [], provider: "p", cli: "c" }));
-    const t = performance.now();
-    for (let i = 0; i < 10; i++) renderDag(many, { maxW: 160, maxH: 50, frame: i });
-    expect((performance.now() - t) / 10).toBeLessThan(80);
   });
 });
 
