@@ -35,6 +35,7 @@ ${c.bold("Watch & steer")}
   hexagon pause|resume|cancel <T-n>  ·  hexagon retry <T-n> [--agent X] [--effort E]
   hexagon takeover <T-n>           continue the agent's own session yourself (claude --resume)
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
+  hexagon trace                    requirement → task → agent → verification → review → completion
   hexagon allow <cmd…> | all       let agents run these commands (e.g. allow brew curl) or everything
   hexagon model [role model|default]  show/set a model override per role (default = the CLI's own)
   hexagon agents [list|doctor|models <agent>|configure|add]   providers, CLI versions, auth, capabilities, discovered models
@@ -276,6 +277,7 @@ async function main(argv: string[]): Promise<void> {
         for (const m of list) console.log(`${m.role.padEnd(12)} ${m.model.padEnd(10)} effort ${m.effort}`);
         break;
       }
+      case "trace": console.log((await client.call<{ text: string }>("trace")).text); break;
       case "agents": {
         const sub = rest[0] ?? "list";
         if (sub === "list" || sub === "doctor") {

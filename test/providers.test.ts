@@ -285,3 +285,33 @@ describe("one-shot adapters against a fake CLI", () => {
     expect(new ExecAdapter("e", ["x"], null).capabilities.supportsUsageMetrics).toBe(false);
   });
 });
+
+describe("example adapter from docs/ADDING_PROVIDER.md", () => {
+  it("registers, discovers, passes overrides and reports the runtime model", async () => {
+    const { AcmeAdapter } = await import("../examples/acme-provider.js");
+    const dir = tmp();
+    const bin = path.join(dir, "acme");
+    fs.writeFileSync(bin, `#!/usr/bin/env node
+const a = process.argv.slice(2);
+if (a[0] === "--version") { console.log("acme 1.2.3"); process.exit(0); }
+if (a[0] === "models") { console.log("m-one\\nm-two"); process.exit(0); }
+let s = ""; process.stdin.on("data", d => s += d); process.stdin.on("end", () => {
+  require("fs").appendFileSync(process.env.FAKE_LOG, JSON.stringify({ a, s }) + "\\n");
+  console.log(JSON.stringify({ type: "model", name: "served-by-acme" })); console.log(JSON.stringify({ type: "text", text: "hi" }));
+});
+`);
+    fs.chmodSync(bin, 0o755);
+    expect(adapterNames()).toContain("acme");
+    const a = createAdapter("ac", { id: "ac", adapter: "acme", command: [bin] }) as InstanceType<typeof AcmeAdapter>;
+    expect((await a.discoverModels()).models!.map((m) => m.identifier)).toEqual(["m-one", "m-two"]);
+    const events: any[] = [];
+    const log = path.join(dir, "log");
+    expect((await a.run(ctx({ env: { FAKE_LOG: log } }, events))).kind).toBe("finished");
+    expect(events).toContainEqual({ type: "model", model: "served-by-acme" });
+    expect(JSON.parse(fs.readFileSync(log, "utf8").trim()).a).not.toContain("--model");
+    const b = createAdapter("ac2", { id: "ac2", adapter: "acme", command: [bin], model: "m-two" });
+    await b.run(ctx({ env: { FAKE_LOG: log } }, events));
+    const last = fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1);
+    expect(last.a).toEqual(expect.arrayContaining(["--model", "m-two"]));
+  });
+});

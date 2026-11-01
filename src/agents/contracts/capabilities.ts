@@ -29,3 +29,12 @@ export const NO_CAPABILITIES: AgentCapabilities = {
 export function capabilities(over: Partial<AgentCapabilities>): AgentCapabilities {
   return { ...NO_CAPABILITIES, ...over };
 }
+
+/** What the integration itself enforces. Hexagon's worktree isolation applies to every agent regardless. */
+export interface SecurityCapabilities {
+  /** Read-only execution is enforced by the CLI (tool denial or sandbox), not just requested in the prompt. */
+  readOnlyEnforced: boolean;
+  /** Shell commands are limited to an allow-list by the CLI. */
+  commandAllowList: boolean;
+}
+export const NO_SECURITY: SecurityCapabilities = { readOnlyEnforced: false, commandAllowList: false };

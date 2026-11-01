@@ -37,6 +37,8 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
     supportsUsageMetrics: true, supportsStructuredOutput: true, supportsNativePermissions: true,
   });
 
+  override readonly security = { readOnlyEnforced: true, commandAllowList: true };
+
   constructor(id: string, private conf: CliAgentConfig) {
     super(id, conf.command, conf.selection ?? selectionFrom(conf.model));
   }

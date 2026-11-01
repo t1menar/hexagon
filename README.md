@@ -179,10 +179,18 @@ attempt, optionally with `--effort high` or `--agent <other>`.
 `~/.hexagon/toolchains`, without Homebrew or sudo. Agents and verify commands get it on
 their PATH, and agents that were blocked on it continue.
 
-**Models per role.** `/model` shows which model each role uses.
-`/model planner opus` and `/model implementer sonnet` change it, and so does
-`model = "…"` under `[roles.<role>]` in `.hexagon/config.toml`. By default, analysis
-roles (planner, reviewer, the Claude chat) use opus, and building roles use sonnet.
+**Agents, providers and models.** Each role is served by an *agent*: a provider's coding CLI
+(`claude-code`, `codex`, `grok`, any `exec` wrapper, or your own adapter). Hexagon ships **no model
+names**. Unless you override one, every CLI keeps using its own configured default, and the dashboard
+shows the model the running process *reports* (or "CLI-managed" when it does not say).
+`hexagon agents list|doctor` shows executables, versions, auth and capabilities;
+`hexagon agents models <agent>` lists models only when that CLI can; `hexagon agents configure`
+walks through role → agent → model; `/model <role> <identifier|default>` sets or clears an opaque override.
+See [docs/PROVIDERS.md](docs/PROVIDERS.md).
+
+**Provider limits don't fail tasks.** Rate limits, usage quotas, context overflow and truncated output
+are classified and handled separately; the task waits (`waiting_quota`) and resumes by itself, also after
+a daemon restart. They never consume a fix cycle or an attempt. See [docs/RECOVERY.md](docs/RECOVERY.md).
 
 **6. Merge.** Each finished task has passed verification and review and is already merged
 into the run's integration branch, `hexagon/<run>/integration`. When the run ends:
@@ -245,6 +253,9 @@ goal ─▶ planner agent ─▶ specs/<name>.spec.md + task graph ─▶ you ap
 ## Docs
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): architecture and design
+- [docs/PROVIDERS.md](docs/PROVIDERS.md): providers, model handling, configuration, implemented vs planned
+- [docs/ADDING_PROVIDER.md](docs/ADDING_PROVIDER.md): integrate another CLI (with a tested example)
+- [docs/RECOVERY.md](docs/RECOVERY.md): provider-limit recovery, fix cycles, restart behaviour
 - [docs/COMMUNICATION.md](docs/COMMUNICATION.md): messaging, status contract, attach and takeover
 - [schemas/](schemas/): JSON Schemas for agent status, messages, plans and results
 

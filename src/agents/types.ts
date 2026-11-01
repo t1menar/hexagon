@@ -77,6 +77,7 @@ export interface AgentAdapter extends AdapterIdentity, AdapterDiscovery {
   /** The user's explicit override (null = the CLI picks; nothing is passed). Not the runtime model. */
   readonly model: string | null;
   readonly supportsLiveInput: boolean;
+  readonly security: import("./contracts/capabilities.js").SecurityCapabilities;
   run(ctx: AgentRunContext): Promise<AdapterOutcome>;
   /** Command that opens the agent's session interactively (takeover), if the CLI supports it. */
   takeoverCommand(sessionId: string): string[] | null;

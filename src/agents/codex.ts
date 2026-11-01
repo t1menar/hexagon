@@ -18,6 +18,8 @@ export class CodexAdapter extends OneShotAdapter implements AgentAdapter {
     supportsStreaming: true, supportsSessionResume: true, supportsStructuredOutput: true, supportsNativePermissions: true,
     supportsRuntimeModelReporting: false, supportsUsageMetrics: false,
   });
+  // `-s read-only` is Codex's own sandbox; it has no per-command allow-list.
+  override readonly security = { readOnlyEnforced: true, commandAllowList: false };
   private threadId: string | null = null;
 
   constructor(id: string, command: string[], selection: ModelSelection | string | null, private extra: string[] = []) {

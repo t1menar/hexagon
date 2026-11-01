@@ -29,6 +29,7 @@ export function formatAgent(a: AgentInfo, verbose: boolean): string {
   out.push(`  Model discovery:  ${a.capabilities?.supportsModelDiscovery ? "supported (hexagon agents models " + a.id + ")" : "unsupported — the CLI manages its own model configuration"}`);
   out.push(`  Runtime model:    reported per execution (shown on the dashboard); Unknown when the CLI does not say`);
   out.push(`  Used by roles:    ${a.roles.length ? a.roles.map((r) => r.role + (r.model_override ? ` [override ${r.model_override}]` : "")).join(", ") : "—"}`);
+  if (a.security) out.push(`  Security:         read-only ${a.security.readOnlyEnforced ? "enforced by the CLI" : "NOT enforced by the CLI (needs allow_weaker_isolation to review)"} · command allow-list ${a.security.commandAllowList ? "enforced by the CLI" : "not enforced by the CLI"} · worktree isolation by Hexagon`);
   if (verbose && a.capabilities) for (const l of capabilityLines(a.capabilities)) out.push(`  Capabilities:     ${l}`);
   for (const p of d?.problems ?? []) out.push(`  ⚠ ${p}`);
   return out.join("\n");
