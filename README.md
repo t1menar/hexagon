@@ -40,7 +40,7 @@ Claude Code (or any other coding CLI), each in its own git worktree.
 ## Contents
 
 [Quick start](#quick-start) · [The dashboard](#the-dashboard-ui-components) · [Keys](#keyboard) · [Commands](#command-reference) ·
-[Approvals, tools and sudo](#approvals-tools-and-sudo) · [Where things live](#where-things-live) · [Configuration](#configuration) ·
+[Adding another CLI](#adding-another-coding-cli) · [Approvals, tools and sudo](#approvals-tools-and-sudo) · [Where things live](#where-things-live) · [Configuration](#configuration) ·
 [A full session](#a-full-session-start-to-finish) · [How it works](#how-it-works) · [Troubleshooting](#troubleshooting) · [Docs](#docs)
 
 ## Quick start
@@ -229,6 +229,66 @@ Hexagon has two surfaces: the **dashboard** (slash commands, type them in the in
 | `hexagon exec [--reason "why"] -- <command…>` (or `--shell "a && b"`) | run a command that is not allowed yet, **after you approve it** |
 | `hexagon install <tool> [--reason "why"]` | ask you to install a toolchain |
 | `hexagon sudo [--reason "why"] -- <command…>` | ask you to run a root command in your own terminal |
+
+## Adding another coding CLI
+
+Hexagon wraps coding CLIs, it does not call model APIs. Any CLI that can run **non-interactively** (takes a prompt, works in the current folder, can run shell commands) can serve a role. Pick the path that fits; paths 1 and 2 need no code.
+
+**Requirements for any CLI:** it runs in a git worktree as its working directory, it can execute shell commands (agents report back with `hexagon report | done | …`, which Hexagon puts on its PATH), and it is already logged in on your machine.
+
+### Path 1: a built-in adapter (Claude Code, Codex, Grok)
+
+```bash
+hexagon agents add codex codex --provider openai      # id, adapter, optional provider / --command
+hexagon agents doctor                                 # installed? logged in? what it can enforce
+hexagon agents configure reviewer codex               # role → agent (or run it without arguments for the menu)
+```
+
+This writes `[agents.codex]` to `.hexagon/config.toml`. The Codex and Grok integrations follow the vendors' public CLI docs and are tested with mock CLIs, not the real ones: check them with `hexagon agents doctor` and one small task before relying on them ([docs/PROVIDERS.md](docs/PROVIDERS.md)).
+
+### Path 2: any other CLI with the generic `exec` adapter (config only)
+
+Add it to `.hexagon/config.toml`. `{prompt}` is replaced by the task prompt (system instructions + task); without it the prompt is appended as the last argument.
+
+```toml
+[agents.gemini]
+adapter  = "exec"
+provider = "google"
+command  = ["gemini", "-p", "{prompt}"]      # your CLI's non-interactive flag
+# interactive = ["gemini"]                   # optional: what Ctrl-T (takeover) should open
+
+[roles.implementer]
+agent = "gemini"                             # use it for implementers; other roles keep their agent
+```
+
+Check and try it:
+
+```bash
+hexagon agents doctor                        # finds the executable and version
+hexagon run plan.json --agent gemini         # or /run --agent gemini: every role uses it, for a first test
+```
+
+The generic adapter claims nothing it cannot verify: no live messages while it runs (they arrive on the next run), no session resume, no model discovery, no token usage (the dashboard shows "CLI-managed"). It cannot enforce read-only, so a **reviewer** on it is refused unless you accept that with `allow_weaker_isolation = true` under that agent. Provider limits are detected from the CLI's output text and waited out like any other.
+
+### Path 3: a full adapter (streaming, resume, models)
+
+If the CLI streams JSON events, has session resume or lists models, write a small adapter class (about 100 lines) and register it with `registerAdapter("acme", …)`. The step-by-step guide with a tested example is [docs/ADDING_PROVIDER.md](docs/ADDING_PROVIDER.md): choose a base class, map the CLI's events to chat, tool and usage events, report only the capabilities you verified, and test it against a fake CLI script.
+
+### Choosing which agent does what
+
+```toml
+[roles.planner]
+agent = "claude"                              # one agent per role
+
+[roles.implementer]
+agent = "gemini"
+
+[roles.reviewer]
+agent = "claude"
+fallback_agent = "gemini"                     # used only with [recovery] allow_provider_failover = true
+```
+
+`/model <role> <identifier|default>` overrides a model for a role (an opaque string handed to the CLI; `default` returns to the CLI's own). `hexagon agents models <agent>` lists models only when that CLI can.
 
 ## Approvals, tools and sudo
 
