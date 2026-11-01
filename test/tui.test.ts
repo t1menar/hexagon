@@ -39,7 +39,7 @@ describe("regular hexagon geometry", () => {
 });
 
 describe("agent identity lines keep provider, CLI, selection and runtime model apart", () => {
-  const base = { state: "running" as const, agent: { id: "a", provider: "anthropic", adapter: "claude-code", cli_version: "2.1.316", model: null, model_mode: "cli-default" as const, runtime_model: null } };
+  const base = { state: "working" as const, agent: { id: "a", provider: "anthropic", adapter: "claude-code", cli_version: "2.1.316", model: null, model_mode: "cli-default" as const, runtime_model: null } };
   it("never invents a model", () => {
     expect(agentIdentity(base)).toBe("anthropic · claude-code 2.1.316");
     expect(modelLine(base)).toBe("model unknown (CLI-managed) · selection: CLI default");

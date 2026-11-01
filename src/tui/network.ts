@@ -80,7 +80,7 @@ const ROW_GAP = 1;
 export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
   const withHub = (o.hub ?? true) && input.length > 0;
   const hubNode: NetNode | null = withHub
-    ? { id: INTEGRATION, title: "integration", role: "integration", deps: input.filter((n) => !input.some((m) => m.deps.includes(n.id))).map((n) => n.id), state: input.every((n) => n.state === "done") ? "done" : input.some((n) => ACTIVE.has(n.state)) ? "merging" : "queued", progress: null }
+    ? { id: INTEGRATION, title: "integration", role: "integration", deps: input.filter((n) => !input.some((m) => m.deps.includes(n.id))).map((n) => n.id), state: input.every((n) => n.state === "done") ? "done" : input.some((n) => ACTIVE.has(n.state)) ? "integrating" : "queued", progress: null }
     : null;
   const nodes: NetNode[] = hubNode ? [...input, hubNode] : input;
   const geom: Geometry = { canvas: new Canvas(1, 1), card: null, compact: false, nodes: new Map(), edges: [], reviewers: new Map() };
@@ -315,7 +315,7 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
         fx?.review === "rejected" ? { sym: uni ? "▲" : "^", text: "REJECTED → developer", tok: "warning" }
         : fx?.review === "approved" ? { sym: uni ? "✔" : "+", text: "APPROVED → integration", tok: "success" }
         : node.state === "reviewing" ? { sym: uni ? "◐" : "~", text: "in review", tok: "brand2" }
-        : node.state === "merging" || node.state === "done" ? { sym: uni ? "✔" : "+", text: "approved", tok: "success" }
+        : node.state === "integrating" || node.state === "done" ? { sym: uni ? "✔" : "+", text: "approved", tok: "success" }
         : node.fixCycle ? { sym: uni ? "↩" : "<", text: `changes requested (fix ${node.fixCycle})`, tok: "warning" }
         : { sym: uni ? "○" : "o", text: "not reviewed yet", tok: "muted" };
       if (inner < 20) verdict.text = verdict.text.replace("not reviewed yet", "not reviewed").replace("REJECTED → developer", "REJECTED").replace("APPROVED → integration", "APPROVED").replace(/changes requested \(fix (\d+)\)/, "fix $1 requested");
@@ -337,7 +337,7 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
         for (let y = top; y <= revY; y++) c.set(railX, y, "╎", sty(sgr(mix(TOKENS.border, TOKENS.warning, node.fixCycle || fx?.review === "rejected" ? 0.7 : 0), depth)));
         c.set(railX, top, uni ? "▲" : "^", sty(sgr(node.fixCycle || fx?.review === "rejected" ? TOKENS.warning : TOKENS.muted, depth)));
       }
-      const approved = node.state === "merging" || node.state === "done" || fx?.review === "approved";
+      const approved = node.state === "integrating" || node.state === "done" || fx?.review === "approved";
       if (approved) c.set(x1, revY, uni ? "▸" : ">", sty(sgr(TOKENS.success, depth), "1"));
       const ya = y0 + Math.floor(m.h / 2);
       geom.reviewers.set(node.id, {

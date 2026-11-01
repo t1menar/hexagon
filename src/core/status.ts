@@ -4,7 +4,7 @@ import path from "node:path";
 import type {
   AgentEvent, AgentState, AgentStatus, Effort, Role, RunStatus, StampedEvent, Task, TokenCause, TokenCounts, Usage,
 } from "../contracts/types.js";
-import { TERMINAL_STATES } from "../contracts/types.js";
+import { canonicalState, TERMINAL_STATES } from "../contracts/types.js";
 import { appendJsonl, atomicWriteJson, nowIso, readJson } from "../util/fsx.js";
 import type { RunPaths } from "./project.js";
 
@@ -97,6 +97,7 @@ export class StatusStore extends EventEmitter {
     if (!fs.existsSync(dir)) return out;
     for (const id of fs.readdirSync(dir)) {
       const st = readJson<AgentStatus>(this.paths.agentStatus(id));
+      if (st) st.state = canonicalState(st.state);
       if (st?.agent_run_id) { this.agents.set(st.agent_run_id, st); out.set(st.agent_run_id, st); }
     }
     return out;
@@ -131,12 +132,12 @@ export class StatusStore extends EventEmitter {
     switch (event.type) {
       case "state":
         if (s.state !== event.state) {
-          if (event.state === "running" && !this.startedAt.has(agentRunId)) this.startedAt.set(agentRunId, Date.now());
+          if (event.state === "working" && !this.startedAt.has(agentRunId)) this.startedAt.set(agentRunId, Date.now());
           s.state = event.state;
           s.state_since = now;
         }
         s.state_reason = event.reason ?? null;
-        if (event.state === "running" && s.controller === "none") s.controller = "agent";
+        if (event.state === "working" && s.controller === "none") s.controller = "agent";
         if (TERMINAL_STATES.has(event.state)) {
           s.controller = "none";
           s.needs_input = null;

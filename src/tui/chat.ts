@@ -35,7 +35,7 @@ export function itemsFromEvents(events: StampedEvent[]): { items: ChatItem[]; ac
       case "progress": items.push({ ts, kind: "tool", text: ev.text, style: S.gray }); break;
       case "status_report": if (ev.activity) items.push({ ts, kind: "info", text: `${ev.phase ? `[${ev.phase}] ` : ""}${ev.activity}` }); break;
       case "state":
-        if (["queued", "starting"].includes(ev.state)) break;
+        if (["queued", "preparing"].includes(ev.state)) break;
         items.push({ ts, kind: "state", text: `${STATE_GLYPH[ev.state]} ${ev.state.replace("_", " ")}${ev.reason ? ` — ${ev.reason}` : ""}`, style: STATE_COLOR[ev.state] });
         break;
       case "question":

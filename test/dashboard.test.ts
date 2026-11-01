@@ -89,7 +89,7 @@ const settle = (ms = 80) => new Promise((r) => setTimeout(r, ms));
 
 describe("dashboard (real App, fake daemon)", () => {
   it("large layout: header, grouped navigator, network, inspector, activity, input, shortcut bar", async () => {
-    const { exit } = await boot({ "T-1": "done", "T-2": "running", "T-3": "queued" });
+    const { exit } = await boot({ "T-1": "done", "T-2": "working", "T-3": "queued" });
     if (process.env.DUMP_SCREEN) console.log(text());
     const t = text();
     for (const w of ["HEXAGON", "AGENTS", "AGENT NETWORK", "INSPECTOR", "ACTIVITY", "ANALYSIS", "IMPLEMENTATION", "REVIEW", "T-1", "T-2", "T-3", "openai", "codex 1.2.3", "CLI-managed", "F1 help"]) expect(t, w).toContain(w);
@@ -98,7 +98,7 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
   it("selecting an agent shows its identity in the inspector with configured vs runtime model apart", async () => {
-    const { app, exit } = await boot({ "T-1": "done", "T-2": "running" });
+    const { app, exit } = await boot({ "T-1": "done", "T-2": "working" });
     (app as never as { select(id: string): void }).select("T-2");
     await settle();
     const t = text();
@@ -108,7 +108,7 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
   it.each([[160, 45], [124, 30], [100, 28], [90, 22], [80, 24], [60, 20], [40, 16]])("%ix%i: nothing overflows the terminal", async (c, r) => {
-    const { exit } = await boot({ "T-1": "done", "T-2": "running", "T-3": "reviewing" }, c, r);
+    const { exit } = await boot({ "T-1": "done", "T-2": "working", "T-3": "reviewing" }, c, r);
     expect(screen.length).toBeLessThanOrEqual(r);
     for (const l of screen) expect([...strip(l ?? "")].length).toBeLessThanOrEqual(c);
     expect(text()).toContain("T-2");
@@ -128,14 +128,14 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
   it("NO_MOTION and NO_COLOR and ASCII modes render", async () => {
-    const { exit } = await boot({ "T-1": "done", "T-2": "running" }, 140, 40, { NO_MOTION: "1", NO_COLOR: "1", HEXAGON_ASCII: "1" });
+    const { exit } = await boot({ "T-1": "done", "T-2": "working" }, 140, 40, { NO_MOTION: "1", NO_COLOR: "1", HEXAGON_ASCII: "1" });
     expect(text()).toContain("T-2");
     expect(screen.join("")).not.toMatch(/\x1b\[(3[0-7]|4[0-7]|38;|48;)/);
     expect(/[^\x00-\x7f]/.test(text())).toBe(false);
     exit();
   });
   it("exit leaves no timers armed", async () => {
-    const { exit } = await boot({ "T-2": "running" });
+    const { exit } = await boot({ "T-2": "working" });
     exit();
     await settle(50);
     const before = writes;
@@ -147,30 +147,30 @@ describe("dashboard (real App, fake daemon)", () => {
   const statusOf = (id: string, state: string, extra: Record<string, unknown> = {}) => agent(id, state, extra);
 
   it("rejection and approval appear in the activity timeline, driven by real events", async () => {
-    const { client, exit } = await boot({ "T-1": "done", "T-2": "running" });
+    const { client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     push(client, "status", statusOf("T-2", "reviewing"));
     push(client, "agent_event", { task_id: "T-2", ts: new Date().toISOString(), event: { type: "fix_cycle", n: 1 } });
     await settle(120);
     expect(text()).toMatch(/review rejected/);
-    push(client, "status", statusOf("T-2", "merging"));
+    push(client, "status", statusOf("T-2", "integrating"));
     await settle(120);
     expect(text()).toMatch(/review approved/);
     exit();
   });
   it("quota wait and recovery are explained in text", async () => {
-    const { client, exit } = await boot({ "T-1": "done", "T-2": "running" });
+    const { client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     push(client, "status", statusOf("T-2", "waiting_quota", { recovery: { cls: "quota_exhausted", status: "waiting", next_retry_at: "2026-01-01T15:04:00Z", reset_source: "estimate", waits: 1, waited_s: 0, message: "", history: [] } }));
     await settle(120);
     expect(text()).toMatch(/waiting for quota/);
     expect(text()).toMatch(/exhausted/);
     expect(text()).toMatch(/15:04/);
-    push(client, "status", statusOf("T-2", "running"));
+    push(client, "status", statusOf("T-2", "working"));
     await settle(120);
     expect(text()).toMatch(/limit cleared/);
     exit();
   });
   it("animation settles: frames stop after an event's effects finish and no agent is active", async () => {
-    const { client, exit } = await boot({ "T-1": "done", "T-2": "running" });
+    const { client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     push(client, "status", statusOf("T-2", "done"));
     push(client, "run", { ...makeSnapshot({}).run, state: "done" }); // a finished run has no live clock
     await settle(2800); // flash + sweep end (generous: the full suite runs in parallel)
@@ -180,7 +180,7 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
   it("an active agent keeps animating at a bounded frame rate", async () => {
-    const { exit } = await boot({ "T-1": "done", "T-2": "running" });
+    const { exit } = await boot({ "T-1": "done", "T-2": "working" });
     const a = writes;
     await settle(500);
     const n = writes - a;
@@ -189,7 +189,7 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
   it("F2 toggles the inspector, F3 turns motion off (and nothing animates afterwards)", async () => {
-    const { app, client, exit } = await boot({ "T-1": "done", "T-2": "running" });
+    const { app, client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     push(client, "run", { ...makeSnapshot({}).run, state: "done" });
     const key = (name: string) => (app as never as { onKey(s: undefined, k: { name: string }): void }).onKey(undefined, { name });
     key("f2"); await settle(80);
@@ -205,7 +205,7 @@ describe("dashboard (real App, fake daemon)", () => {
   });
   it("startup sequence can be skipped with any key and disabled by config/env", async () => {
     setTerm(120, 36, { HEXAGON_STARTUP: undefined });
-    const client = new FakeClient(makeSnapshot({ "T-2": "running" }));
+    const client = new FakeClient(makeSnapshot({ "T-2": "working" }));
     const app = new App(client as never, tmp);
     void app.start();
     await vi.waitFor(() => expect(screen.length).toBeGreaterThan(5));
@@ -218,7 +218,7 @@ describe("dashboard (real App, fake daemon)", () => {
   });
 
   it("ambient hexagons: only in full motion, never over content, and they stop when motion is off", async () => {
-    const { app, exit } = await boot({ "T-1": "done", "T-2": "running" }, 160, 45, { HEXAGON_AMBIENT: undefined });
+    const { app, exit } = await boot({ "T-1": "done", "T-2": "working" }, 160, 45, { HEXAGON_AMBIENT: undefined });
     const level = () => (app as never as { ambientLevel(): number }).ambientLevel();
     expect(level()).toBe(1);
     await settle(400);
@@ -262,7 +262,7 @@ describe("dashboard (real App, fake daemon)", () => {
   const key = (app: unknown, s: string | undefined, name?: string) => (app as { onKey(s: string | undefined, k: { name?: string }): void }).onKey(s, { name: name ?? s });
 
   it("a waiting approval opens a dialog with the exact command, who asks and why; a key answers it", async () => {
-    const { app, client, exit } = await boot({ "T-1": "done", "T-2": "running" });
+    const { app, client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     push(client, "permissions", [execReq()]);
     await settle(120);
     const t = text();
@@ -275,7 +275,7 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
   it("the dialog swallows other keys (typing cannot answer by accident), Esc postpones it, F5 brings it back", async () => {
-    const { app, client, exit } = await boot({ "T-2": "running" });
+    const { app, client, exit } = await boot({ "T-2": "working" });
     push(client, "permissions", [execReq({ action: "sudo", command: "sudo brew install go", choices: [{ id: "terminal", label: "run it in a terminal (you type the password)", key: "t" }, { id: "deny", label: "deny", key: "n" }] })]);
     await settle(100);
     expect(text()).toContain("as ROOT");
@@ -295,7 +295,7 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
   it("native refusals (no choices from the daemon) still get a dialog", async () => {
-    const { app, client, exit } = await boot({ "T-2": "running" });
+    const { app, client, exit } = await boot({ "T-2": "working" });
     push(client, "permissions", [{ id: "P-3", agent: "T-2", kind: "task", command: "brew install go", prefix: "brew", asked_at: new Date().toISOString() }]);
     await settle(100);
     expect(text()).toContain("allow `brew` commands");
@@ -305,7 +305,7 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
   it("small terminals still fit the dialog", async () => {
-    const { client, exit } = await boot({ "T-2": "running" }, 60, 20);
+    const { client, exit } = await boot({ "T-2": "working" }, 60, 20);
     push(client, "permissions", [execReq({ command: "a-very-long-command --with --many --arguments ".repeat(3) })]);
     await settle(100);
     expect(text()).toContain("APPROVAL NEEDED");
@@ -314,7 +314,7 @@ describe("dashboard (real App, fake daemon)", () => {
   });
 
   it("says where the work is: header badge, run-level inspector and /changes", async () => {
-    const { app, exit } = await boot({ "T-1": "done", "T-2": "running" });
+    const { app, exit } = await boot({ "T-1": "done", "T-2": "working" });
     await vi.waitFor(() => expect(text()).toContain("not in main yet"));
     expect(text()).toMatch(/2 files \+138/);
     await vi.waitFor(() => expect(text()).toContain("WHERE THE WORK IS"));
@@ -326,8 +326,8 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
   it("an agent's inspector shows its folder and branch", async () => {
-    const { app, client, exit } = await boot({ "T-1": "done", "T-2": "running" });
-    push(client, "status", agent("T-2", "running", { workspace: { worktree: ".hexagon/worktrees/R1/T-2-a1", branch: "hexagon/R1/T-2-a1" }, files_touched: ["a.go", "b.go"] }));
+    const { app, client, exit } = await boot({ "T-1": "done", "T-2": "working" });
+    push(client, "status", agent("T-2", "working", { workspace: { worktree: ".hexagon/worktrees/R1/T-2-a1", branch: "hexagon/R1/T-2-a1" }, files_touched: ["a.go", "b.go"] }));
     (app as never as { select(id: string): void }).select("T-2");
     await settle(120);
     for (const w of ["WORKSPACE", ".hexagon/worktrees/R1/T-2-a1", "hexagon/R1/T-2-a1", "2 files"]) expect(text(), w).toContain(w);

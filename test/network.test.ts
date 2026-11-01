@@ -6,7 +6,7 @@ import { renderStartup, startupProgress } from "../src/tui/startup.js";
 import { Canvas } from "../src/tui/canvas.js";
 import { FakeClock, ParticleSystem } from "../src/tui/motion.js";
 
-const node = (over: Partial<DagNode> & { id: string }): DagNode => ({ title: "Build the thing", role: "developer", deps: [], state: "running", progress: 0.4, provider: "anthropic", cli: "claude-code 2.1", runtimeModel: null, ...over });
+const node = (over: Partial<DagNode> & { id: string }): DagNode => ({ title: "Build the thing", role: "developer", deps: [], state: "working", progress: 0.4, provider: "anthropic", cli: "claude-code 2.1", runtimeModel: null, ...over });
 const nodes = [
   node({ id: "T-1", role: "analyst", state: "done", progress: 1, runtimeModel: "rt-model-x" }),
   node({ id: "T-2", deps: ["T-1"], provider: "openai", cli: "codex 0.9", state: "reviewing", progress: 0.7 }),

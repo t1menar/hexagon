@@ -30,14 +30,15 @@ export const c = {
 
 export const STATE_STYLE: Record<AgentState, { glyph: string; color: (s: string) => string }> = {
   queued: { glyph: "◌", color: c.gray },
-  starting: { glyph: "◔", color: c.cyan },
-  running: { glyph: "●", color: c.blue },
+  preparing: { glyph: "◔", color: c.cyan },
+  working: { glyph: "●", color: c.blue },
   waiting_input: { glyph: "?", color: c.orange },
   paused: { glyph: "‖", color: c.magenta },
   waiting_quota: { glyph: "⏳", color: c.orange },
   verifying: { glyph: "◑", color: c.cyan },
   reviewing: { glyph: "◐", color: c.cyan },
-  merging: { glyph: "⇢", color: c.cyan },
+  fixing: { glyph: "↺", color: c.orange },
+  integrating: { glyph: "⇢", color: c.cyan },
   done: { glyph: "✔", color: c.blue },
   failed: { glyph: "✖", color: c.orange },
   blocked: { glyph: "⊘", color: c.orange },

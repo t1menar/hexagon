@@ -39,7 +39,7 @@ describe("director maps real events to effects", () => {
     expect(a.m.particles.activeCount).toBeGreaterThan(0);
     expect(a.d.activity.at(-1)!.text).toMatch(/rejected/);
     const b = setup();
-    b.d.status(st("T-1", "running"));
+    b.d.status(st("T-1", "working"));
     const before = b.m.particles.activeCount;
     b.d.event(ev("T-1", { type: "fix_cycle", n: 1 }));
     expect(b.m.particles.activeCount).toBe(before);
@@ -48,27 +48,27 @@ describe("director maps real events to effects", () => {
   it("approval flows toward integration", () => {
     const { m, d } = setup();
     d.status(st("T-1", "reviewing"));
-    d.status(st("T-1", "merging"));
+    d.status(st("T-1", "integrating"));
     expect(m.particles.activeCount).toBeGreaterThan(0);
     expect(d.activity.at(-1)!.text).toMatch(/approved/);
   });
   it("quota wait is restrained (low-rate hold, no particles) and recovery resumes with a flourish", () => {
     const { m, d } = setup();
-    d.status(st("T-1", "running"));
+    d.status(st("T-1", "working"));
     d.status(st("T-1", "waiting_quota", { recovery: { cls: "quota_exhausted", next_retry_at: "2026-01-01T15:04:00Z", reset_source: "estimate" } }));
     expect(m.particles.activeCount).toBe(0);
     expect(d.activity.at(-1)!.text).toMatch(/waiting for quota exhausted/);
     expect(d.activity.at(-1)!.text).toMatch(/estimated/);
-    d.status(st("T-1", "running"));
+    d.status(st("T-1", "working"));
     expect(d.activity.at(-1)!.text).toMatch(/resumed/);
     expect(m.particles.activeCount).toBe(0); // T-1 has no incoming edge: nothing fake is drawn
     d.status(st("T-2", "waiting_quota"));
-    d.status(st("T-2", "running"));
+    d.status(st("T-2", "working"));
     expect(m.particles.activeCount).toBeGreaterThan(0); // T-2 has one
   });
   it("failure is static: logged, no particles, no hold", () => {
     const { clock, m, d } = setup();
-    d.status(st("T-1", "running"));
+    d.status(st("T-1", "working"));
     d.status(st("T-1", "failed", { state_reason: "tests red" }));
     clock.advance(5000); m.step(clock.now()); // let the one-shot start sweep finish
     expect(m.particles.activeCount).toBe(0);
@@ -87,7 +87,7 @@ describe("director maps real events to effects", () => {
   });
   it("holds are released when agents stop; activity log is bounded; dispose cleans up", () => {
     const { m, d } = setup();
-    d.status(st("T-1", "running"));
+    d.status(st("T-1", "working"));
     expect(m.busy).toBe(true);
     d.status(st("T-1", "done"));
     m.cancelAll();
@@ -110,7 +110,7 @@ describe("director maps real events to effects", () => {
 describe("director seeding", () => {
   it("accepts one-shot iterators and holds the live loop for agents already running", () => {
     const { m, d } = setup();
-    d.seed(new Map([["T-1", st("T-1", "running")]]).values());
+    d.seed(new Map([["T-1", st("T-1", "working")]]).values());
     expect(m.busy).toBe(true);
     expect(m.particles.activeCount).toBe(0); // but nothing is replayed
     expect(d.activity).toHaveLength(0);
