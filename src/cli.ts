@@ -51,7 +51,7 @@ ${c.bold("Agent protocol")} (run by agents inside their sessions)
   hexagon review approve|changes --summary "…" [--finding "high: file:line issue -> fix" …]
   hexagon plan-check`;
 
-const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "return"]);
+const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "return", "exec", "install", "sudo"]);
 const TASK_RE = /^t-?\d+$/i;
 const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
@@ -451,6 +451,25 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
       break;
     }
     case "note": params = { body: a.join(" ") }; break;
+    case "exec": case "sudo": {
+      // Flags come before `--`; everything after it is the command, verbatim.
+      const cut = a.indexOf("--");
+      const flags = cut >= 0 ? a.slice(0, cut) : [...a];
+      const rest = cut >= 0 ? a.slice(cut + 1) : [];
+      const reason = one(flags, "--reason");
+      const shell = one(flags, "--shell");
+      const argv = cut >= 0 ? rest : flags.filter((x) => !x.startsWith("--"));
+      if (!argv.length && shell === undefined) { console.error(`usage: hexagon ${cmd} [--reason "why"] -- <command> [args…]   (or --shell "a && b")`); process.exit(2); }
+      params = { argv: shell === undefined ? argv : [], shell, reason };
+      break;
+    }
+    case "install": {
+      const reason = one(a, "--reason");
+      const tool = a.find((x) => !x.startsWith("--"));
+      if (!tool) { console.error('usage: hexagon install <go|node|java|maven> [--reason "why"]'); process.exit(2); }
+      params = { tool, reason };
+      break;
+    }
     case "return": {
       const task = a.shift();
       if (!task || !a.length) { console.error('usage: hexagon return <T-n> "<what is wrong, with evidence>"'); process.exit(2); }
