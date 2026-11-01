@@ -93,7 +93,7 @@ describe("status store", () => {
     const rp = new RunPaths(dir);
     const store = new StatusStore(rp, "r-1", { plan_path: "p.json", integration_branch: "i", base_branch: "main", budget_usd: null });
     const s = store.create({ task: task(), attempt: 1, role: "developer", agent: { id: "mock", provider: "mock" }, supportsLiveInput: true });
-    store.apply(s.agent_run_id, { type: "state", state: "running" });
+    store.apply(s.agent_run_id, { type: "state", state: "working" });
     store.apply(s.agent_run_id, { type: "status_report", phase: "editing", activity: "Writing", checklist: [{ id: "AC-1", status: "done" }] });
     store.apply(s.agent_run_id, { type: "usage", input: 100, output: 10, cache_read: 50, cache_write: 0, cost_usd: 0.01 });
     const onDisk = JSON.parse(fs.readFileSync(rp.agentStatus("T-1-a1"), "utf8"));
@@ -104,8 +104,22 @@ describe("status store", () => {
     expect(onDisk.controller).toBe("agent");
     expect(readJsonl(rp.events)).toHaveLength(3);
     const run = JSON.parse(fs.readFileSync(rp.status, "utf8"));
-    expect(run.agents[0].state).toBe("running");
+    expect(run.agents[0].state).toBe("working");
     expect(run.totals.cost_usd).toBeCloseTo(0.01);
+  });
+
+  it("reads state names from before the lifecycle was renamed", () => {
+    const dir = tmp();
+    const rp = new RunPaths(dir);
+    const first = new StatusStore(rp, "r-1", { plan_path: "p.json", integration_branch: "i", base_branch: "main", budget_usd: null });
+    const s = first.create({ task: task(), attempt: 1, role: "developer", agent: { id: "mock", provider: "mock" }, supportsLiveInput: true });
+    const f = rp.agentStatus(s.agent_run_id);
+    const old = JSON.parse(fs.readFileSync(f, "utf8"));
+    old.state = "running";
+    expect(validateStatus(old).errors).toEqual([]); // old files still validate
+    fs.writeFileSync(f, JSON.stringify(old));
+    const second = new StatusStore(rp, "r-1", { plan_path: "p.json", integration_branch: "i", base_branch: "main", budget_usd: null });
+    expect(second.hydrate().get(s.agent_run_id)!.state).toBe("working");
   });
 });
 
@@ -187,7 +201,7 @@ describe("dag", () => {
     const nodes = [
       { id: "T-1", title: "Controller", role: "developer", deps: [], state: "done" as const },
       { id: "T-2", title: "Smoke test", role: "qa", deps: ["T-1"], state: "done" as const },
-      { id: "T-3", title: "Docs", role: "developer", deps: [], state: "running" as const },
+      { id: "T-3", title: "Docs", role: "developer", deps: [], state: "working" as const },
       { id: "T-4", title: "Release", role: "developer", deps: ["T-2", "T-3"], state: "queued" as const },
     ];
     const text = renderDag(nodes, { maxW: 120, maxH: 20, frame: 0 }).lines(false).join("\n");

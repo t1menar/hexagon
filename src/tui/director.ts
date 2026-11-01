@@ -17,7 +17,7 @@ export interface ActivityItem {
   token: Token;
 }
 
-const ACTIVE_STATES = new Set<AgentState>(["starting", "running", "verifying", "reviewing", "merging"]);
+const ACTIVE_STATES = new Set<AgentState>(["preparing", "working", "fixing", "verifying", "reviewing", "integrating"]);
 
 export class Director {
   readonly fx = new Map<string, NodeFx>();
@@ -89,12 +89,12 @@ export class Director {
     const look = STATE_LOOK[next.state];
     const name = `${id}`;
     switch (next.state) {
-      case "starting":
-        this.log(name, "state", `${next.role} starting (${next.agent.provider} · ${next.agent.adapter ?? next.agent.id})`, "info");
+      case "preparing":
+        this.log(name, "state", `${next.role} preparing (${next.agent.provider} · ${next.agent.adapter ?? next.agent.id})`, "info");
         this.sweep(id);
         for (const p of this.incoming(id).slice(0, 2)) this.m.spawn("execution", p, { tag: `run:${id}` });
         break;
-      case "running":
+      case "working":
         if (prev === "waiting_quota") {
           this.log(name, "recovery", "provider limit cleared — execution resumed", "success");
           this.sweep(id, 900);
@@ -116,7 +116,7 @@ export class Director {
         this.log(name, "review", "independent review started", "brand2");
         this.flash(id, TOKENS.brand2, 700, "reviewer");
         break;
-      case "merging": {
+      case "integrating": {
         if (prev === "reviewing") {
           this.log(name, "review", "review approved — integrating", "success");
           this.flash(id, TOKENS.success, 900, "reviewer");

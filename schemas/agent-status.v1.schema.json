@@ -39,7 +39,7 @@
     },
 
     "state": {
-      "enum": ["queued", "starting", "running", "waiting_input", "paused", "waiting_quota", "verifying", "reviewing", "merging", "done", "failed", "blocked", "cancelled"]
+      "enum": ["queued", "preparing", "working", "waiting_input", "paused", "waiting_quota", "verifying", "reviewing", "fixing", "integrating", "starting", "running", "merging", "done", "failed", "blocked", "cancelled"]
     },
     "state_reason": { "type": ["string", "null"], "description": "Human-readable reason, e.g. 'waiting for lease src/auth/login.ts held by T-006'." },
     "state_since": { "type": "string", "format": "date-time" },

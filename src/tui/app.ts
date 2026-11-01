@@ -1159,11 +1159,11 @@ export class App {
     const parts: [string, string][] = [];
     if (r) {
       const done = r.counts.done ?? 0;
-      const running = r.agents.filter((a) => ["starting", "running", "verifying", "reviewing", "merging"].includes(a.state)).length;
+      const running = r.agents.filter((a) => ["preparing", "working", "fixing", "verifying", "reviewing", "integrating"].includes(a.state)).length;
       const waiting = r.agents.filter((a) => a.state === "waiting_quota").length;
       const need = r.attention.filter((a) => a.kind === "question").length;
       const failed = (r.counts.failed ?? 0) + (r.counts.blocked ?? 0);
-      const rs = r.state === "running" ? this.look("running") : r.state === "done" ? this.look("done") : r.state === "paused" ? this.look("paused") : this.look("cancelled");
+      const rs = r.state === "running" ? this.look("working") : r.state === "done" ? this.look("done") : r.state === "paused" ? this.look("paused") : this.look("cancelled");
       parts.push([`${rs.sym} ${r.state.toUpperCase()}`, rs.style]);
       parts.push([`${running} running`, running ? this.tk("active") : this.tk("muted")]);
       parts.push([`${done}/${r.agents.length} done`, this.tk("text")]);
@@ -1176,7 +1176,7 @@ export class App {
       parts.push([`${this.caps.unicode ? "⏱" : "t"} ${dur(start ? end - start : r.totals.wall_ms)}`, this.tk("muted")]);
     } else if (this.snap.spec_review) parts.push(["spec awaiting approval", this.tk("warning")]);
     else if (this.snap.draft) parts.push(["plan awaiting approval", this.tk("warning")]);
-    else if (this.plannerBusy()) parts.push([`${this.look("running").sym} planning`, this.tk("active")]);
+    else if (this.plannerBusy()) parts.push([`${this.look("working").sym} planning`, this.tk("active")]);
     else parts.push(["idle", this.tk("muted")]);
     if (this.agentInfo.length) {
       const seen = new Set<string>();
@@ -1278,7 +1278,7 @@ export class App {
     const p = this.sessions.get("planner");
     const lines: [string, string][] = [];
     if (p && (p.state === "running" || p.state === "waiting_input")) {
-      lines.push([`${p.state === "running" ? this.look("running").sym : "?"} The planner is writing a spec and task graph…`, this.tk("active", S.bold)]);
+      lines.push([`${p.state === "running" ? this.look("working").sym : "?"} The planner is writing a spec and task graph…`, this.tk("active", S.bold)]);
       lines.push([p.question ? `It asks: ${p.question.prompt}` : p.activity ?? "", p.question ? this.tk("warning") : this.tk("muted")]);
     } else if (p?.state === "failed") {
       lines.push([`${this.look("failed").sym} Planning failed: ${p.error ?? ""}`, this.tk("error")], ["Describe the goal again, or adjust it.", this.tk("muted")]);
@@ -1309,7 +1309,7 @@ export class App {
       const busy = cs?.state === "running";
       const m = this.meta(cs?.agent ?? "claude");
       return {
-        sym: busy ? this.look("running").sym : this.caps.unicode ? "◆" : "*", symStyle: busy ? this.tk("active") : this.tk("brand"), title: "Hexagon Assistant",
+        sym: busy ? this.look("working").sym : this.caps.unicode ? "◆" : "*", symStyle: busy ? this.tk("active") : this.tk("brand"), title: "Hexagon Assistant",
         l2: m ? m.provider : "works in this repo", l2b: m ? `${m.adapter}${m.diagnostics?.version ? ` ${m.diagnostics.version}` : ""}` : "",
         l3: [[perm ? `approve: ${perm.command}` : busy ? (cs?.activity ?? "THINKING").slice(0, 40) : "READY", perm ? this.tk("warning") : busy ? this.tk("active") : muted], [cs ? `  ${tok(sessTok(cs))} tok` : "", muted]],
         detail: [[`model: ${m?.selection?.mode === "cli-default" || !m ? "CLI-managed" : (m.selection as { identifier?: string }).identifier ?? "CLI-managed"}`, muted]], pct: null,
@@ -1318,7 +1318,7 @@ export class App {
     const s = this.sessions.get(id);
     if (s) {
       const name = SESSION_NAMES[id] ?? [id, ""];
-      const st2: AgentState = s.state === "running" ? "running" : s.state === "waiting_input" ? "waiting_input" : s.state === "done" ? "done" : s.state === "failed" ? "failed" : "cancelled";
+      const st2: AgentState = s.state === "running" ? "working" : s.state === "waiting_input" ? "waiting_input" : s.state === "done" ? "done" : s.state === "failed" ? "failed" : "cancelled";
       const lk = this.look(st2);
       const m = this.meta(s.agent);
       return {

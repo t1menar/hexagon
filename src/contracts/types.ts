@@ -5,9 +5,13 @@ export type Role = string;
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type AgentState =
-  | "queued" | "starting" | "running" | "waiting_input" | "paused" | "waiting_quota"
-  | "verifying" | "reviewing" | "merging"
+  | "queued" | "preparing" | "working" | "waiting_input" | "paused" | "waiting_quota"
+  | "verifying" | "reviewing" | "fixing" | "integrating"
   | "done" | "failed" | "blocked" | "cancelled";
+
+/** State names written by Hexagon before the lifecycle was named after its stages; read from old status files. */
+export const LEGACY_STATES: Readonly<Record<string, AgentState>> = { starting: "preparing", running: "working", merging: "integrating" };
+export const canonicalState = (s: string): AgentState => LEGACY_STATES[s] ?? (s as AgentState);
 
 export const TERMINAL_STATES: ReadonlySet<AgentState> = new Set(["done", "failed", "blocked", "cancelled"]);
 

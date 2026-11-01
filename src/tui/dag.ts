@@ -26,10 +26,10 @@ const PHASE_AT: Record<string, number> = { reading: 0.1, planning: 0.2, editing:
 export function progressOf(state: AgentState, phase?: string | null, prog?: { done: number; total: number } | null, prev = 0): number | null {
   switch (state) {
     case "queued": return null;
-    case "starting": return 0.03;
+    case "preparing": return 0.03;
     case "verifying": return 0.82;
     case "reviewing": return 0.9;
-    case "merging": return 0.97;
+    case "integrating": return 0.97;
     case "done": return 1;
     default: {
       const ac = prog && prog.total ? 0.1 + 0.65 * (prog.done / prog.total) : 0;
@@ -47,16 +47,16 @@ export function bar(p: number, w: number): { fill: string; rest: string; label: 
 }
 
 export const STATE_GLYPH: Record<AgentState, string> = {
-  queued: "○", starting: "◔", running: "●", waiting_input: "?", paused: "‖", waiting_quota: "⏳",
-  verifying: "◑", reviewing: "◐", merging: "⇢", done: "✔", failed: "✖", blocked: "⊘", cancelled: "−",
+  queued: "○", preparing: "◔", working: "●", waiting_input: "?", paused: "‖", waiting_quota: "⏳",
+  verifying: "◑", reviewing: "◐", fixing: "↺", integrating: "⇢", done: "✔", failed: "✖", blocked: "⊘", cancelled: "−",
 };
 
 export const STATE_COLOR: Record<AgentState, string> = {
-  queued: S.gray, starting: S.cyan, running: S.blue, waiting_input: S.orange, paused: S.magenta, waiting_quota: S.orange,
-  verifying: S.cyan, reviewing: S.cyan, merging: S.cyan, done: S.green, failed: S.red, blocked: S.orange, cancelled: S.gray,
+  queued: S.gray, preparing: S.cyan, working: S.blue, waiting_input: S.orange, paused: S.magenta, waiting_quota: S.orange,
+  verifying: S.cyan, reviewing: S.cyan, fixing: S.orange, integrating: S.cyan, done: S.green, failed: S.red, blocked: S.orange, cancelled: S.gray,
 };
 
-export const ACTIVE: ReadonlySet<AgentState> = new Set(["starting", "running", "verifying", "reviewing", "merging"]);
+export const ACTIVE: ReadonlySet<AgentState> = new Set(["preparing", "working", "fixing", "verifying", "reviewing", "integrating"]);
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 export const spinner = (frame: number) => SPIN[frame % SPIN.length]!;
 

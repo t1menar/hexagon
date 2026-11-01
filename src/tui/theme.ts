@@ -119,14 +119,15 @@ export interface StateLook { symbol: string; ascii: string; token: Token; label:
 
 export const STATE_LOOK: Record<AgentState, StateLook> = {
   queued: { symbol: "○", ascii: "o", token: "muted", label: "QUEUED" },
-  starting: { symbol: "◔", ascii: "~", token: "info", label: "STARTING" },
-  running: { symbol: "●", ascii: "*", token: "active", label: "WORKING" },
+  preparing: { symbol: "◔", ascii: "~", token: "info", label: "PREPARING" },
+  working: { symbol: "●", ascii: "*", token: "active", label: "WORKING" },
   waiting_input: { symbol: "?", ascii: "?", token: "warning", label: "NEEDS YOU" },
   paused: { symbol: "‖", ascii: "|", token: "waiting", label: "PAUSED" },
   waiting_quota: { symbol: "◷", ascii: "Q", token: "waiting", label: "WAITING · LIMIT" },
   verifying: { symbol: "◑", ascii: "v", token: "info", label: "VERIFYING" },
   reviewing: { symbol: "◐", ascii: "r", token: "brand2", label: "IN REVIEW" },
-  merging: { symbol: "⇢", ascii: ">", token: "brand2", label: "INTEGRATING" },
+  fixing: { symbol: "↺", ascii: "f", token: "warning", label: "FIXING" },
+  integrating: { symbol: "⇢", ascii: ">", token: "brand2", label: "INTEGRATING" },
   done: { symbol: "✔", ascii: "+", token: "success", label: "DONE" },
   failed: { symbol: "✖", ascii: "x", token: "error", label: "FAILED" },
   blocked: { symbol: "⊘", ascii: "!", token: "warning", label: "BLOCKED" },

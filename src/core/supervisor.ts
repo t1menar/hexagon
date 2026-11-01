@@ -173,7 +173,7 @@ export class AgentRun {
 
   async execute(): Promise<AgentState> {
     if (this.resumeWait) return this.executeResumed();
-    this.st("starting", "creating worktree");
+    this.st("preparing", "creating worktree");
     try {
       await g.addWorktree(this.rc.root, this.worktree, this.branch, this.rc.integration.branch);
       this.baseCommit = await g.revParse(this.worktree, "HEAD");
@@ -243,6 +243,9 @@ export class AgentRun {
     }
   }
 
+  /** The current segment answers a failed verification or a review rejection. */
+  private fixing = false;
+
   private async pipeline(initial?: string, initialFromUser = false): Promise<AgentState> {
     let followUp: string | undefined = initial;
     let quiet = initialFromUser;
@@ -299,6 +302,7 @@ export class AgentRun {
       await this.commit();
 
       // 3. Verify
+      this.fixing = false;
       this.st("verifying", this.task.verify.length ? `running ${this.task.verify.length} command(s)` : "no verify commands");
       const v = await this.verify();
       if (this.cancelled) return this.final("cancelled", "cancelled by user");
@@ -307,6 +311,7 @@ export class AgentRun {
         const stuck = this.noProgress(`verify:${v.cmd}:${v.code}:${v.output.slice(-600)}`);
         if (stuck) return this.final("failed", stuck);
         if (this.mayFix(++fixLoops) && !this.userDone) {
+          this.fixing = true;
           followUp = `Hexagon re-ran verification and it failed.\n\n$ ${v.cmd}\n(exit ${v.code})\n${this.excerpt(v.output, FIX_EXCERPT, "verify output")}\n\nFix the problem, re-run the command yourself, then run \`hexagon done\` again.`;
           continue;
         }
@@ -329,6 +334,7 @@ export class AgentRun {
           const stuck = this.noProgress(`review:${rv.summary}:${rv.findings.map((f) => f.issue).join("|")}`);
           if (stuck) return this.final("failed", stuck);
           if (this.mayFix(++fixLoops)) {
+            this.fixing = true;
             followUp = `The reviewer requested changes:\n${rv.summary}\n${rv.findings.map((f) => `- [${f.severity}] ${f.file ?? ""}${f.line ? `:${f.line}` : ""} ${f.issue}${f.suggestion ? ` → ${f.suggestion}` : ""}`).join("\n")}\n\nAddress the high and medium findings, then run \`hexagon done\` again.`;
             continue;
           }
@@ -337,7 +343,7 @@ export class AgentRun {
       }
 
       // 5. Merge into the run's integration branch
-      this.st("merging");
+      this.st("integrating");
       const m = await g.merge(
         this.rc.integration.worktree,
         this.branch,
@@ -483,7 +489,7 @@ export class AgentRun {
       this.ev({ type: "chat", from: "hexagon", text: truncateMiddle(fu, 2000) });
     }
     for (;;) {
-      this.st(this.questions.size ? "waiting_input" : "running");
+      this.st(this.questions.size ? "waiting_input" : this.fixing ? "fixing" : "working");
       this.abort = new AbortController();
       this.sessionSeen = false;
       const res = await this.prepareSession();
@@ -1037,7 +1043,7 @@ export class AgentRun {
     this.questions.delete(questionId);
     this.ev({ type: "answered", question_id: questionId, answer });
     this.ev({ type: "chat", from: "user", text: answer });
-    if (this.state === "waiting_input" && !this.questions.size) this.st(this.gate ? "paused" : "running");
+    if (this.state === "waiting_input" && !this.questions.size) this.st(this.gate ? "paused" : this.fixing ? "fixing" : "working");
     // Delivered to the agent through its inbox (live, or when it resumes).
     this.rc.router.send({
       from: { kind: "user" }, to: { kind: "agent", id: this.task.id }, type: "answer",
@@ -1047,7 +1053,7 @@ export class AgentRun {
   }
 
   pause(reason = "paused by user"): boolean {
-    if (this.gate || !["starting", "running", "waiting_input"].includes(this.state)) return false;
+    if (this.gate || !["preparing", "working", "fixing", "waiting_input"].includes(this.state)) return false;
     let resolve!: () => void;
     const promise = new Promise<void>((r) => (resolve = r));
     this.gate = { promise, resolve };

@@ -118,7 +118,7 @@ describe("end to end with the mock agent", () => {
     expect(run_id).toMatch(/^r-/);
 
     // T-1: send an instruction while it runs; it should be delivered and acknowledged.
-    await until(async () => (await client.call<AgentStatus>("agent.status", { task: "T-1" })).state === "running");
+    await until(async () => (await client.call<AgentStatus>("agent.status", { task: "T-1" })).state === "working");
     const sent = await client.call<{ messages: Message[] }>("message.send", { to: "T-1", body: "Say hello in Russian too" });
     expect(sent.messages[0]!.delivery.state).toBe("queued");
 

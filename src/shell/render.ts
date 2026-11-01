@@ -3,7 +3,7 @@ import { c, fmtTokens, pad, STATE_STYLE, stateLabel } from "../util/term.js";
 
 export function runHeader(rs: RunStatus): string {
   const counts = rs.counts;
-  const active = (counts.running ?? 0) + (counts.starting ?? 0) + (counts.verifying ?? 0) + (counts.reviewing ?? 0) + (counts.merging ?? 0);
+  const active = (counts.working ?? 0) + (counts.preparing ?? 0) + (counts.fixing ?? 0) + (counts.verifying ?? 0) + (counts.reviewing ?? 0) + (counts.integrating ?? 0);
   const waiting = rs.attention.filter((a) => a.kind === "question").length;
   const spent = rs.totals.input_tokens + rs.totals.cache_read_tokens + rs.totals.output_tokens;
   const budget = rs.budget_tokens ? ` / ${fmtTokens(rs.budget_tokens)}` : "";
@@ -76,7 +76,7 @@ export function formatEvent(e: StampedEvent, detail: boolean): string | null {
   const who = c.bold(e.task_id);
   switch (ev.type) {
     case "state": {
-      if (!detail && ["queued", "running", "starting"].includes(ev.state)) return null;
+      if (!detail && ["queued", "working", "preparing"].includes(ev.state)) return null;
       return `${time(e.ts)} ${who} ${stateLabel(ev.state)}${ev.reason ? c.dim(` ${ev.reason}`) : ""}`;
     }
     case "progress":
