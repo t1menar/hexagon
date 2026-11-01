@@ -119,10 +119,12 @@ Try everything offline and free: set `agent = "mock"` for every role in `.hexago
 
 | Key | Action |
 |---|---|
-| typing + **Enter** | send to the agent named by the chip (the `claude` chat by default) |
+| typing + **Enter** | send to the agent named by the chip (the Hexagon Assistant chat by default) |
 | **Enter** on an empty input | approve the draft plan; in an approval dialog, pick the first choice |
 | **Tab** / **↑ ↓** | next / previous agent |
-| **PgUp / PgDn** | scroll the chat |
+| **Alt-Enter** / **Ctrl-J** / trailing `\` | new line in the input (it grows to six lines; ↑ ↓ move between lines) |
+| **PgUp / PgDn**, mouse wheel | scroll the chat; the wheel over the agent list moves the selection |
+| click | select the agent under the pointer (list or graph). Hold Shift to select text; `ui.mouse = false` turns mouse reporting off |
 | **/** , **@** | command and mention suggestions (`Tab` or `→` completes) |
 | **F1** | help (the command list) |
 | **F2** | show or hide the inspector |

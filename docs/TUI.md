@@ -148,7 +148,9 @@ Environment: `HEXAGON_ANIMATION` (auto|full|reduced|off), `NO_MOTION`, `REDUCE_M
 | F2 | toggle the inspector |
 | F3 | toggle motion (`/animate [full\|reduced\|off]`) |
 | F4 | agents, providers, CLI versions, discovered models (`/agents`) |
-| PgUp / PgDn | scroll the chat |
+| Alt-Enter / Ctrl-J / trailing `\` | new line in the input (up to six rows; ↑ ↓ move between lines) |
+| PgUp / PgDn, wheel | scroll the chat (wheel over the agent list: move the selection) |
+| click | select an agent in the list or the graph (`[ui] mouse`, `HEXAGON_MOUSE=off`; Shift-drag selects text) |
 | ^T / ^O / ^D | take over / open window / diff |
 | / and @ | commands and mentions with completion |
 | ^C ^C | quit (agents keep running) |
@@ -169,3 +171,17 @@ layouts, identity, idle = no frames, bounded frame rate, cleanup). Visual states
 - Cell aspect is auto-detected from env and defaults to 2; terminals with unusual cell shapes need `HEXAGON_CELL_ASPECT`.
 - Very large graphs (about 20+ agents) are clipped in the network panel; the navigator always lists every agent.
 - Mouse input is not supported.
+
+
+## Graph and progress
+
+* The drawn graph is the **transitive reduction** of the plan: an edge is dropped when another dependency of the same task already implies it. The order is unchanged.
+* **Progress** is the stage a task is in plus, while it works, the share of its acceptance criteria that are done: preparing 2% · working 5–65% by criteria · verifying 70% · reviewing 85% · integrating 97% · done 100%. With no criteria the work stage shows its floor, not a guess. A fix cycle moves a task back. The header shows the mean over all tasks.
+
+## Bus traffic
+
+Messages on the agent bus travel the dependency edge between the two tasks as particles (more for a bigger payload; handoffs, findings and decisions have their own colour). Messages without an edge, or to a role or topic, fan out from the sender; nothing is drawn that did not happen. Model calls only pulse the card.
+
+## Cost
+
+A 40-task frame renders in ~1.8 ms; an unchanged frame writes ~140 bytes (only changed lines are sent). Session pushes carry only the new feed lines: 42.5 KB → 0.4 KB per event.
