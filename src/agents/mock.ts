@@ -1,8 +1,12 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Task } from "../contracts/types.js";
 import { runShell } from "../util/shell.js";
+import { AdapterBase } from "./contracts/base.js";
+import { capabilities } from "./contracts/capabilities.js";
 import type { AdapterOutcome, AgentAdapter, AgentRunContext, Injected } from "./types.js";
 
 /**
@@ -15,11 +19,16 @@ import type { AdapterOutcome, AgentAdapter, AgentRunContext, Injected } from "./
  * - Planner: writes spec.md + plan.json for the goal into $HEXAGON_OUT.
  * - Init: writes HEXAGON.md.
  */
-export class MockAdapter implements AgentAdapter {
+export class MockAdapter extends AdapterBase implements AgentAdapter {
+  readonly adapterId = "mock";
   readonly provider = "mock";
-  readonly model = null;
-  readonly supportsLiveInput = true;
-  constructor(readonly id: string, private stepMs = 600) {}
+  readonly displayName = "Mock agent";
+  readonly capabilities = capabilities({ supportsStreaming: true, supportsLiveInput: true });
+  constructor(id: string, private stepMs = 600) { super(id, ["mock"]); }
+
+  override async detect() {
+    return { installed: true, executable: "(built in)", version: null, auth: "ok" as const, authDetail: "offline scripted agent", problems: [] };
+  }
 
   takeoverCommand(): string[] | null {
     return null;
@@ -86,6 +95,17 @@ export class MockAdapter implements AgentAdapter {
       if (ctx.resume && ctx.followUp) instructions.push({ id: "followup", from: "orchestrator", type: "handoff", body: ctx.followUp });
       drain();
       await step("Exploring the workspace");
+
+      // `@limit: <provider text>`: fail once with that text (test hook for provider-limit recovery). Fires once per
+      // worktree, remembered on disk so it survives a daemon restart.
+      const lim = /@limit:\s*(.+)$/m.exec(task.description ?? "");
+      if (lim) {
+        const mark = path.join(os.tmpdir(), `hexagon-mock-limit-${createHash("sha1").update(ctx.cwd).digest("hex").slice(0, 16)}`);
+        if (!fs.existsSync(mark)) {
+          fs.writeFileSync(mark, "1");
+          return { kind: "error", error: { kind: "transient", message: lim[1]!.trim(), retryable: true, raw: lim[1]!.trim() } };
+        }
+      }
 
       // `@needs: brew install go`: the command is denied until the user approves it.
       const needs = /@needs:\s*(.+)$/m.exec(task.description ?? "");

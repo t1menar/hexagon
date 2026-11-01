@@ -1,15 +1,20 @@
 import fs from "node:fs";
 import { parse } from "smol-toml";
 import type { Effort, Role } from "../contracts/types.js";
+import { adapterNames } from "../agents/registry.js";
+import { DEFAULT_RECOVERY, type RecoveryConfig } from "./recovery.js";
 
 export interface AgentConfig {
   id: string;
-  /** claude-code: wraps the `claude` CLI · exec: any one-shot CLI · mock: offline scripted agent. */
-  adapter: "claude-code" | "exec" | "mock";
+  /** Integration name from the adapter registry: claude-code · codex · grok · exec · mock (or a registered third party). */
+  adapter: string;
+  /** Vendor label for display and grouping (anthropic, openai, xai, …). Defaults to the adapter's own. */
+  provider?: string;
   /** Executable and leading args. claude-code default: ["claude"]. exec: may contain "{prompt}". */
   command?: string[];
   /** Interactive command for takeover (exec adapter). */
   interactive?: string[];
+  /** Optional user override passed to the CLI as-is. Omit to keep the CLI's own default. */
   model?: string;
   args?: string[];
   /** Mock adapter: delay between scripted steps (ms). */
@@ -17,9 +22,10 @@ export interface AgentConfig {
 }
 
 export interface HexagonConfig {
-  run: { max_parallel: number; max_attempts: number; fix_loops: number; budget_tokens: number | null; base_branch: string | null };
-  roles: Record<Role, { agent: string; effort: Effort; model?: string }>;
+  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null };
+  roles: Record<Role, { agent: string; effort: Effort; model?: string; /** used only when recovery.allow_provider_failover is true */ fallback_agent?: string }>;
   agents: Record<string, AgentConfig>;
+  recovery: RecoveryConfig;
   review: { mode: "agent" | "off" };
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
   sandbox: { allow_commands: string[]; command_timeout_s: number };
@@ -27,21 +33,22 @@ export interface HexagonConfig {
 }
 
 export const DEFAULT_CONFIG: HexagonConfig = {
-  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, budget_tokens: null, base_branch: null },
+  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 0, max_identical_failures: 3, budget_tokens: null, base_branch: null },
   roles: {
     init: { agent: "claude", effort: "medium" },
-    planner: { agent: "claude", effort: "high", model: "opus" },
+    planner: { agent: "claude", effort: "high" },
     implementer: { agent: "claude", effort: "medium" },
     tester: { agent: "claude", effort: "medium" },
-    reviewer: { agent: "claude", effort: "high", model: "opus" },
+    reviewer: { agent: "claude", effort: "high" },
     integrator: { agent: "claude", effort: "high" },
     resolver: { agent: "claude", effort: "high" },
-    lead: { agent: "claude", effort: "medium", model: "opus" },
+    lead: { agent: "claude", effort: "medium" },
   },
   agents: {
-    claude: { id: "claude", adapter: "claude-code", command: ["claude"], model: "sonnet" },
+    claude: { id: "claude", adapter: "claude-code", provider: "anthropic", command: ["claude"] },
     mock: { id: "mock", adapter: "mock", step_ms: 600 },
   },
+  recovery: DEFAULT_RECOVERY,
   review: { mode: "agent" },
   messaging: { max_outbound_per_run: 10, max_blocking_questions: 2 },
   sandbox: {
@@ -81,9 +88,18 @@ export function loadConfig(file: string): HexagonConfig {
     if ((a.adapter as string) === "claude") {
       a.adapter = "claude-code";
       a.command ??= ["claude"];
-      if (a.model?.startsWith("claude-sonnet")) a.model = "sonnet";
+      // A v0.1 full model id is not portable to the CLI: drop it so the CLI default applies.
+      if (a.model?.startsWith("claude-")) delete a.model;
     }
+    if (!a.adapter) throw new Error(`[agents.${id}] needs adapter = "…" (available: ${adapterNames().join(", ")})`);
+    if (!adapterNames().includes(a.adapter)) throw new Error(`[agents.${id}] unknown adapter "${a.adapter}" (available: ${adapterNames().join(", ")}). No fallback is used.`);
   }
+  for (const [role, r] of Object.entries(cfg.roles)) {
+    if (!cfg.agents[r.agent]) throw new Error(`[roles.${role}] uses agent "${r.agent}", which is not defined under [agents] (defined: ${Object.keys(cfg.agents).join(", ")})`);
+  }
+  // fix_loops was the only knob before max_fix_cycles existed: honour it when the new one is not set.
+  const rawRun = (raw.run ?? {}) as Record<string, unknown>;
+  if ("fix_loops" in rawRun && !("max_fix_cycles" in rawRun)) cfg.run.max_fix_cycles = cfg.run.fix_loops;
   delete (cfg.run as Record<string, unknown>).budget_usd; // v0.1 setting; budgets are in tokens now
   if (cfg.run.budget_tokens !== null && cfg.run.budget_tokens <= 0) cfg.run.budget_tokens = null;
   cfg.sandbox.allow_commands = [...new Set([...cfg.sandbox.allow_commands, ...SAFE_COMMANDS])];

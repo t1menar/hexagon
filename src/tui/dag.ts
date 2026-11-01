@@ -38,12 +38,12 @@ export function bar(p: number, w: number): { fill: string; rest: string; label: 
 }
 
 export const STATE_GLYPH: Record<AgentState, string> = {
-  queued: "○", starting: "◔", running: "●", waiting_input: "?", paused: "‖",
+  queued: "○", starting: "◔", running: "●", waiting_input: "?", paused: "‖", waiting_quota: "⏳",
   verifying: "◑", reviewing: "◐", merging: "⇢", done: "✔", failed: "✖", blocked: "⊘", cancelled: "−",
 };
 
 export const STATE_COLOR: Record<AgentState, string> = {
-  queued: S.gray, starting: S.cyan, running: S.blue, waiting_input: S.orange, paused: S.magenta,
+  queued: S.gray, starting: S.cyan, running: S.blue, waiting_input: S.orange, paused: S.magenta, waiting_quota: S.orange,
   verifying: S.cyan, reviewing: S.cyan, merging: S.cyan, done: S.green, failed: S.red, blocked: S.orange, cancelled: S.gray,
 };
 

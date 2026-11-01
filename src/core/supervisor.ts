@@ -7,6 +7,8 @@ import type {
 import { validateResult } from "../contracts/validate.js";
 import { systemPrompt, taskCard, type Skill } from "../agents/prompts.js";
 import type { AdapterOutcome, AgentAdapter, AgentApi, AgentHost, AgentRunContext, Injected, Reply } from "../agents/types.js";
+import { classifyProviderError, recoveryFor } from "../agents/contracts/errors.js";
+import { planRetry, waitTooLong, type WaitStore } from "./recovery.js";
 import { atomicWriteJson, matchesAny, nowIso, truncateMiddle } from "../util/fsx.js";
 import { runShell } from "../util/shell.js";
 import type { HexagonConfig } from "./config.js";
@@ -31,6 +33,8 @@ export interface RunContext {
   context: string;
   integration: { branch: string; worktree: string };
   adapterFor(role: Role, override?: string | null): AgentAdapter;
+  /** Persistent retry schedule for provider-limit waits. */
+  waits?: WaitStore;
   /** All tasks of the run (for areas of responsibility). */
   tasks: Task[];
   /** Reopen task `to` with a defect report from `from`; resolves when `to` finishes again. */
@@ -46,7 +50,17 @@ export class AgentRun {
   readonly agentRunId: string;
   readonly worktree: string;
   readonly branch: string;
-  readonly sessionId = randomUUID();
+  sessionId: string = randomUUID();
+  /** Provider-limit recovery bookkeeping: none of it touches quality fix cycles or attempts. */
+  private waitCount = 0;
+  private contextRecoveries = 0;
+  private blockedReason: string | null = null;
+  private quotaWake: (() => void) | null = null;
+  /** The daemon is stopping while this run waits: keep the persisted wait, do not mark it cancelled. */
+  private detached = false;
+  /** The last instruction that asked for rework (verify output / reviewer findings): survives context compaction. */
+  private outstanding: string | null = null;
+  private failedOver = false;
   private abort = new AbortController();
   private gate: Gate | null = null;
   private resumeNote: string | null = null;
@@ -71,8 +85,10 @@ export class AgentRun {
     readonly task: Task,
     readonly attempt: number,
     readonly effort: Effort,
-    readonly adapter: AgentAdapter,
+    public adapter: AgentAdapter,
+    private resumeWait?: { sessionId: string; nextRetryAt: string },
   ) {
+    if (resumeWait) { this.sessionId = resumeWait.sessionId; this.started = true; }
     this.agentRunId = `${task.id}-a${attempt}`;
     this.worktree = path.join(rc.paths.worktrees, rc.runId, this.agentRunId);
     this.branch = `hexagon/${rc.runId}/${this.agentRunId}`;
@@ -97,6 +113,7 @@ export class AgentRun {
   // ───────────────────────────── pipeline ─────────────────────────────
 
   async execute(): Promise<AgentState> {
+    if (this.resumeWait) return this.executeResumed();
     this.st("starting", "creating worktree");
     try {
       await g.addWorktree(this.rc.root, this.worktree, this.branch, this.rc.integration.branch);
@@ -116,6 +133,29 @@ export class AgentRun {
     const unregister = this.rc.registry.register(this.agentRunId, this.api());
     try {
       return await this.pipeline();
+    } finally {
+      unregister();
+    }
+  }
+
+  /** After a daemon restart: same worktree, branch and CLI session; wait out the remaining time, then continue. */
+  private async executeResumed(): Promise<AgentState> {
+    const w = this.resumeWait!;
+    await g.addWorktree(this.rc.root, this.worktree, this.branch, this.rc.integration.branch); // no-op when it exists
+    this.baseCommit = await g.revParse(this.worktree, "HEAD").catch(() => "");
+    const unregister = this.rc.registry.register(this.agentRunId, this.api());
+    try {
+      const ec = this.rc.store.get(this.agentRunId)?.recovery;
+      this.st("waiting_quota", `daemon restarted; still waiting for the provider (${ec?.cls ?? "limit"}) — resumes automatically`);
+      if (!(await this.sleepUntil(w.nextRetryAt))) {
+        if (this.detached) return this.state;
+        this.rc.waits?.finish(this.agentRunId, "cancelled");
+        return this.final("cancelled", "cancelled by user");
+      }
+      this.rc.waits?.claim(this.agentRunId, new Date(Date.now() + 1000));
+      this.rc.waits?.finish(this.agentRunId, "recovered");
+      this.ev({ type: "recovery", phase: "resumed", cls: ec?.cls ?? "limit", message: "resumed after daemon restart; continuing the same task and session" });
+      return await this.pipeline("The provider limit has cleared (Hexagon was restarted meanwhile). Check the worktree state and continue the task where you left off, then run `hexagon done`.", true);
     } finally {
       unregister();
     }
@@ -153,10 +193,12 @@ export class AgentRun {
       // 1. Implement (or fix)
       this.finished = false;
       this.result = undefined;
+      if (followUp && !initialFromUser) this.outstanding = followUp;
       const outcome = await this.agentSegment(followUp, quiet);
       followUp = undefined;
       quiet = false;
 
+      if (this.detached) return this.state; // daemon stopping during a limit wait: state stays "waiting_quota" on disk
       if (this.cancelled) return this.final("cancelled", "cancelled by user");
       if (this.waiting) {
         followUp = await this.waitForReturn(this.waiting);
@@ -166,6 +208,9 @@ export class AgentRun {
       }
       if (this.userDone) {
         this.result = await this.userResult();
+      } else if (outcome.kind === "error" && this.blockedReason) {
+        this.notify(`blocked: ${this.blockedReason}`);
+        return this.final("blocked", this.blockedReason);
       } else if (outcome.kind === "error") {
         const e = outcome.error!;
         this.ev({ type: "error", ...e });
@@ -200,7 +245,9 @@ export class AgentRun {
       if (this.cancelled) return this.final("cancelled", "cancelled by user");
       if (!v.ok) {
         this.ev({ type: "error", kind: "verify_failed", message: `\`${v.cmd}\` exited ${v.code}`, retryable: true });
-        if (fixLoops++ < this.rc.cfg.run.fix_loops && !this.userDone) {
+        const stuck = this.noProgress(`verify:${v.cmd}:${v.code}:${v.output.slice(-600)}`);
+        if (stuck) return this.final("failed", stuck);
+        if (this.mayFix(++fixLoops) && !this.userDone) {
           followUp = `Hexagon re-ran verification and it failed.\n\n$ ${v.cmd}\n(exit ${v.code})\n${truncateMiddle(v.output, 12_000)}\n\nFix the problem, re-run the command yourself, then run \`hexagon done\` again.`;
           continue;
         }
@@ -215,7 +262,9 @@ export class AgentRun {
         if (!rv) return this.final("failed", "review did not complete");
         this.review = rv;
         if (rv.verdict === "request_changes") {
-          if (fixLoops++ < this.rc.cfg.run.fix_loops) {
+          const stuck = this.noProgress(`review:${rv.summary}:${rv.findings.map((f) => f.issue).join("|")}`);
+          if (stuck) return this.final("failed", stuck);
+          if (this.mayFix(++fixLoops)) {
             followUp = `The reviewer requested changes:\n${rv.summary}\n${rv.findings.map((f) => `- [${f.severity}] ${f.file ?? ""}${f.line ? `:${f.line}` : ""} ${f.issue}${f.suggestion ? ` → ${f.suggestion}` : ""}`).join("\n")}\n\nAddress the high and medium findings, then run \`hexagon done\` again.`;
             continue;
           }
@@ -266,6 +315,11 @@ export class AgentRun {
         agentId: this.agentRunId,
       }));
       if (out.kind !== "error") this.started = true;
+      if (out.kind === "error" && this.rc.cfg.recovery.enabled && !this.cancelled && !this.userDone) {
+        const next = await this.recoverFromLimit(out);
+        if (next.retry) { fu = next.followUp; this.restarting = false; continue; }
+        return next.outcome ?? out;
+      }
       if (this.cancelled || this.userDone) return out;
       if (out.kind === "interrupted" && (this.gate || this.restarting)) {
         this.restarting = false;
@@ -277,6 +331,129 @@ export class AgentRun {
       }
       return out;
     }
+  }
+
+  /**
+   * A provider limit is not a quality failure. Classify what the CLI printed and apply that class's policy:
+   * wait (rate limit / quota / overload), compact and start a fresh session (context), continue (truncated output),
+   * or block for the user (auth / billing). None of these consumes a fix cycle or an attempt.
+   */
+  private async recoverFromLimit(out: AdapterOutcome): Promise<{ retry: boolean; followUp?: string; outcome?: AdapterOutcome }> {
+    const e = out.error!;
+    const c = classifyProviderError(e.raw ?? e.message);
+    const action = recoveryFor(c.cls);
+    const rec = this.rc.cfg.recovery;
+    if (action === "none") return { retry: false };
+    const orig = e.message.slice(0, 300);
+
+    if (action === "block_for_user") {
+      this.ev({ type: "recovery", phase: "blocked", cls: c.cls, message: orig });
+      this.blockedReason = c.cls === "billing"
+        ? `billing/plan problem reported by ${this.adapter.displayName}: ${orig}. Fix it, then /retry ${this.task.id}.`
+        : `${this.adapter.displayName} rejected its credentials: ${orig}. Log in again, then /retry ${this.task.id}.`;
+      return { retry: false };
+    }
+
+    if (action === "continue_output") {
+      this.ev({ type: "recovery", phase: "resumed", cls: c.cls, message: "output was cut off; asking the agent to continue (result will be verified)" });
+      return { retry: true, followUp: "Your previous response was cut off before you finished. Continue exactly where you stopped, then run `hexagon done` when the task is complete." };
+    }
+
+    if (action === "compact_and_resume") {
+      if (++this.contextRecoveries > rec.max_context_recoveries) return { retry: false };
+      this.sessionId = randomUUID();
+      this.started = false; // a fresh session with a smaller, reconstructed context
+      this.ev({ type: "recovery", phase: "compacted", cls: c.cls, message: `context window exceeded; starting a new session with a compact summary (${this.contextRecoveries}/${rec.max_context_recoveries})` });
+      return { retry: true, followUp: this.compactedContext() };
+    }
+
+    // wait_and_resume
+    if (!rec.auto_resume) {
+      this.blockedReason = `${this.adapter.displayName} hit a ${c.cls.replace(/_/g, " ")}: ${orig}. Automatic resume is disabled; /retry ${this.task.id} when it is available.`;
+      return { retry: false };
+    }
+    if (c.cls === "quota_exhausted" && !rec.unlimited_quota_wait && rec.max_wait_seconds === 0) return { retry: false };
+    // Optional, explicitly enabled failover to another configured agent for this role.
+    const fb = this.rc.cfg.roles[this.task.role].fallback_agent;
+    if (rec.allow_provider_failover && fb && fb !== this.adapter.id && c.cls !== "rate_limit") {
+      const next = this.rc.adapterFor(this.task.role, fb);
+      this.ev({ type: "recovery", phase: "failover", cls: c.cls, message: `${this.adapter.provider}/${this.adapter.id} → ${next.provider}/${next.id} (allow_provider_failover is enabled; verification and review will run again)` });
+      this.adapter = next;
+      this.failedOver = true;
+      this.sessionId = randomUUID();
+      this.started = false;
+      return { retry: true, followUp: this.compactedContext() };
+    }
+    const plan = planRetry(c, this.waitCount, rec);
+    if (waitTooLong((this.rc.store.get(this.agentRunId)?.recovery?.waited_s ?? 0) + plan.delayS, rec)) return { retry: false };
+    this.waitCount++;
+    const why = `${c.cls.replace(/_/g, " ")}${c.resetAt ? "" : ""}`;
+    this.rc.waits?.schedule({
+      key: this.agentRunId, run_id: this.rc.runId, task_id: this.task.id, agent_run_id: this.agentRunId, role: this.task.role,
+      agent: this.adapter.id, provider: this.adapter.provider, adapter: this.adapter.adapterId, execution_id: `${this.agentRunId}#${this.waitCount}`,
+      cls: c.cls, error: orig, detected_at: nowIso(), next_retry_at: plan.at, reset_source: plan.source,
+    });
+    this.ev({ type: "recovery", phase: "waiting", cls: c.cls, message: `${why}: ${orig}`, next_retry_at: plan.at, reset_source: plan.source });
+    this.st("waiting_quota", `${why} — resumes automatically ~${plan.at.slice(11, 16)}Z (${plan.source === "provider" ? "provider-reported" : "estimated"}); progress and feedback are preserved`);
+    const resumed = await this.sleepUntil(plan.at);
+    if (!resumed) {
+      if (!this.detached) this.rc.waits?.finish(this.agentRunId, "cancelled");
+      return { retry: false, outcome: { kind: "interrupted" } };
+    }
+    this.rc.waits?.claim(this.agentRunId, new Date(Date.now() + 1000));
+    this.rc.waits?.finish(this.agentRunId, "recovered");
+    this.ev({ type: "recovery", phase: "resumed", cls: c.cls, message: "wait over; continuing the same task and session" });
+    return { retry: true, followUp: this.outstanding ?? "The provider limit has cleared. Continue the task where you left off, then run `hexagon done`." };
+  }
+
+  /** Sleep in bounded chunks (timers cap near 24 days); false when cancelled meanwhile. */
+  private async sleepUntil(iso: string): Promise<boolean> {
+    for (;;) {
+      if (this.cancelled || this.detached) return false;
+      const left = Date.parse(iso) - Date.now();
+      if (left <= 0) return true;
+      await new Promise<void>((res) => {
+        const t = setTimeout(res, Math.min(left, 3_600_000));
+        this.quotaWake = () => { clearTimeout(t); res(); };
+      });
+      this.quotaWake = null;
+    }
+  }
+
+  /** Quality repair cycles: max_fix_cycles (0 = unlimited). Records the cycle number for the dashboard. */
+  private mayFix(cycle: number): boolean {
+    const max = this.rc.cfg.run.max_fix_cycles;
+    if (max > 0 && cycle > max) return false;
+    this.ev({ type: "fix_cycle", n: cycle });
+    return true;
+  }
+
+  private failSigs: string[] = [];
+  /** Unlimited cycles still stop when the same failure repeats: returns the reason to escalate, else null. */
+  private noProgress(sig: string): string | null {
+    this.failSigs.push(sig);
+    const n = this.rc.cfg.run.max_identical_failures;
+    if (n > 0 && this.failSigs.length >= n && this.failSigs.slice(-n).every((x) => x === sig)) {
+      this.ev({ type: "error", kind: "stuck", message: `the same failure repeated ${n} times with no change`, retryable: false });
+      this.notify(`stuck: the same failure repeated ${n} times — needs your attention (/continue ${this.task.id} <message> or /retry)`);
+      return `no progress: identical failure ${n} times`;
+    }
+    return null;
+  }
+
+  /** A smaller context for a fresh session: spec/task card are rebuilt in full; history is reduced to facts. */
+  private compactedContext(): string {
+    const s = this.rc.store.get(this.agentRunId);
+    const done = (s?.checklist ?? []).filter((i) => i.status === "done").map((i) => i.id);
+    const files = (s?.files_touched ?? []).slice(0, 40);
+    return [
+      "You are continuing this task in a NEW session (the previous conversation was compacted). The task card above is the full, unchanged specification and acceptance criteria.",
+      files.length ? `Files already changed in the worktree (inspect them with git diff / git status): ${files.join(", ")}` : "No files changed yet.",
+      done.length ? `Acceptance criteria already reported done: ${done.join(", ")}` : "",
+      this.outstanding ? `Outstanding feedback you must still address:\n${truncateMiddle(this.outstanding, 8000)}` : "",
+      this.failedOver ? "The previous agent was replaced because its provider was unavailable; verify its work critically." : "",
+      "Check the current state of the worktree first, continue from it, then run `hexagon done`.",
+    ].filter(Boolean).join("\n\n");
   }
 
   private ctx(o: { role: Role; sessionId: string; resume: boolean; followUp?: string; prompt: string; system: string; readOnly: boolean; api: AgentApi; host: AgentHost; agentId: string }): AgentRunContext {
@@ -597,8 +774,15 @@ export class AgentRun {
     return this.resume(true);
   }
 
+  detach(): void {
+    this.detached = true;
+    this.quotaWake?.();
+    this.abort.abort();
+  }
+
   cancel(): void {
     this.cancelled = true;
+    this.quotaWake?.();
     this.abort.abort();
     this.gate?.resolve();
     this.wake?.();

@@ -1,13 +1,21 @@
 import { spawn } from "node:child_process";
+import { probe } from "./contracts/adapter.js";
+import { AdapterBase } from "./contracts/base.js";
+import { capabilities } from "./contracts/capabilities.js";
+import { classifyProviderError } from "./contracts/errors.js";
+import { selectionFrom, type ModelSelection } from "./contracts/model-selection.js";
 import type { AdapterOutcome, AgentAdapter, AgentRunContext } from "./types.js";
 import { formatInjected, MESSAGE_ID_RE } from "./types.js";
 
 export interface CliAgentConfig {
   /** Executable + fixed leading args, e.g. ["claude"]. */
   command: string[];
+  /** Optional user override passed as `--model`. null = the CLI's own configuration decides. */
   model: string | null;
   /** Extra args appended verbatim. */
   args: string[];
+  /** Overrides `model` when set. */
+  selection?: ModelSelection;
 }
 
 const MAX_NUDGES = 2;
@@ -18,14 +26,29 @@ const MAX_NUDGES = 2;
  * feeds it user messages on stdin and folds its event stream into the status contract.
  * The agent talks back by running `hexagon report|ask|note|done|review` (see protocol.ts).
  */
-export class ClaudeCodeAdapter implements AgentAdapter {
-  readonly provider = "claude-code";
-  readonly supportsLiveInput = true;
+export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
+  readonly adapterId = "claude-code";
+  readonly provider = "anthropic";
+  readonly displayName = "Claude Code";
+  readonly capabilities = capabilities({
+    supportsStreaming: true, supportsSessionResume: true, supportsLiveInput: true, supportsInteractiveTakeover: true,
+    supportsModelDiscovery: false, // `claude` has no model-listing command (verified with `claude --help`)
+    supportsRuntimeModelReporting: true, // stream-json `system/init` carries the serving model
+    supportsUsageMetrics: true, supportsStructuredOutput: true, supportsNativePermissions: true,
+  });
 
-  constructor(readonly id: string, private conf: CliAgentConfig) {}
+  constructor(id: string, private conf: CliAgentConfig) {
+    super(id, conf.command, conf.selection ?? selectionFrom(conf.model));
+  }
 
-  get model(): string | null {
-    return this.conf.model;
+  protected override async authStatus() {
+    const r = await probe(this.command.slice(0, 1), ["auth", "status"]);
+    try {
+      const j = JSON.parse(r.stdout) as { loggedIn?: boolean; authMethod?: string };
+      if (j.loggedIn === true) return { auth: "ok" as const, authDetail: j.authMethod ? `logged in (${j.authMethod})` : "logged in" };
+      if (j.loggedIn === false) return { auth: "unauthenticated" as const, authDetail: "Claude Code is not logged in — run `claude auth login`" };
+    } catch { /* fall through */ }
+    return { auth: "unknown" as const, authDetail: "could not read `claude auth status`" };
   }
 
   takeoverCommand(sessionId: string): string[] {
@@ -40,7 +63,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       "--append-system-prompt", ctx.system,
       "--effort", ctx.effort,
     ];
-    if (this.conf.model) a.push("--model", this.conf.model);
+    a.push(...this.modelArgs());
     a.push(...this.conf.args);
     const hex = ["Bash(hexagon:*)", ...(ctx.env.HEXAGON_BIN ? [`Bash(${ctx.env.HEXAGON_BIN}:*)`] : [])];
     if (ctx.readOnly) {
@@ -130,7 +153,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       const onEvent = (e: Record<string, any>) => {
         switch (e.type) {
           case "system":
-            if (e.subtype === "init") host.emit({ type: "progress", text: `session started (${e.model ?? "claude"})` });
+            if (e.subtype === "init") {
+              // The runtime model is whatever the process reports; never substituted with a guess.
+              if (typeof e.model === "string" && e.model) host.emit({ type: "model", model: e.model });
+              host.emit({ type: "progress", text: "session started" });
+            }
             break;
           case "user": {
             if (e.isReplay) {
@@ -180,7 +207,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             lastCost = Math.max(lastCost, total);
             if (e.is_error) {
               const msg = String(e.result ?? e.subtype ?? "error");
-              lastError = { kind: /rate|overload|5\d\d|timeout/i.test(msg) ? "transient" : "internal", message: msg, retryable: true };
+              lastError = { kind: classifyProviderError(msg).cls === "unknown" ? "internal" : "transient", message: msg, retryable: true, raw: msg };
               close();
               break;
             }
@@ -220,7 +247,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         if (ctx.signal.aborted) return finish({ kind: "interrupted" });
         if (lastError) return finish({ kind: "error", error: lastError });
         if (code !== 0 && !host.isFinished()) {
-          return finish({ kind: "error", error: { kind: "transient", message: `${bin} exited ${code}: ${firstLine(stderr, 300) || "no output"}`, retryable: true } });
+          return finish({ kind: "error", error: { kind: "transient", message: `${bin} exited ${code}: ${firstLine(stderr, 300) || "no output"}`, retryable: true, raw: stderr } });
         }
         finish({ kind: "finished" });
       });

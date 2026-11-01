@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { AdapterBase } from "./contracts/base.js";
+import { capabilities } from "./contracts/capabilities.js";
 import type { AdapterOutcome, AgentAdapter, AgentRunContext } from "./types.js";
 import { formatInjected } from "./types.js";
 
@@ -8,12 +10,17 @@ import { formatInjected } from "./types.js";
  * it is appended. No live input: messages that arrive while it runs are delivered on the next run.
  * The agent reports back through the same `hexagon …` shell commands as every other agent.
  */
-export class ExecAdapter implements AgentAdapter {
-  readonly provider = "exec";
-  readonly supportsLiveInput = false;
-  readonly model = null;
+export class ExecAdapter extends AdapterBase implements AgentAdapter {
+  readonly adapterId = "exec";
+  readonly provider: string;
+  readonly displayName = "Generic CLI";
+  // A generic wrapper claims nothing it cannot do: no discovery, no usage, no runtime model.
+  readonly capabilities = capabilities({ supportsStreaming: false, supportsSessionResume: false });
 
-  constructor(readonly id: string, private command: string[], private interactive: string[] | null) {}
+  constructor(id: string, command: string[], private interactive: string[] | null, provider = "unknown") {
+    super(id, command);
+    this.provider = provider;
+  }
 
   takeoverCommand(): string[] | null {
     return this.interactive;
@@ -43,7 +50,7 @@ export class ExecAdapter implements AgentAdapter {
         ctx.signal.removeEventListener("abort", onAbort);
         if (ctx.signal.aborted) return resolve({ kind: "interrupted" });
         if (code !== 0 && !ctx.host.isFinished()) {
-          return resolve({ kind: "error", error: { kind: "transient", message: `${argv[0]} exited ${code}: ${tail.slice(-300)}`, retryable: true } });
+          return resolve({ kind: "error", error: { kind: "transient", message: `${argv[0]} exited ${code}: ${tail.slice(-300)}`, retryable: true, raw: tail } });
         }
         resolve({ kind: "finished" });
       });

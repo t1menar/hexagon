@@ -116,6 +116,8 @@ export class DaemonServer {
       this.server!.listen(sock, () => resolve());
     });
     atomicWriteJson(this.orch.paths.daemonInfo, { pid: process.pid, protocol: PROTOCOL_VERSION, socket: sock, started_at: nowIso(), root: this.root });
+    // Runs that were waiting for a provider limit when the previous daemon stopped continue on their own.
+    this.orch.recoverRuns().catch((e) => console.error("recoverRuns:", e));
   }
 
   private onConnection(sock: net.Socket) {

@@ -34,6 +34,7 @@ export const STATE_STYLE: Record<AgentState, { glyph: string; color: (s: string)
   running: { glyph: "●", color: c.blue },
   waiting_input: { glyph: "?", color: c.orange },
   paused: { glyph: "‖", color: c.magenta },
+  waiting_quota: { glyph: "⏳", color: c.orange },
   verifying: { glyph: "◑", color: c.cyan },
   reviewing: { glyph: "◐", color: c.cyan },
   merging: { glyph: "⇢", color: c.cyan },
@@ -45,7 +46,7 @@ export const STATE_STYLE: Record<AgentState, { glyph: string; color: (s: string)
 
 export function stateLabel(state: AgentState): string {
   const s = STATE_STYLE[state];
-  return s.color(`${s.glyph} ${state.replace("_", " ")}`);
+  return s.color(`${s.glyph} ${state.replace(/_/g, " ")}`);
 }
 
 export function pad(s: string, n: number): string {

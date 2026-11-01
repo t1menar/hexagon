@@ -1,10 +1,11 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import path from "node:path";
 import type {
   AgentEvent, AgentState, AgentStatus, Effort, Role, RunStatus, StampedEvent, Task, Usage,
 } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
-import { appendJsonl, atomicWriteJson, nowIso } from "../util/fsx.js";
+import { appendJsonl, atomicWriteJson, nowIso, readJson } from "../util/fsx.js";
 import type { RunPaths } from "./project.js";
 
 export const HEARTBEAT_MS = 5_000;
@@ -16,7 +17,7 @@ export interface NewAgentRun {
   task: Task;
   attempt: number;
   role: Role;
-  agent: { id: string; provider: string; model?: string | null; effort?: Effort | null };
+  agent: AgentStatus["agent"];
   supportsLiveInput: boolean;
 }
 
@@ -63,7 +64,10 @@ export class StatusStore extends EventEmitter {
       task_id: n.task.id,
       attempt: n.attempt,
       role: n.role,
-      agent: { id: n.agent.id, provider: n.agent.provider, model: n.agent.model ?? null, effort: n.agent.effort ?? null },
+      agent: {
+        id: n.agent.id, provider: n.agent.provider, model: n.agent.model ?? null, effort: n.agent.effort ?? null,
+        adapter: n.agent.adapter ?? null, model_mode: n.agent.model_mode ?? "cli-default", runtime_model: null, cli_version: null,
+      },
       state: "queued",
       state_reason: null,
       state_since: now,
@@ -84,6 +88,18 @@ export class StatusStore extends EventEmitter {
     this.agents.set(agent_run_id, s);
     this.write(s);
     return s;
+  }
+
+  /** Load statuses a previous daemon wrote for this run (restart recovery). Returns them by agent run id. */
+  hydrate(): Map<string, AgentStatus> {
+    const dir = path.join(this.paths.dir, "agents");
+    const out = new Map<string, AgentStatus>();
+    if (!fs.existsSync(dir)) return out;
+    for (const id of fs.readdirSync(dir)) {
+      const st = readJson<AgentStatus>(this.paths.agentStatus(id));
+      if (st?.agent_run_id) { this.agents.set(st.agent_run_id, st); out.set(st.agent_run_id, st); }
+    }
+    return out;
   }
 
   get(agentRunId: string): AgentStatus | undefined {
@@ -178,6 +194,29 @@ export class StatusStore extends EventEmitter {
       case "controller":
         s.controller = event.controller;
         break;
+      case "model":
+        s.agent.runtime_model = event.model;
+        break;
+      case "cli_info":
+        s.agent.cli_version = event.version;
+        break;
+      case "fix_cycle":
+        s.fix_cycle = event.n;
+        break;
+      case "recovery": {
+        const prev = s.recovery;
+        const hist = [...(prev?.history ?? []), { at: now, what: `${event.phase}: ${event.message}`.slice(0, 200) }].slice(-20);
+        if (event.phase === "waiting") {
+          s.recovery = { cls: event.cls, status: "waiting", next_retry_at: event.next_retry_at ?? null, reset_source: event.reset_source ?? null, waits: (prev?.waits ?? 0) + 1, waited_s: prev?.waited_s ?? 0, message: event.message.slice(0, 500), history: hist };
+        } else if (prev) {
+          const status = event.phase === "blocked" ? "blocked" : "recovered";
+          const waited = Math.max(0, Math.round((Date.parse(now) - Date.parse(s.state_since)) / 1000));
+          s.recovery = { ...prev, status, next_retry_at: null, message: event.message.slice(0, 500), waited_s: prev.waited_s + (event.phase === "resumed" ? waited : 0), history: hist };
+        } else {
+          s.recovery = { cls: event.cls, status: "recovered", waits: 0, waited_s: 0, message: event.message.slice(0, 500), history: hist };
+        }
+        break;
+      }
       case "result":
         s.result_path = event.path;
         break;

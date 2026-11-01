@@ -4,7 +4,7 @@ export type Role = "planner" | "implementer" | "tester" | "reviewer" | "integrat
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type AgentState =
-  | "queued" | "starting" | "running" | "waiting_input" | "paused"
+  | "queued" | "starting" | "running" | "waiting_input" | "paused" | "waiting_quota"
   | "verifying" | "reviewing" | "merging"
   | "done" | "failed" | "blocked" | "cancelled";
 
@@ -50,7 +50,16 @@ export interface AgentStatus {
   task_id: string;
   attempt: number;
   role: Role;
-  agent: { id: string; provider: string; model?: string | null; effort?: Effort | null };
+  agent: {
+    id: string; provider: string; model?: string | null; effort?: Effort | null;
+    /** Adapter id (claude-code, codex, grok, exec, …). */
+    adapter?: string | null;
+    /** "cli-default" (no override passed) | "custom" | "discovered". */
+    model_mode?: "cli-default" | "custom" | "discovered" | null;
+    /** What the running process reported about itself; null = not reported (never assumed). */
+    runtime_model?: string | null;
+    cli_version?: string | null;
+  };
   state: AgentState;
   state_reason?: string | null;
   state_since: string;
@@ -66,6 +75,14 @@ export interface AgentStatus {
   attach?: { native_session_id?: string | null; takeover_command?: string[] | null; supports_live_input?: boolean } | null;
   usage: Usage;
   last_error: { kind: ErrorKind; message: string; retryable: boolean; at?: string } | null;
+  /** Provider limit recovery (rate limit / quota wait). Does not count as a fix cycle or attempt. */
+  recovery?: {
+    cls: string; status: "waiting" | "resuming" | "recovered" | "blocked";
+    next_retry_at?: string | null; reset_source?: "provider" | "estimate" | null;
+    waits: number; waited_s: number; message: string; history: { at: string; what: string }[];
+  } | null;
+  /** Quality repair cycle (verify/review rounds) this run is in. */
+  fix_cycle?: number;
   result_path: string | null;
 }
 
@@ -178,6 +195,12 @@ export type AgentEvent =
   | { type: "files"; files: string[] }
   | { type: "error"; kind: ErrorKind; message: string; retryable: boolean }
   | { type: "controller"; controller: "agent" | "user" | "none" }
+  /** The CLI reported the model actually serving this execution. */
+  | { type: "model"; model: string }
+  | { type: "cli_info"; version: string | null }
+  | { type: "fix_cycle"; n: number }
+  /** Provider-limit recovery lifecycle. */
+  | { type: "recovery"; phase: "waiting" | "resumed" | "blocked" | "compacted" | "failover"; cls: string; message: string; next_retry_at?: string | null; reset_source?: "provider" | "estimate" | null }
   | { type: "result"; path: string };
 
 export interface StampedEvent { ts: string; run_id: string; agent_run_id: string; task_id: string; event: AgentEvent }
