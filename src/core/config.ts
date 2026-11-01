@@ -122,6 +122,34 @@ export function allowCommands(file: string, add: string[]): string[] {
   return fresh;
 }
 
+/** Set a role's agent in config.toml (the agent must exist under [agents]); keeps the rest of the file. */
+export function setRoleAgent(file: string, role: Role, agent: string): void {
+  let text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  const head = new RegExp(`^\\[roles\\.${role}\\]\\s*$`, "m");
+  if (!head.test(text)) text += `${text.endsWith("\n") || !text ? "" : "\n"}[roles.${role}]\nagent = ${JSON.stringify(agent)}\n`;
+  else {
+    const start = text.search(head);
+    const bodyStart = text.indexOf("\n", start) + 1;
+    const next = text.slice(bodyStart).search(/^\[/m);
+    const end = next < 0 ? text.length : bodyStart + next;
+    let body = text.slice(bodyStart, end);
+    body = /^agent\s*=/m.test(body) ? body.replace(/^agent\s*=.*$/m, `agent = ${JSON.stringify(agent)}`) : `agent = ${JSON.stringify(agent)}\n${body}`;
+    text = text.slice(0, bodyStart) + body + text.slice(end);
+  }
+  fs.writeFileSync(file, text);
+}
+
+/** Append an [agents.<id>] block (provider/adapter/command only: never a model unless the user gave one). */
+export function addAgent(file: string, a: { id: string; adapter: string; provider?: string; command?: string[]; model?: string }): void {
+  const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  if (new RegExp(`^\\[agents\\.${a.id}\\]\\s*$`, "m").test(text)) throw new Error(`agent "${a.id}" already exists in config.toml`);
+  const lines = [`[agents.${a.id}]`, `adapter = ${JSON.stringify(a.adapter)}`];
+  if (a.provider) lines.push(`provider = ${JSON.stringify(a.provider)}`);
+  if (a.command?.length) lines.push(`command = ${JSON.stringify(a.command)}`);
+  if (a.model) lines.push(`model = ${JSON.stringify(a.model)}`);
+  fs.writeFileSync(file, `${text}${text.endsWith("\n") || !text ? "" : "\n"}\n${lines.join("\n")}\n`);
+}
+
 /** Set (or with `model` = null, remove) the model of a role in config.toml, keeping the rest of the file. */
 export function setRoleModel(file: string, role: Role, model: string | null): void {
   let text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
