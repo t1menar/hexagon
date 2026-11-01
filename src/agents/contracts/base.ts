@@ -1,5 +1,5 @@
 import { classifyError, probe, probeVersion, whichExecutable, type AdapterDiagnostics } from "./adapter.js";
-import type { AgentCapabilities } from "./capabilities.js";
+import { NO_SECURITY, type AgentCapabilities, type SecurityCapabilities } from "./capabilities.js";
 import type { ClassifiedError } from "./errors.js";
 import { CLI_DEFAULT, overrideOf, type ModelDiscoveryResult, type ModelSelection } from "./model-selection.js";
 
@@ -9,6 +9,8 @@ export abstract class AdapterBase {
   abstract readonly provider: string;
   abstract readonly displayName: string;
   abstract readonly capabilities: AgentCapabilities;
+  /** Policy enforcement this CLI really provides; the default claims nothing. */
+  readonly security: SecurityCapabilities = NO_SECURITY;
 
   constructor(readonly id: string, protected command: string[], readonly selection: ModelSelection = CLI_DEFAULT) {}
 

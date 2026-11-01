@@ -559,6 +559,12 @@ export class AgentRun {
 
   private async runReview(): Promise<ReviewVerdict | undefined> {
     const reviewer = this.rc.adapterFor("reviewer");
+    if (!reviewer.security.readOnlyEnforced && reviewer.adapterId !== "mock" && !this.rc.cfg.agents[reviewer.id]?.allow_weaker_isolation) {
+      const m = `the reviewer agent "${reviewer.id}" (${reviewer.displayName}) cannot enforce read-only execution; reviews run read-only. Use another agent for the reviewer role, or set allow_weaker_isolation = true under [agents.${reviewer.id}] to accept weaker isolation.`;
+      this.ev({ type: "error", kind: "internal", message: m, retryable: false });
+      this.notify(`review blocked: ${m}`);
+      return undefined;
+    }
     const id = `${this.agentRunId}.review`;
     let verdict: ReviewVerdict | undefined;
     const api: AgentApi = {

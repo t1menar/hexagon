@@ -93,6 +93,7 @@ export class DaemonServer {
       "run.close": () => ({ closed: o.closeRun("closed by user") }),
       "allow": (p) => ({ text: o.allow((p.rules as string[]) ?? []) }),
       "models.list": () => o.models(),
+      trace: () => o.traceRun(),
       "agents.list": () => o.agentsInfo(),
       "agents.models": (p) => o.discoverModels(str(p.agent, "agent"), Boolean(p.fresh)),
       "agents.role": (p) => { o.setRoleAgent(str(p.role, "role"), str(p.agent, "agent")); return o.models(); },

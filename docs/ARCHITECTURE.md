@@ -1,3 +1,9 @@
+> **Status note (v0.3).** The agent layer described below as "Sonnet 5.5 @ …" predates the provider-independent
+> design. Current behaviour: no model names are shipped; each CLI keeps its own default and the UI shows the
+> runtime-reported model. See [PROVIDERS.md](PROVIDERS.md), [RECOVERY.md](RECOVERY.md) and
+> [ADDING_PROVIDER.md](ADDING_PROVIDER.md) for what is implemented; model-specific rows in the tables below are
+> historical examples, not defaults.
+
 # Hexagon — Architecture & Implementation Plan
 
 Hexagon is a terminal-based orchestrator for spec-driven development. It runs several

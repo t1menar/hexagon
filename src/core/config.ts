@@ -16,6 +16,8 @@ export interface AgentConfig {
   interactive?: string[];
   /** Optional user override passed to the CLI as-is. Omit to keep the CLI's own default. */
   model?: string;
+  /** Explicit authorization to run read-only roles (reviewer) on a CLI that cannot enforce read-only itself. */
+  allow_weaker_isolation?: boolean;
   args?: string[];
   /** Mock adapter: delay between scripted steps (ms). */
   step_ms?: number;

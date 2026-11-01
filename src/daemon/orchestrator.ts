@@ -10,7 +10,7 @@ import { atomicWriteJson, nowIso, readJson, readJsonl } from "../util/fsx.js";
 import { selfCommand } from "../util/resources.js";
 import { DiscoveryCache, type ModelDiscoveryResult } from "../agents/contracts/model-selection.js";
 import type { AdapterDiagnostics } from "../agents/contracts/adapter.js";
-import type { AgentCapabilities } from "../agents/contracts/capabilities.js";
+import type { AgentCapabilities, SecurityCapabilities as AdapterSecurity } from "../agents/contracts/capabilities.js";
 import type { ModelSelection } from "../agents/contracts/model-selection.js";
 import { addAgent, allowCommands, loadConfig, setRoleAgent, setRoleModel, type HexagonConfig } from "../core/config.js";
 import { applyToolchainEnv, install as installToolchain, installed as installedToolchains, onPath, toolchainFor, TOOLCHAINS } from "../core/toolchains.js";
@@ -19,6 +19,7 @@ import { checkPlan, normalizePlan, type PlanCheck } from "../core/plan.js";
 import { ProjectPaths, type RunPaths } from "../core/project.js";
 import { ApiRegistry, type ApiOp } from "../core/registry.js";
 import { MessageRouter } from "../core/router.js";
+import { formatTrace, trace, type TaskEvidence } from "../core/trace.js";
 import { WaitStore } from "../core/recovery.js";
 import { Scheduler, type PriorTask } from "../core/scheduler.js";
 import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
@@ -30,7 +31,7 @@ export interface AgentInfo {
   id: string; configured_provider: string | null; command: string[] | null;
   roles: { role: string; model_override: string | null }[];
   provider: string; adapter: string; display_name: string;
-  capabilities: AgentCapabilities | null; selection: ModelSelection | null; diagnostics: AdapterDiagnostics | null; error: string | null;
+  capabilities: AgentCapabilities | null; security?: AdapterSecurity | null; selection: ModelSelection | null; diagnostics: AdapterDiagnostics | null; error: string | null;
 }
 
 export interface ActiveRun {
@@ -202,7 +203,7 @@ export class Orchestrator extends EventEmitter {
         const a = this.adapter(id);
         const diag = await a.detect();
         return {
-          ...base, provider: a.provider, adapter: a.adapterId, display_name: a.displayName, capabilities: a.capabilities,
+          ...base, provider: a.provider, adapter: a.adapterId, display_name: a.displayName, capabilities: a.capabilities, security: a.security,
           selection: a.selection, diagnostics: diag, error: null,
         };
       } catch (e) {
@@ -218,6 +219,21 @@ export class Orchestrator extends EventEmitter {
     if (fresh) this.discovery.clear();
     const diag = await a.detect();
     return this.discovery.get(`${a.adapterId}:${agentId}:${diag.executable}:${diag.version}`, () => a.discoverModels());
+  }
+
+  /** Requirement → task → agent → verification → review → completion for the current run. */
+  traceRun(): { text: string; rows: ReturnType<typeof trace>["rows"] } {
+    const r = this.current;
+    if (!r) throw new Error("no active run to trace");
+    const ev = new Map<string, TaskEvidence>();
+    for (const t of r.plan.tasks) {
+      const st = r.store.byTask(t.id);
+      if (!st) continue;
+      const res = readJson<{ verify?: { cmd: string; code: number }[]; review?: { verdict: "approve" | "request_changes" } | null }>(r.run.agentResult(st.agent_run_id));
+      ev.set(t.id, { state: st.state, agent: st.agent.id, provider: st.agent.provider, verify: res?.verify ?? [], review: res?.review?.verdict ?? null, merged: st.state === "done" });
+    }
+    const out = trace(r.plan.specs.flatMap((f) => { try { return [parseSpec(path.resolve(this.root, f))]; } catch { return []; } }), r.plan, ev, this.cfg.review.mode === "agent");
+    return { text: formatTrace(out), rows: out.rows };
   }
 
   setRoleAgent(role: string, agent: string): void {
