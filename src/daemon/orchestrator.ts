@@ -92,7 +92,9 @@ export type Push =
   | { event: "draft"; data: Draft | null }
   | { event: "spec_review"; data: SpecReview | null }
   | { event: "permissions"; data: PermissionRequest[] }
-  | { event: "proposals"; data: Proposal[] };
+  | { event: "proposals"; data: Proposal[] }
+  /** The running graph was edited. */
+  | { event: "plan"; data: Plan };
 
 export interface Snapshot {
   root: string;
@@ -842,6 +844,7 @@ export class Orchestrator extends EventEmitter {
       const now = Date.now();
       if (now - lastRunPush > 250) { lastRunPush = now; this.push({ event: "run", data: store.runStatus() }); }
     });
+    scheduler.on("graph", (p: Plan) => this.push({ event: "plan", data: p }));
     scheduler.on("done", () => {
       const rs = store.runStatus();
       this.push({ event: "run", data: rs });

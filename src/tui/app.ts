@@ -46,6 +46,10 @@ const COMMANDS: [string, string][] = [
   ["/resume [T-n]", "resume"],
   ["/cancel [T-n]", "cancel an agent"],
   ["/retry [T-n] [--agent X] [--effort E]", "start a new attempt"],
+  ["/add <role> <title> [after T-1,T-2]", "add a task to the draft or the running graph"],
+  ["/rm <T-n>", "remove a task that has not started (asks for your yes)"],
+  ["/link <T-a> <T-b>", "make T-b wait for T-a"],
+  ["/unlink <T-a> <T-b>", "remove that ordering (asks for your yes)"],
   ["/apply [P-n]", "apply a change the assistant proposed"],
   ["/reject [P-n]", "drop a proposed change"],
   ["/approve-spec [file]", "approve the spec under review (Enter on the analyst tab)"],
@@ -303,6 +307,12 @@ export class App {
     this.enter();
   }
 
+  /** Edit the graph through the typed command API. A destructive edit comes back as a proposal to confirm. */
+  private async graphEdit(name: string, args: Record<string, unknown>): Promise<void> {
+    const r = await this.client.call<{ status: string; result?: { live?: boolean } }>("command.exec", { name, args });
+    if (r.status === "done") this.flash(r.result?.live ? "graph updated (live)" : "graph updated");
+  }
+
   private attachInput() {
     this.detachInput();
     const f = new MouseFilter();
@@ -385,6 +395,7 @@ export class App {
       }
       case "message": this.onMessage(p.data); this.director.message(p.data); break;
       case "bus_activity": this.director.bus(p.data); break;
+      case "plan": this.snap.plan = p.data; this.invalidate(); break;
       case "notice": this.log(p.data.text, p.data.level === "info" ? S.cyan : S.orange); this.flash(p.data.text, p.data.level); break;
       case "session": {
         const m = mergeSession(this.sessions.get(p.data.id), p.data);
@@ -397,9 +408,9 @@ export class App {
         const fresh = p.data.filter((x) => !(this.snap.proposals ?? []).some((y) => y.id === x.id));
         this.snap.proposals = p.data;
         for (const x of fresh) {
-          this.log(`${x.id}${x.destructive ? " (destructive)" : ""} proposed by the assistant:\n${x.diff.map((d) => `  ${d}`).join("\n")}`, S.orange);
+          this.log(`${x.id}${x.destructive ? " (destructive)" : ""} ${x.by === "agent" ? "proposed by the assistant" : "needs your yes"}:\n${x.diff.map((d) => `  ${d}`).join("\n")}`, S.orange);
           this.log(`/apply ${x.id} to confirm · /reject ${x.id} to drop it`, S.orange);
-          this.flash(`${x.id}: the assistant proposes a change — /apply ${x.id} or /reject ${x.id}`, "attention");
+          this.flash(`${x.id}: ${x.by === "agent" ? "the assistant proposes a change" : "confirm to apply"} — /apply ${x.id} or /reject ${x.id}`, "attention");
         }
         this.invalidate();
         break;
@@ -999,6 +1010,20 @@ export class App {
           return;
         }
         case "/cancel": { const t = this.target(args); await c.call("agent.cancel", { task: t }); this.flash(`${t} cancelled`); return; }
+        case "/add": {
+          const m = /^(\S+)\s+(.+?)(?:\s+after\s+([\w,\s-]+))?$/i.exec(args.join(" "));
+          if (!m) throw new Error("usage: /add <role> <title> [after T-1,T-2]");
+          const deps = m[3] ? m[3].split(/[,\s]+/).filter(Boolean).map(normTask) : undefined;
+          return await this.graphEdit("graph.addNode", { role: m[1]!.toLowerCase(), title: m[2]!, ...(deps ? { depends_on: deps } : {}) });
+        }
+        case "/rm": {
+          if (!args[0]) throw new Error("usage: /rm <T-n>");
+          return await this.graphEdit("graph.removeNode", { id: normTask(args[0]) });
+        }
+        case "/link": case "/unlink": {
+          if (args.length < 2) throw new Error(`usage: ${cmd} <T-a> <T-b>   (T-b waits for T-a)`);
+          return await this.graphEdit(cmd!.toLowerCase() === "/link" ? "graph.addEdge" : "graph.removeEdge", { from: normTask(args[0]!), to: normTask(args[1]!) });
+        }
         case "/apply": case "/reject": {
           const id = (args[0] ?? this.snap.proposals[0]?.id)?.toUpperCase();
           if (!id) throw new Error("no proposal is waiting");

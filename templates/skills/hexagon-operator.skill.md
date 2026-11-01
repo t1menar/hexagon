@@ -13,6 +13,6 @@ summary: How to inspect and change the agent graph and runs through typed comman
 4. After they confirm, check the result with `graph.show` before saying it is done.
 
 ## Notes
-- Graph edits apply to the draft plan, before it starts. A running graph cannot be edited yet: say so.
+- Graph edits apply to the running graph when a run is active, otherwise to the draft plan. A task that has started or finished cannot be removed or given new prerequisites; `graph.show` marks which tasks are `editable`.
 - `run.start --from T-n` starts that task and everything after it; earlier tasks count as finished.
 - If a command fails, quote the error. Do not retry with different parameters unless the error says what to fix.

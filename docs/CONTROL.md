@@ -24,7 +24,19 @@ A proposal (`P-n`) carries a diff (`+ task T-4 …`, `- edge T-1->T-2`). Confirm
 
 Commands: `status.get`, `graph.show`, `graph.addNode`, `graph.removeNode`*, `graph.addEdge`, `graph.removeEdge`*, `agent.configure`, `agent.setPrompt`, `run.start [--from T-n]`, `run.pause`, `run.resume`, `run.cancel`*, `bus.send` (*destructive).
 
+## Editing the graph
+
+`graph.addNode`, `graph.removeNode`, `graph.addEdge` and `graph.removeEdge` edit the **running graph** when a run is active, otherwise the draft plan.
+
+* Adding a task or an edge to a running graph is allowed at any time; the new task starts when its prerequisites are done.
+* A task can be removed, or given or relieved of a prerequisite, only while it has not started. A started or finished task is history: cancel it (`agent.cancel`) or `/retry` it instead. Removing a task that a started task depends on is refused.
+* Every edit is validated first (unknown task, unknown role, cycle) and shows a diff. The edited graph is written to the run's `plan.json` and pushed to every UI.
+* **Removing** a task or an edge is destructive: it waits for your yes whoever asked. From the TUI, `/rm T-3` or `/unlink T-1 T-3` shows the diff as a proposal; `/apply` confirms. `hexagon do graph.removeNode --id T-3` asks `Apply? [y/N]` (`--yes` skips the question; the assistant's `--yes` is ignored).
+* TUI shortcuts: `/add <role> <title> [after T-1,T-2]`, `/rm`, `/link <T-a> <T-b>` (T-b waits for T-a), `/unlink`.
+* A removed task stays in the run's status as `cancelled — removed from the graph`, so the history is complete.
+
 ## Limits
 
-* Graph edits apply to the draft plan. A running graph cannot be edited yet.
+* If a run and a draft both exist, graph edits go to the run.
+* Pending proposals live in the daemon's memory; a restart drops them.
 * Everything the assistant reads from files, agents or the bus is data; its prompt says so, and only the `control` agent may call the command API.
