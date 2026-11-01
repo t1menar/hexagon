@@ -18,13 +18,14 @@ export interface DashLayout {
 }
 
 export function computeLayout(W: number, H: number, o: { inspector?: boolean } = {}): DashLayout {
-  const mode: LayoutMode = W >= 124 && H >= 30 ? "large" : W >= 90 && H >= 22 ? "medium" : "small";
+  const mode: LayoutMode = W >= 150 && H >= 30 ? "large" : W >= 100 && H >= 22 ? "medium" : "small";
   const inputH = 3;
   const header: Region = { x: 0, y: 0, w: W, h: 1 };
   const input: Region = { x: 0, y: H - inputH, w: W, h: inputH };
   const body = H - 1 - inputH;
-  const wantInspector = mode === "large" ? o.inspector !== false : mode === "medium" ? Boolean(o.inspector) : false;
-  const leftW = mode === "small" ? 0 : mode === "large" ? 32 : 28;
+  const leftW = mode === "small" ? 0 : mode === "large" ? 40 : 36;
+  // The inspector only opens when the network keeps at least 60 columns.
+  const wantInspector = (mode === "large" ? o.inspector !== false : mode === "medium" ? Boolean(o.inspector) : false) && W - leftW - (mode === "large" ? 38 : 32) >= 60;
   const rightW = wantInspector ? (mode === "large" ? 38 : 32) : 0;
   const bandH = mode === "large" ? Math.max(8, Math.min(14, Math.round(body * 0.3))) : mode === "medium" ? Math.max(6, Math.min(10, Math.round(body * 0.3))) : Math.max(5, Math.min(8, Math.round(body * 0.35)));
   const strip: Region | null = mode === "small" ? { x: 0, y: 1, w: W, h: 1 } : null;
