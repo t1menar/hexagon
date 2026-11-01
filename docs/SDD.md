@@ -19,3 +19,17 @@ A goal goes through gated stages. Each stage writes one artifact and Hexagon val
 * Changing `spec.md` after approval and before the plan is materialized is refused (`spec.md was changed after you approved it`).
 
 Approvals are stored per spec file; hashes cover title, body and acceptance criteria of each requirement.
+
+## Task lifecycle
+
+`queued → preparing → working → verifying → reviewing → (fixing → verifying → reviewing)* → integrating → done`, plus `waiting_input`, `paused`, `waiting_quota`, `failed`, `blocked`, `cancelled`. `fixing` is `working` that answers a failed verification or a review rejection.
+
+**Preparing** happens before the agent spends tokens, and its result is stored in `runs/<run>/agents/<task>-aN/prepare.json`:
+
+1. The worktree is created from the integration branch head, so merged dependencies are in it (`base_commit`).
+2. The tools the task's verify commands need are looked up (`tools`); missing ones become warnings, not failures.
+3. Verify commands outside `allow_commands` are put to you now, once per command line (`denied_commands`), not in the middle of the task.
+4. The verify commands run once on the fresh worktree (`baseline`, `[run] baseline = true`). The agent is told what already fails, so it does not chase it.
+5. A short work plan is derived from the acceptance criteria (`steps`).
+
+State names written before this (`starting`, `running`, `merging`) are still read: they load as `preparing`, `working`, `integrating`.

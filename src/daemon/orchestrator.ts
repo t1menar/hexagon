@@ -802,6 +802,7 @@ export class Orchestrator extends EventEmitter {
       waits,
       sessions: this.agentSessions, pool: this.pool, bus,
       agentEnv: (id) => this.agentEnv(id),
+      preapprove: (task, commands, why) => this.preapprove(task, commands, why),
       tasks: plan.tasks,
       returnTask: (from, to, issue) => scheduler.returnTask(from, to, issue),
     };
@@ -1046,6 +1047,23 @@ export class Orchestrator extends EventEmitter {
       timer.unref?.();
       this.pendingDecisions.set(req.id, (d) => { clearTimeout(timer); resolve(d); });
     });
+  }
+
+  /** Commands a task will run are asked about before it starts (once per command line); returns the denied ones. */
+  private preapproved = new Map<string, Decision>();
+  private async preapprove(task: string, commands: string[], why: string): Promise<string[]> {
+    const denied: string[] = [];
+    for (const line of commands) {
+      if (isAllowed(line, this.cfg.sandbox.allow_commands)) continue;
+      let d = this.preapproved.get(line);
+      if (!d) {
+        d = await this.askUser(task, "exec", line, why);
+        if (d !== "deny") this.rememberApproval(d, line);
+        if (d !== "once") this.preapproved.set(line, d);
+      }
+      if (d === "deny") denied.push(line);
+    }
+    return denied;
   }
 
   /** Remember an approval (personal file, never committed) and let the live run see it. */
