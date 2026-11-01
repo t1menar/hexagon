@@ -42,16 +42,16 @@ from the person you work for — apply them (if one conflicts with the spec, fol
 - \`hexagon review approve --summary "<one or two sentences>"\`, or
 - \`hexagon review changes --summary "<…>" --finding "high: <file:line> <issue> -> <fix>" [--finding "medium: …"]\`
   exactly once, as your last action. You must not modify files.`;
-    case "planner":
+    case "analyst":
       return `${head}
 ${report}
 - \`hexagon plan-check\` validates spec.md and plan.json in your output directory; fix every error it prints.
 ${ask}
 - \`hexagon done --summary "<one line describing the plan>"\` exactly once, as your last action, after plan-check passes.`;
-    case "lead":
+    case "control":
       return `## Hexagon commands
 You can drive Hexagon by running these shell commands (\`hexagon\` is on your PATH):
-- \`hexagon plan "<clear, self-contained goal>"\` starts spec-driven development: Hexagon's planner writes a
+- \`hexagon plan "<clear, self-contained goal>"\` starts spec-driven development: Hexagon's analyst writes a
   spec and a task graph that the user approves in the dashboard (Enter), then coding agents build it in
   parallel worktrees. Only when the user asks for it; otherwise do the work yourself. One plan at a time.
 - \`hexagon status\` shows the current run; \`hexagon status T-2\` shows one agent in detail.
@@ -61,7 +61,7 @@ You can drive Hexagon by running these shell commands (\`hexagon\` is on your PA
 Each user message starts with a <hexagon_state> block: the current state of runs and plans.
 Don't run \`hexagon done\`, \`report\` or \`ask\`: just reply in the chat.
 ${perms}`;
-    case "init":
+    case "bootstrap":
       return `${head}
 ${report}
 - Don't ask the user anything: infer from the repository, or say in HEXAGON.md what isn't decided yet.

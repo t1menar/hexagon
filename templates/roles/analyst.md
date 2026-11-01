@@ -39,7 +39,7 @@ requirements.
     {
       "id": "T-1",
       "title": "Short imperative title",
-      "role": "implementer",
+      "role": "developer",
       "requirements": ["REQ-AREA-001"],
       "acceptance": ["AC-1", "AC-2"],
       "depends_on": [],
@@ -55,4 +55,4 @@ requirements.
   non-overlapping `files.write` globs. If two tasks must touch the same file, chain them.
 - `verify` = shell commands Hexagon re-runs in the task's worktree to prove it works, using
   the project's real tooling. For a new project, the first task sets up the build.
-- `role` is `implementer` (code + its tests) or `tester` (tests only).
+- `role` is `developer` (code + its tests) or `qa` (tests only).

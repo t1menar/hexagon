@@ -24,7 +24,7 @@ import { commandPrefix } from "../src/daemon/orchestrator.js";
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "hex-test-"));
 
 const task = (over: Partial<Task> = {}): Task => ({
-  id: "T-1", title: "Do it", role: "implementer", requirements: ["REQ-A-001"], acceptance: ["AC-1", "AC-2"],
+  id: "T-1", title: "Do it", role: "developer", requirements: ["REQ-A-001"], acceptance: ["AC-1", "AC-2"],
   depends_on: [], files: { write: ["src/a.ts"], read: [] }, skills: [], definition_of_done: ["done"], verify: [], ...over,
 });
 
@@ -92,7 +92,7 @@ describe("status store", () => {
     const dir = tmp();
     const rp = new RunPaths(dir);
     const store = new StatusStore(rp, "r-1", { plan_path: "p.json", integration_branch: "i", base_branch: "main", budget_usd: null });
-    const s = store.create({ task: task(), attempt: 1, role: "implementer", agent: { id: "mock", provider: "mock" }, supportsLiveInput: true });
+    const s = store.create({ task: task(), attempt: 1, role: "developer", agent: { id: "mock", provider: "mock" }, supportsLiveInput: true });
     store.apply(s.agent_run_id, { type: "state", state: "running" });
     store.apply(s.agent_run_id, { type: "status_report", phase: "editing", activity: "Writing", checklist: [{ id: "AC-1", status: "done" }] });
     store.apply(s.agent_run_id, { type: "usage", input: 100, output: 10, cache_read: 50, cache_write: 0, cost_usd: 0.01 });
@@ -133,7 +133,7 @@ describe("router", () => {
 
 describe("claude code adapter", () => {
   const ctx = (over: Partial<AgentRunContext>): AgentRunContext => ({
-    agentRunId: "T-1-a1", role: "implementer", effort: "medium", cwd: "/w", system: "SYS", prompt: "P", sessionId: "uuid-1", resume: false,
+    agentRunId: "T-1-a1", role: "developer", effort: "medium", cwd: "/w", system: "SYS", prompt: "P", sessionId: "uuid-1", resume: false,
     env: { HEXAGON_BIN: "/r/.hexagon/bin/hexagon" }, allowCommands: ["mvn", "git diff"], readOnly: false,
     host: {} as never, api: {} as never, signal: new AbortController().signal, ...over,
   });
@@ -185,10 +185,10 @@ describe("config", () => {
 describe("dag", () => {
   it("draws boxes and arrows for dependencies", () => {
     const nodes = [
-      { id: "T-1", title: "Controller", role: "implementer", deps: [], state: "done" as const },
-      { id: "T-2", title: "Smoke test", role: "tester", deps: ["T-1"], state: "done" as const },
-      { id: "T-3", title: "Docs", role: "implementer", deps: [], state: "running" as const },
-      { id: "T-4", title: "Release", role: "implementer", deps: ["T-2", "T-3"], state: "queued" as const },
+      { id: "T-1", title: "Controller", role: "developer", deps: [], state: "done" as const },
+      { id: "T-2", title: "Smoke test", role: "qa", deps: ["T-1"], state: "done" as const },
+      { id: "T-3", title: "Docs", role: "developer", deps: [], state: "running" as const },
+      { id: "T-4", title: "Release", role: "developer", deps: ["T-2", "T-3"], state: "queued" as const },
     ];
     const text = renderDag(nodes, { maxW: 120, maxH: 20, frame: 0 }).lines(false).join("\n");
     for (const id of ["T-1", "T-2", "T-3", "T-4"]) expect(text).toContain(id);
@@ -244,7 +244,7 @@ describe("permissions", () => {
 
 describe("stack", () => {
   it("names a task's technologies from its files, commands and text", () => {
-    const t = { id: "T-1", title: "Hello endpoint with MockMvc test", role: "implementer", files: { write: ["pom.xml", "src/main/java/app/Hello.java"], read: [] }, verify: ["mvn -q test"], description: "Spring Boot controller" } as unknown as Task;
+    const t = { id: "T-1", title: "Hello endpoint with MockMvc test", role: "developer", files: { write: ["pom.xml", "src/main/java/app/Hello.java"], read: [] }, verify: ["mvn -q test"], description: "Spring Boot controller" } as unknown as Task;
     expect(taskStack(t)).toEqual(["Maven", "Java", "Spring Boot", "MockMvc", "HTTP API"]);
     const g = { ...t, title: "x", description: "", files: { write: ["src/**"], read: [] }, verify: [] } as unknown as Task;
     expect(taskStack(g, ["Go"])).toEqual(["Go"]);
@@ -264,13 +264,13 @@ describe("chat wrapping", () => {
 describe("models and toolchains", () => {
   it("sets the model of a role in config.toml", () => {
     const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hx-")), "config.toml");
-    fs.writeFileSync(f, '[roles.planner]\nagent = "claude"\neffort = "high"\n[roles.implementer]\nagent = "claude"\n');
-    setRoleModel(f, "planner", "opus");
-    setRoleModel(f, "implementer", "sonnet");
-    setRoleModel(f, "planner", "haiku");
+    fs.writeFileSync(f, '[roles.analyst]\nagent = "claude"\neffort = "high"\n[roles.developer]\nagent = "claude"\n');
+    setRoleModel(f, "analyst", "opus");
+    setRoleModel(f, "developer", "sonnet");
+    setRoleModel(f, "analyst", "haiku");
     const cfg = loadConfig(f);
-    expect(cfg.roles.planner.model).toBe("haiku");
-    expect(cfg.roles.implementer.model).toBe("sonnet");
+    expect(cfg.roles.analyst!.model).toBe("haiku");
+    expect(cfg.roles.developer!.model).toBe("sonnet");
     expect(fs.readFileSync(f, "utf8").match(/model =/g)).toHaveLength(2);
   });
   it("maps commands to installable toolchains", () => {

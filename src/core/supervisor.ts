@@ -10,7 +10,7 @@ import { classifyProviderError, recoveryFor } from "../agents/contracts/errors.j
 import { planRetry, waitTooLong, type WaitStore } from "./recovery.js";
 import { atomicWriteJson, matchesAny, nowIso, truncateMiddle } from "../util/fsx.js";
 import { runShell } from "../util/shell.js";
-import type { HexagonConfig } from "./config.js";
+import { roleConfig, type HexagonConfig } from "./config.js";
 import * as g from "./git.js";
 import type { ProjectPaths, RunPaths } from "./project.js";
 import type { ApiRegistry } from "./registry.js";
@@ -58,7 +58,7 @@ export class AgentRun {
   readonly branch: string;
   /** Native id of the session of the current turn (from the registry). */
   sessionId = "";
-  /** Agent identity (implementer-1, reviewer-1, …) whose session this attempt uses. */
+  /** Agent identity (developer-1, reviewer-1, …) whose session this attempt uses. */
   identity: string | null = null;
   private lease: Lease | null = null;
   /** Who the tokens of the current turn belong to. */
@@ -364,7 +364,7 @@ export class AgentRun {
     const cap = this.adapter.capabilities;
     let res = this.rc.sessions.resolve({
       agentId: lease.agentId, role: this.task.role, adapterId: this.adapter.adapterId, model: this.adapter.model,
-      promptHash: identityHash(this.rc.paths, this.task.role, this.rc.skills), cwd: this.worktree,
+      promptHash: identityHash(this.rc.paths, this.task.role, this.rc.skills, this.rc.cfg.roles[this.task.role]), cwd: this.worktree,
       resumeAcrossCwd: cap.resumeAcrossCwd, supportsResume: cap.supportsSessionResume,
     });
     if (res.resume) {
@@ -410,7 +410,7 @@ export class AgentRun {
     try {
       const out = await who.adapter.run(this.ctx({
         role: who.role, sessionId: res.sessionId, resume: true, followUp: compactRequest(), prompt: compactRequest(),
-        system: systemPrompt(this.rc.paths, who.role, this.rc.skills, this.rc.context), readOnly: true,
+        system: systemPrompt(this.rc.paths, who.role, this.rc.skills, this.rc.context, this.rc.cfg.roles[who.role]), readOnly: true,
         api: { report: refuse, ask: refuse, note: refuse, done: refuse, review: refuse }, host, agentId: this.agentRunId,
       }));
       if (out.kind !== "finished" || !summary.trim()) {
@@ -493,7 +493,7 @@ export class AgentRun {
         followUp: input.followUp,
         freshTask: input.freshTask,
         prompt: input.prompt,
-        system: systemPrompt(this.rc.paths, this.task.role, this.rc.skills, this.rc.context),
+        system: systemPrompt(this.rc.paths, this.task.role, this.rc.skills, this.rc.context, this.rc.cfg.roles[this.task.role]),
         readOnly: false,
         api: this.api(),
         host: this.host(),
@@ -563,7 +563,7 @@ export class AgentRun {
     }
     if (c.cls === "quota_exhausted" && !rec.unlimited_quota_wait && rec.max_wait_seconds === 0) return { retry: false };
     // Optional, explicitly enabled failover to another configured agent for this role.
-    const fb = this.rc.cfg.roles[this.task.role].fallback_agent;
+    const fb = roleConfig(this.rc.cfg, this.task.role).fallback_agent;
     if (rec.allow_provider_failover && fb && fb !== this.adapter.id && c.cls !== "rate_limit") {
       const next = this.rc.adapterFor(this.task.role, fb);
       this.ev({ type: "recovery", phase: "failover", cls: c.cls, message: `${this.adapter.provider}/${this.adapter.id} → ${next.provider}/${next.id} (allow_provider_failover is enabled; verification and review will run again)` });
@@ -718,7 +718,7 @@ export class AgentRun {
       agentRunId: o.agentId,
       role: o.role,
       task: this.task,
-      effort: o.role === "reviewer" ? this.rc.cfg.roles.reviewer.effort : this.effort,
+      effort: o.role === "reviewer" ? roleConfig(this.rc.cfg, "reviewer").effort : this.effort,
       cwd: this.worktree,
       system: o.system,
       prompt: o.prompt,
@@ -848,7 +848,7 @@ export class AgentRun {
       const cap = reviewer.capabilities;
       let res = this.rc.sessions.resolve({
         agentId: lease.agentId, role: "reviewer", adapterId: reviewer.adapterId, model: reviewer.model,
-        promptHash: identityHash(this.rc.paths, "reviewer", this.rc.skills), cwd: this.worktree,
+        promptHash: identityHash(this.rc.paths, "reviewer", this.rc.skills, this.rc.cfg.roles.reviewer), cwd: this.worktree,
         resumeAcrossCwd: cap.resumeAcrossCwd, supportsResume: cap.supportsSessionResume,
       });
       if (res.resume) {
@@ -862,7 +862,7 @@ export class AgentRun {
       const prompt = [
         taskCard(this.task, this.rc.specs, "", []),
         res.mode === "new" && this.reviewerSummary ? `Your earlier review notes (compacted):\n${this.reviewerSummary}` : "",
-        `<implementer_report>\n${JSON.stringify(compactReport(this.result))}\n</implementer_report>`,
+        `<developer_report>\n${JSON.stringify(compactReport(this.result))}\n</developer_report>`,
         `<diffstat base="${base}">\n${stat}\n</diffstat>`,
         `<diff base="${base}"${diff.length > REVIEW_DIFF ? ` truncated="true"` : ""}>\n${shown}\n</diff>`,
         diff.length > REVIEW_DIFF ? `The diff above was cut (${diff.length} chars). Read the rest per file: \`git diff ${base}...HEAD -- <file>\`.` : "",
@@ -876,7 +876,7 @@ export class AgentRun {
         followUp: res.resume ? prompt : undefined,
         freshTask: true,
         prompt,
-        system: systemPrompt(this.rc.paths, "reviewer", this.rc.skills, this.rc.context),
+        system: systemPrompt(this.rc.paths, "reviewer", this.rc.skills, this.rc.context, this.rc.cfg.roles.reviewer),
         readOnly: true,
         api,
         agentId: id,
@@ -1119,7 +1119,7 @@ const FIX_EXCERPT = 6000;
 /** Largest diff embedded in a review prompt; the reviewer reads the rest per file. */
 const REVIEW_DIFF = 24_000;
 
-/** The implementer's report without fields the reviewer re-derives from the diff. */
+/** The developer's report without fields the reviewer re-derives from the diff. */
 function compactReport(r: ResultEnvelope | undefined): unknown {
   if (!r) return null;
   const { files_changed: _f, ...rest } = r;

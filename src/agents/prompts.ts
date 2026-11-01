@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { SHIPPED_ROLE_HASHES } from "./known-roles.js";
+import { canonicalRole, legacyNames } from "../core/roles.js";
 import path from "node:path";
 import type { Role, Task } from "../contracts/types.js";
 import type { ProjectPaths } from "../core/project.js";
@@ -17,15 +18,23 @@ export const isStaleRolePrompt = (text: string) =>
 /** Same hash as scripts/role-hashes.mjs. A project copy is "stale" if it is an unedited, shipped version. */
 export const roleHash = (text: string) => createHash("sha256").update(text.trim()).digest("hex").slice(0, 16);
 
-export function loadRolePrompt(paths: ProjectPaths, role: Role): string {
-  const f = path.join(paths.roles, `${role}.md`);
-  if (fs.existsSync(f)) {
+export function loadRolePrompt(paths: ProjectPaths, role: Role, custom?: { prompt?: string }): string {
+  if (custom?.prompt) {
+    for (const f of [path.join(paths.roles, custom.prompt), path.resolve(paths.root, custom.prompt)]) {
+      if (fs.existsSync(f)) return fs.readFileSync(f, "utf8").trim();
+    }
+    throw new Error(`[roles.${role}] prompt = "${custom.prompt}" was not found in .hexagon/roles/ or the project root`);
+  }
+  // A project copy under the current name, then under an old name (planner.md → analyst), unless it is an unedited shipped one.
+  for (const name of [role, ...legacyNames(role)]) {
+    const f = path.join(paths.roles, `${name}.md`);
+    if (!fs.existsSync(f)) continue;
     const text = fs.readFileSync(f, "utf8").trim();
     if (!isStaleRolePrompt(text)) return text;
   }
   const packaged = `templates/roles/${role}.md`;
   if (hasResource(packaged)) return readResource(packaged).trim();
-  throw new Error(`no role prompt for ${role}`);
+  throw new Error(`no role prompt for ${role}: add .hexagon/roles/${role}.md or set prompt = "<file>" under [roles.${role}]`);
 }
 
 export function loadSkills(paths: ProjectPaths): Skill[] {
@@ -49,7 +58,7 @@ export function loadSkills(paths: ProjectPaths): Skill[] {
     byName.set(name, {
       name,
       version: meta.version ?? "1",
-      appliesTo: (meta.applies_to ?? "").replace(/[[\]]/g, "").split(",").map((s) => s.trim()).filter(Boolean),
+      appliesTo: (meta.applies_to ?? "").replace(/[[\]]/g, "").split(",").map((s) => canonicalRole(s.trim())).filter(Boolean),
       body: (m?.[2] ?? text).trim(),
     });
   }
@@ -101,16 +110,16 @@ export function projectContext(root: string): string {
  * Everything appended to the agent CLI's own system prompt. Identity-level and byte-stable: no task ids, no
  * per-task skills, so the same agent always sends the same prefix (provider-side prompt caching) and keeps one session.
  */
-export function systemPrompt(paths: ProjectPaths, role: Role, skills: Skill[], context: string): string {
-  return [identityPrompt(paths, role, skills), context].filter(Boolean).join("\n\n");
+export function systemPrompt(paths: ProjectPaths, role: Role, skills: Skill[], context: string, custom?: { prompt?: string; skills?: string[] }): string {
+  return [identityPrompt(paths, role, skills, custom), context].filter(Boolean).join("\n\n");
 }
 
 /** The part of the system prompt that defines the agent. Its hash decides whether the session may be reused. */
-export function identityPrompt(paths: ProjectPaths, role: Role, skills: Skill[]): string {
-  return [loadRolePrompt(paths, role), protocolInstructions(role), skillsBlock(skills, role)].filter(Boolean).join("\n\n");
+export function identityPrompt(paths: ProjectPaths, role: Role, skills: Skill[], custom?: { prompt?: string; skills?: string[] }): string {
+  return [loadRolePrompt(paths, role, custom), protocolInstructions(role), skillsBlock(skills, role, custom?.skills ?? [])].filter(Boolean).join("\n\n");
 }
 
-export const identityHash = (paths: ProjectPaths, role: Role, skills: Skill[]) => roleHash(identityPrompt(paths, role, skills));
+export const identityHash = (paths: ProjectPaths, role: Role, skills: Skill[], custom?: { prompt?: string; skills?: string[] }) => roleHash(identityPrompt(paths, role, skills, custom));
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 

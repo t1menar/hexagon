@@ -10,11 +10,11 @@ import { detectCaps } from "../src/tui/theme.js";
 
 const caps = detectCaps({ TERM: "xterm-256color", LANG: "en_US.UTF-8", COLORTERM: "truecolor" }, true);
 const base: DagNode[] = [
-  { id: "T-1", title: "Parse the spec", role: "implementer", deps: [], state: "queued", progress: null, provider: "anthropic", cli: "claude-code 2.1", runtimeModel: null },
-  { id: "T-2", title: "Build the API", role: "implementer", deps: ["T-1"], state: "queued", progress: null, provider: "openai", cli: "codex 0.9", runtimeModel: null },
-  { id: "T-3", title: "Build the UI", role: "implementer", deps: ["T-1"], state: "queued", progress: null, provider: "xai", cli: "grok 1.0", runtimeModel: null },
+  { id: "T-1", title: "Parse the spec", role: "developer", deps: [], state: "queued", progress: null, provider: "anthropic", cli: "claude-code 2.1", runtimeModel: null },
+  { id: "T-2", title: "Build the API", role: "developer", deps: ["T-1"], state: "queued", progress: null, provider: "openai", cli: "codex 0.9", runtimeModel: null },
+  { id: "T-3", title: "Build the UI", role: "developer", deps: ["T-1"], state: "queued", progress: null, provider: "xai", cli: "grok 1.0", runtimeModel: null },
 ];
-const st = (id: string, state: AgentState, extra: Record<string, unknown> = {}) => ({ task_id: id, role: "implementer", state, attempt: 1, agent: { id: "a", provider: "p", adapter: "cli" }, ...extra }) as unknown as AgentStatus;
+const st = (id: string, state: AgentState, extra: Record<string, unknown> = {}) => ({ task_id: id, role: "developer", state, attempt: 1, agent: { id: "a", provider: "p", adapter: "cli" }, ...extra }) as unknown as AgentStatus;
 const ev = (id: string, event: Record<string, unknown>) => ({ task_id: id, ts: new Date().toISOString(), event }) as unknown as StampedEvent;
 
 const clock = new FakeClock();

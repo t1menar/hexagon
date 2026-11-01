@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import type { AgentState, Effort, Plan, Task } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
 import { globToRegExp } from "../util/fsx.js";
+import { roleConfig } from "./config.js";
 import { AgentRun, type RunContext } from "./supervisor.js";
 
 const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -75,7 +76,7 @@ export class Scheduler extends EventEmitter {
   }
 
   private createStatus(t: Task, attempt: number): void {
-    const role = this.rc.cfg.roles[t.role];
+    const role = roleConfig(this.rc.cfg, t.role);
     const adapter = this.rc.adapterFor(t.role, this.overrides.get(t.id)?.agent ?? this.opts.agentOverride ?? t.agent_hint);
     this.rc.store.create({
       task: t, attempt, role: t.role,
@@ -153,7 +154,7 @@ export class Scheduler extends EventEmitter {
     const p = this.opts.prior?.get(t.id);
     const resume = p?.state === "waiting_quota" && p.attempt === attempt && p.sessionId ? { sessionId: p.sessionId, identity: p.identity ?? null, nextRetryAt: p.nextRetryAt ?? new Date().toISOString() } : undefined;
     if (resume) this.opts.prior!.delete(t.id); // consumed: a later attempt starts fresh
-    const run = new AgentRun(this.rc, t, attempt, this.effortFor(t, attempt, this.rc.cfg.roles[t.role].effort), adapter, resume);
+    const run = new AgentRun(this.rc, t, attempt, this.effortFor(t, attempt, roleConfig(this.rc.cfg, t.role).effort), adapter, resume);
     this.active.set(t.id, run);
     this.last.set(t.id, run);
     this.emit("launch", run);

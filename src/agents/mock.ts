@@ -14,7 +14,7 @@ import type { AdapterOutcome, AgentAdapter, AgentRunContext, Injected } from "./
  * Scripted, offline agent. Exercises the full pipeline (status, messages, questions,
  * scope, verify, review, merge, planning, init) without any model calls.
  *
- * - Implementer/tester: writes each concrete file in the task's write scope.
+ * - Developer/qa: writes each concrete file in the task's write scope.
  * - `@ask: <question>` in a task description asks the user a blocking question first.
  * - Instructions it receives are appended as notes to the files it writes.
  * - Planner: writes spec.md + plan.json for the goal into $HEXAGON_OUT.
@@ -82,8 +82,8 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     }
 
     try {
-      if (ctx.role === "planner") return await this.plan(ctx, step);
-      if (ctx.role === "lead") {
+      if (ctx.role === "analyst") return await this.plan(ctx, step);
+      if (ctx.role === "control") {
         if (ctx.resume && ctx.followUp) host.emit({ type: "chat", from: "agent", text: `(mock) ${ctx.followUp.includes("approved") ? "Approved, running it now." : ctx.followUp}` });
         else host.emit({ type: "chat", from: "agent", text: `(mock) You said: ${ctx.prompt.replace(/<hexagon_state>[\s\S]*?<\/hexagon_state>\s*/g, "").replace(/<\/?user_message>/g, "").trim()}` });
         host.emit({ type: "progress", text: "ready" });
@@ -99,7 +99,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         }
         return { kind: "interrupted" };
       }
-      if (ctx.role === "init") {
+      if (ctx.role === "bootstrap") {
         api.report({ activity: "Scanning the repository", phase: "reading" });
         await step("Writing HEXAGON.md");
         fs.writeFileSync(path.join(ctx.cwd, "HEXAGON.md"), "# Project\n\nMock project context.\n\n## Commands\n- test: `true`\n");
@@ -219,7 +219,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     fs.writeFileSync(path.join(out, "spec.md"), spec);
     const plan = {
       tasks: reqs.map((r, i) => ({
-        id: `T-${i + 1}`, title: r.title, role: "implementer", requirements: [r.id], acceptance: ["AC-1"],
+        id: `T-${i + 1}`, title: r.title, role: "developer", requirements: [r.id], acceptance: ["AC-1"],
         depends_on: i > 0 ? [`T-${i}`] : [], files: { write: [r.file] }, verify: [`test -f ${r.file}`],
       })),
     };

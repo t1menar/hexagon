@@ -1,7 +1,7 @@
 ---
 name: commit-conventions
 version: 1
-applies_to: [implementer, tester, resolver]
+applies_to: [developer, qa, release]
 summary: Hexagon commits for you; keep the diff focused.
 ---
 Hexagon commits your work with task and requirement trailers when you submit. Don't run

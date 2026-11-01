@@ -1,6 +1,7 @@
 // Contract types. JSON Schemas in /schemas are the source of truth; these mirror them.
 
-export type Role = "planner" | "implementer" | "tester" | "reviewer" | "integrator" | "resolver" | "lead" | "init";
+/** A role id from the registry (src/core/roles.ts) or a custom role defined in config.toml. */
+export type Role = string;
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type AgentState =
@@ -44,7 +45,7 @@ export type TokenCause = "prompt" | "fix_loop" | "review" | "compaction";
 export interface TokenCounts { input: number; cache_read: number; output: number }
 
 export interface SessionInfo {
-  /** Agent identity that owns the session (e.g. implementer-1). */
+  /** Agent identity that owns the session (e.g. developer-1). */
   agent: string;
   mode: "new" | "resumed";
   /** Why a new session was created (null when resumed). */

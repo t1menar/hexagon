@@ -1,3 +1,4 @@
+import { canonicalRole } from "./roles.js";
 import type { Plan, Task } from "../contracts/types.js";
 import { validatePlan } from "../contracts/validate.js";
 import type { Spec } from "./spec.js";
@@ -84,7 +85,7 @@ export function normalizePlan(raw: unknown, meta: { id: string; specs: string[] 
       ...t,
       id: t.id ?? `T-${i + 1}`,
       title: t.title ?? `Task ${i + 1}`,
-      role: t.role ?? "implementer",
+      role: canonicalRole(t.role ?? "developer"),
       requirements: t.requirements ?? [],
       acceptance,
       depends_on: t.depends_on ?? [],

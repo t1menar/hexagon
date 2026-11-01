@@ -1,3 +1,4 @@
+import { BUILTIN_ROLES } from "../core/roles.js";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -648,8 +649,8 @@ export class App {
       items = [
         ...tasks.filter((t) => !t.state || !TERMINAL_STATES.has(t.state)).map((t) => ({ value: `@${t.id}`, desc: t.title })),
         { value: "@all", desc: "every active agent" },
-        { value: "@implementers", desc: "all implementer agents" },
-        { value: "@testers", desc: "all tester agents" },
+        { value: "@developers", desc: "all developer agents" },
+        { value: "@qa", desc: "all QA agents" },
         { value: "@claude", desc: "chat with Claude" },
         ...(this.snap.draft ? [{ value: "@planner", desc: "ask the planner to change the draft plan" }] : []),
       ].filter((i) => match(i.value));
@@ -661,7 +662,7 @@ export class App {
       } else if (words[words.length - (token ? 2 : 1)] === "--effort") {
         items = ["low", "medium", "high", "xhigh", "max"].map((e) => ({ value: e, desc: "" })).filter((i) => match(i.value));
       } else if (cmd === "/model" && argIdx === 1) {
-        items = ["planner", "implementer", "tester", "reviewer", "lead", "init"].map((r) => ({ value: r, desc: r === "lead" ? "the Claude chat" : "" })).filter((i) => match(i.value));
+        items = BUILTIN_ROLES.map((r) => r.id).map((r) => ({ value: r, desc: r === "control" ? "the Hexagon Assistant chat" : "" })).filter((i) => match(i.value));
       } else if (cmd === "/model" && argIdx === 2) {
         // No built-in model list: "default" keeps the CLI's own choice; `/models <agent>` shows what the CLI reports.
         items = [{ value: "default", desc: "the CLI's own default (no override)" }].filter((i) => match(i.value));
@@ -675,7 +676,7 @@ export class App {
       } else if (["/pause", "/resume", "/cancel", "/retry", "/takeover", "/open", "/diff", "/tell"].includes(cmd) && argIdx === 1) {
         items = tasks.map((t) => ({ value: t.id, desc: `${t.state ? t.state.replace("_", " ") + " · " : ""}${t.title}` }))
           .filter((i) => match(i.value) || i.value.replace("-", "").toLowerCase().startsWith(token.toLowerCase()));
-        if (cmd === "/tell") items.push(...["@all", "@implementers", "@testers"].filter(match).map((v) => ({ value: v, desc: "" })));
+        if (cmd === "/tell") items.push(...["@all", "@developers", "@qa"].filter(match).map((v) => ({ value: v, desc: "" })));
       }
     }
     return { token, items: items.slice(0, 8) };
@@ -765,14 +766,14 @@ export class App {
   private async chat(text: string) {
     this.select(HEX);
     const cur = this.sessions.get(HEX);
-    this.sessions.set(HEX, { ...(cur ?? blankSession(HEX, "lead")), state: "running", activity: "thinking…" });
+    this.sessions.set(HEX, { ...(cur ?? blankSession(HEX, "control")), state: "running", activity: "thinking…" });
     await this.client.call("chat.send", { text });
   }
 
   private async newGoal(goal: string) {
     await this.client.call("goal.new", { goal });
     this.log(`› goal: ${goal}`, st(S.white, S.bold));
-    this.sessions.set("planner", blankSession("planner", "planner"));
+    this.sessions.set("planner", blankSession("planner", "analyst"));
     this.select("planner");
   }
 
@@ -809,7 +810,7 @@ export class App {
         case "/init": {
           const r = await c.call<{ skipped?: boolean }>("init.start", { description: args.join(" ") || null });
           if (r.skipped) return;
-          this.sessions.set("init", blankSession("init", "init"));
+          this.sessions.set("init", blankSession("init", "bootstrap"));
           this.select("init");
           return;
         }
@@ -1245,7 +1246,7 @@ export class App {
 
   private groupOf(id: string): Group {
     if (id === HEX || this.sessions.has(id)) return "analysis";
-    const role = this.full.get(id)?.role ?? this.runAgents().find((a) => a.task_id === id)?.role ?? this.plan()?.tasks.find((t) => t.id === id)?.role ?? "implementer";
+    const role = this.full.get(id)?.role ?? this.runAgents().find((a) => a.task_id === id)?.role ?? this.plan()?.tasks.find((t) => t.id === id)?.role ?? "developer";
     return groupOfRole(role);
   }
 
