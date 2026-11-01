@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DagNode } from "../src/tui/dag.js";
+import { overallProgress, progressOf, reduceDeps, type DagNode } from "../src/tui/dag.js";
 import { asciiFold, detectCaps, type Caps } from "../src/tui/theme.js";
 import { renderNetwork, type NodeFx } from "../src/tui/network.js";
 import { renderStartup, startupProgress } from "../src/tui/startup.js";
@@ -212,5 +212,43 @@ describe("graph restructuring and edge states", () => {
     const col = (state: DagNode["state"]) => render({ still: true }, [node({ id: "T-1", state: "done" }), node({ id: "T-2", deps: ["T-1"], state })]).canvas.lines(true).join("\n");
     expect(col("failed")).not.toBe(col("queued"));
     expect(col("blocked")).not.toBe(col("failed"));
+  });
+});
+
+describe("transitive reduction", () => {
+  const n = (id: string, deps: string[] = []) => ({ id, deps });
+  it("drops an edge that another dependency already implies, and keeps the rest", () => {
+    const out = reduceDeps([n("A"), n("B", ["A"]), n("C", ["A", "B"]), n("D", ["B", "C"]), n("E", ["A"])]);
+    expect(Object.fromEntries(out.map((x) => [x.id, x.deps]))).toEqual({ A: [], B: ["A"], C: ["B"], D: ["C"], E: ["A"] });
+  });
+  it("is stable on a cycle and on unknown ids", () => {
+    expect(() => reduceDeps([n("A", ["B"]), n("B", ["A"]), n("C", ["ghost"])])).not.toThrow();
+    expect(reduceDeps([n("C", ["ghost"])])[0]!.deps).toEqual(["ghost"]);
+  });
+  it("the drawing has no edge for a redundant dependency", () => {
+    const ns = [node({ id: "A" }), node({ id: "B", deps: ["A"] }), node({ id: "C", deps: ["A", "B"] })];
+    const drawn = render({ hub: false }, ns).edges.map((e) => `${e.from}>${e.to}`);
+    expect(drawn.filter((e) => /^A>.*C$|^A>C/.test(e) || e === "A>C")).toEqual([]);
+    expect(drawn).toContain("A>B");
+  });
+});
+
+describe("progress", () => {
+  it("follows the stage, and inside work the acceptance criteria", () => {
+    expect(progressOf("queued")).toBeNull();
+    expect(progressOf("working", { done: 0, total: 4 })).toBeCloseTo(0.05);
+    expect(progressOf("working", { done: 2, total: 4 })).toBeCloseTo(0.35);
+    expect(progressOf("working", { done: 4, total: 4 })).toBeCloseTo(0.65);
+    expect(progressOf("working")).toBeCloseTo(0.05); // no criteria: the floor, not a guess
+    expect(progressOf("verifying")!).toBeGreaterThan(progressOf("working", { done: 4, total: 4 })!);
+    expect(progressOf("reviewing")!).toBeGreaterThan(progressOf("verifying")!);
+    expect(progressOf("done")).toBe(1);
+  });
+  it("goes back when a fix cycle returns to work", () => {
+    expect(progressOf("fixing", { done: 1, total: 4 })!).toBeLessThan(progressOf("reviewing")!);
+  });
+  it("overall progress is the mean over all tasks", () => {
+    expect(overallProgress([1, 0.5, null, null])).toBeCloseTo(0.375);
+    expect(overallProgress([])).toBe(0);
   });
 });

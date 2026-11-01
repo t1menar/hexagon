@@ -173,10 +173,14 @@ describe("dashboard (real App, fake daemon)", () => {
     const { client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     push(client, "status", statusOf("T-2", "done"));
     push(client, "run", { ...makeSnapshot({}).run, state: "done" }); // a finished run has no live clock
-    await settle(2800); // flash + sweep end (generous: the full suite runs in parallel)
-    const before = writes;
-    await settle(500);
-    expect(writes).toBe(before);
+    // Frames must stop once the effects end. Wait for a quiet half second (up to 10 s: the suite runs in parallel).
+    let quiet = false;
+    for (let i = 0; i < 20 && !quiet; i++) {
+      const before = writes;
+      await settle(500);
+      quiet = writes === before;
+    }
+    expect(quiet).toBe(true);
     exit();
   });
   it("an active agent keeps animating at a bounded frame rate", async () => {

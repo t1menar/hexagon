@@ -4,7 +4,7 @@
  * along the real connections.
  */
 import { Canvas, clip, st } from "./canvas.js";
-import { ACTIVE, bar, layout, type DagNode } from "./dag.js";
+import { ACTIVE, bar, layout, reduceDeps, type DagNode } from "./dag.js";
 import { Path, type Pt } from "./motion.js";
 import { asciiFold, STATE_LOOK, sgr, TOKENS, mix, type Caps, type Rgb, type Token } from "./theme.js";
 
@@ -77,10 +77,11 @@ export interface CardSize { w: number; h: number; level: 0 | 1 | 2 }
 const CARD_SIZES: CardSize[] = [{ w: 30, h: 9, level: 0 }, { w: 26, h: 7, level: 1 }, { w: 23, h: 7, level: 1 }, { w: 20, h: 5, level: 2 }];
 const ROW_GAP = 1;
 
-export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
+export function renderNetwork(all: NetNode[], o: NetOptions): Geometry {
+  const input = reduceDeps(all);
   const withHub = (o.hub ?? true) && input.length > 0;
   const hubNode: NetNode | null = withHub
-    ? { id: INTEGRATION, title: "integration", role: "integration", deps: input.filter((n) => !input.some((m) => m.deps.includes(n.id))).map((n) => n.id), state: input.every((n) => n.state === "done") ? "done" : input.some((n) => ACTIVE.has(n.state)) ? "integrating" : "queued", progress: null }
+    ? { id: INTEGRATION, title: "integration", role: "integration", deps: input.filter((n) => !all.some((m) => m.deps.includes(n.id))).map((n) => n.id), state: input.every((n) => n.state === "done") ? "done" : input.some((n) => ACTIVE.has(n.state)) ? "integrating" : "queued", progress: null }
     : null;
   const nodes: NetNode[] = hubNode ? [...input, hubNode] : input;
   const geom: Geometry = { canvas: new Canvas(1, 1), card: null, compact: false, nodes: new Map(), edges: [], reviewers: new Map() };

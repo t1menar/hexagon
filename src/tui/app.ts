@@ -22,7 +22,7 @@ import { loadConfig } from "../core/config.js";
 import type { AgentInfo } from "../daemon/orchestrator.js";
 import { formatAgent } from "../shell/agents.js";
 import { modelLine, quotaLabel, recoveryLine } from "./identity.js";
-import { ACTIVE, bar, glyph, progressOf, spinner, STATE_COLOR } from "./dag.js";
+import { ACTIVE, bar, glyph, overallProgress, progressOf, spinner, STATE_COLOR } from "./dag.js";
 import { takeoverInTerminal } from "./takeover.js";
 import { projectStack, taskStack, toolsUsed } from "./stack.js";
 import { fmtTokens } from "../util/term.js";
@@ -140,7 +140,6 @@ function gitBranch(root: string): string {
 export class App {
   private snap!: Snapshot;
   private full = new Map<string, AgentStatus>();
-  private lastProgress = new Map<string, number>();
   private sessions = new Map<string, SessionStatus>();
   private feeds = new Map<string, FeedLine[]>();
   private events = new Map<string, StampedEvent[]>();
@@ -1166,7 +1165,7 @@ export class App {
       const rs = r.state === "running" ? this.look("working") : r.state === "done" ? this.look("done") : r.state === "paused" ? this.look("paused") : this.look("cancelled");
       parts.push([`${rs.sym} ${r.state.toUpperCase()}`, rs.style]);
       parts.push([`${running} running`, running ? this.tk("active") : this.tk("muted")]);
-      parts.push([`${done}/${r.agents.length} done`, this.tk("text")]);
+      parts.push([`${done}/${r.agents.length} done · ${Math.round(100 * overallProgress(r.agents.map((a) => this.progress(a.task_id))))}%`, this.tk("text")]);
       if (waiting) parts.push([`${this.look("waiting_quota").sym} ${waiting} waiting`, this.tk("waiting")]);
       if (need) parts.push([`${need} need${need === 1 ? "s" : ""} you`, this.tk("warning", S.bold)]);
       if (failed) parts.push([`${failed} failed`, this.tk("error")]);
@@ -1215,14 +1214,11 @@ export class App {
     });
   }
 
-  /** Pipeline progress of a task's agent (never goes backwards while it runs). */
+  /** Progress of a task's agent: its stage, and its acceptance criteria while it works. */
   private progress(id: string): number | null {
     const a = this.full.get(id);
     const b = this.runAgents().find((x) => x.task_id === id);
-    const state = (a?.state ?? b?.state ?? "queued") as AgentState;
-    const p = progressOf(state, a?.phase, a?.progress ?? b?.progress, this.lastProgress.get(`${this.snap.run?.run_id}/${id}`) ?? 0);
-    if (p != null) this.lastProgress.set(`${this.snap.run?.run_id}/${id}`, p);
-    return p;
+    return progressOf((a?.state ?? b?.state ?? "queued") as AgentState, a?.progress ?? b?.progress);
   }
 
   private panelBox(cv: Canvas, r: Region, title: string, right = "", focus = false) {

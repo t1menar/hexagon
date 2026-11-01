@@ -20,22 +20,59 @@ export interface DagNode {
   fixCycle?: number | null;
 }
 
-const PHASE_AT: Record<string, number> = { reading: 0.1, planning: 0.2, editing: 0.45, testing: 0.65, reporting: 0.75 };
+/**
+ * How far a task is, from what is actually known: the stage it is in, and inside "working" the share of its acceptance
+ * criteria that are done. Nothing is invented: with no criteria the work stage reports its floor, not a guess. It can go
+ * down (a fix cycle returns to work), because the task really did.
+ *
+ *   preparing 0–5% · working 5–65% (by criteria) · verifying 70% · reviewing 85% · integrating 97% · done 100%
+ */
+export const STAGE_AT = { prepared: 0.05, worked: 0.65, verifying: 0.7, reviewing: 0.85, integrating: 0.97 } as const;
 
-/** How far an agent is through its pipeline: work (phase / acceptance criteria) → verify → review → merge. */
-export function progressOf(state: AgentState, phase?: string | null, prog?: { done: number; total: number } | null, prev = 0): number | null {
+export function progressOf(state: AgentState, prog?: { done: number; total: number } | null): number | null {
   switch (state) {
     case "queued": return null;
-    case "preparing": return 0.03;
-    case "verifying": return 0.82;
-    case "reviewing": return 0.9;
-    case "integrating": return 0.97;
+    case "preparing": return 0.02;
+    case "verifying": return STAGE_AT.verifying;
+    case "reviewing": return STAGE_AT.reviewing;
+    case "integrating": return STAGE_AT.integrating;
     case "done": return 1;
     default: {
-      const ac = prog && prog.total ? 0.1 + 0.65 * (prog.done / prog.total) : 0;
-      return Math.max(0.05, PHASE_AT[phase ?? ""] ?? 0.05, ac, Math.min(prev, 0.8));
+      // working, fixing, and the parked/failed states: where its criteria stand
+      const frac = prog && prog.total ? Math.min(1, prog.done / prog.total) : 0;
+      return STAGE_AT.prepared + (STAGE_AT.worked - STAGE_AT.prepared) * frac;
     }
   }
+}
+
+/** Overall progress of a set of tasks: the mean of their progress (queued counts 0, done counts 1). */
+export function overallProgress(ps: (number | null)[]): number {
+  return ps.length ? ps.reduce<number>((a, p) => a + (p ?? 0), 0) / ps.length : 0;
+}
+
+/**
+ * Transitive reduction: drop a dependency when another dependency of the same task already leads to it. The order is
+ * unchanged, the picture loses its redundant long edges. Unknown ids and cycles are left as they are.
+ */
+export function reduceDeps<T extends { id: string; deps: string[] }>(nodes: T[]): T[] {
+  const deps = new Map(nodes.map((n) => [n.id, n.deps.filter((d) => nodes.some((m) => m.id === d))]));
+  const memo = new Map<string, Set<string>>();
+  const reach = (id: string, stack = new Set<string>()): Set<string> => {
+    const known = memo.get(id);
+    if (known) return known;
+    const out = new Set<string>();
+    if (stack.has(id)) return out; // cycle guard
+    stack.add(id);
+    for (const d of deps.get(id) ?? []) { out.add(d); for (const x of reach(d, stack)) out.add(x); }
+    stack.delete(id);
+    memo.set(id, out);
+    return out;
+  };
+  return nodes.map((n) => {
+    const own = deps.get(n.id)!;
+    const kept = own.filter((d) => !own.some((o) => o !== d && reach(o).has(d)));
+    return kept.length === own.length ? n : { ...n, deps: [...n.deps.filter((d) => !deps.get(n.id)!.includes(d)), ...kept] };
+  });
 }
 
 /** "━━━━━━──── 60%" in `w` cells. */
