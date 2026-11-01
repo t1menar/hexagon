@@ -2,17 +2,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse } from "smol-toml";
 import type { Effort, Role } from "../contracts/types.js";
-import { adapterNames } from "../agents/registry.js";
+import { adapterNames, defaultAgents, migrateAgentEntry, primaryAgentId } from "../agents/registry.js";
 import { BUILTIN_ROLES, ROLE_ALIASES } from "./roles.js";
 import { DEFAULT_RECOVERY, type RecoveryConfig } from "./recovery.js";
 
 export interface AgentConfig {
   id: string;
-  /** Integration name from the adapter registry: claude-code · codex · grok · exec · mock (or a registered third party). */
+  /** Integration name from the adapter registry (see `hexagon agents list`), or a registered third party. */
   adapter: string;
-  /** Vendor label for display and grouping (anthropic, openai, xai, …). Defaults to the adapter's own. */
+  /** Vendor label for display and grouping. Defaults to the adapter's own. */
   provider?: string;
-  /** Executable and leading args. claude-code default: ["claude"]. exec: may contain "{prompt}". */
+  /** Executable and leading args; each integration has its own default. exec: may contain "{prompt}". */
   command?: string[];
   /** Interactive command for takeover (exec adapter). */
   interactive?: string[];
@@ -69,11 +69,8 @@ export interface HexagonConfig {
 
 export const DEFAULT_CONFIG: HexagonConfig = {
   run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 0, max_identical_failures: 3, budget_tokens: null, base_branch: null, baseline: true },
-  roles: Object.fromEntries(BUILTIN_ROLES.map((r) => [r.id, { agent: "claude", effort: r.effort }])),
-  agents: {
-    claude: { id: "claude", adapter: "claude-code", provider: "anthropic", command: ["claude"] },
-    mock: { id: "mock", adapter: "mock", step_ms: 600 },
-  },
+  roles: Object.fromEntries(BUILTIN_ROLES.map((r) => [r.id, { agent: primaryAgentId(), effort: r.effort }])),
+  agents: defaultAgents(),
   recovery: DEFAULT_RECOVERY,
   review: { mode: "agent" },
   context: { mode: "auto", compact_at: 0.7, min_turns_between: 3, assumed_window_tokens: 200_000 },
@@ -151,13 +148,7 @@ export function loadConfig(file: string): HexagonConfig {
   const cfg = merge(structuredClone(DEFAULT_CONFIG), raw);
   for (const [id, a] of Object.entries(cfg.agents)) {
     a.id = id;
-    // v0.1 configs used the API adapter ("claude" + a full model id); map them onto the CLI wrapper.
-    if ((a.adapter as string) === "claude") {
-      a.adapter = "claude-code";
-      a.command ??= ["claude"];
-      // A v0.1 full model id is not portable to the CLI: drop it so the CLI default applies.
-      if (a.model?.startsWith("claude-")) delete a.model;
-    }
+    migrateAgentEntry(a); // an old adapter name maps onto the current integration
     if (!a.adapter) throw new Error(`[agents.${id}] needs adapter = "…" (available: ${adapterNames().join(", ")})`);
     if (!adapterNames().includes(a.adapter)) throw new Error(`[agents.${id}] unknown adapter "${a.adapter}" (available: ${adapterNames().join(", ")}). No fallback is used.`);
   }

@@ -73,7 +73,7 @@ export interface AgentStatus {
   role: Role;
   agent: {
     id: string; provider: string; model?: string | null; effort?: Effort | null;
-    /** Adapter id (claude-code, codex, grok, exec, …). */
+    /** Adapter id from the integration registry. */
     adapter?: string | null;
     /** "cli-default" (no override passed) | "custom" | "discovered". */
     model_mode?: "cli-default" | "custom" | "discovered" | null;

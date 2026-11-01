@@ -75,11 +75,11 @@ export class SessionRegistry {
       const r = readJson<SessionRecord>(path.join(dir, f));
       if (r?.agentId) this.records.set(r.agentId, { ...r, seen: { ...emptySeen(), ...r.seen }, ledger: r.ledger ?? {} });
     }
-    // The chat session was called "claude" before it became the control agent: keep its history and ledger.
-    const old = this.records.get("claude");
+    // The chat session had another id before it became the control agent: keep its history and ledger. // legacy-name
+    const old = this.records.get("claude"); // legacy-name
     if (old && !this.records.has("control")) {
-      this.records.delete("claude");
-      fs.rmSync(path.join(dir, "claude.json"), { force: true });
+      this.records.delete("claude"); // legacy-name
+      fs.rmSync(path.join(dir, "claude.json"), { force: true }); // legacy-name
       const moved = { ...old, agentId: "control" };
       this.records.set("control", moved);
       this.save(moved);

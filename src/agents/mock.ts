@@ -10,6 +10,7 @@ import { capabilities } from "./contracts/capabilities.js";
 import { parseSpec } from "../core/spec.js";
 import { COMPACT_TAG } from "../core/compaction.js";
 import type { AdapterOutcome, AgentAdapter, AgentRunContext, Injected } from "./types.js";
+import { registerAdapter } from "./adapter-registry.js";
 
 /**
  * Scripted, offline agent. Exercises the full pipeline (status, messages, questions,
@@ -255,3 +256,5 @@ function render(task: Task, file: string, instructions: Injected[]): string {
   const comment = /\.(ts|js|tsx|jsx|go|java|c|cpp|rs|swift|kt)$/.test(file) ? "// " : /\.(py|sh|rb|toml|ya?ml)$/.test(file) ? "# " : "";
   return lines.map((l) => comment + l).join("\n") + "\n";
 }
+
+registerAdapter("mock", (id, c) => new MockAdapter(id, c.step_ms ?? 600), { agentId: "mock", defaultAgent: { adapter: "mock", step_ms: 600 } });

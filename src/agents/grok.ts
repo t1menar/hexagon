@@ -4,6 +4,7 @@ import type { DiscoveredModel, ModelDiscoveryResult, ModelSelection } from "./co
 import { selectionFrom } from "./contracts/model-selection.js";
 import { OneShotAdapter, safeJson, type OneShotSpec } from "./oneshot.js";
 import type { AgentAdapter, AgentRunContext } from "./types.js";
+import { registerAdapter } from "./adapter-registry.js";
 
 /**
  * xAI Grok CLI headless mode (`grok -p … --output-format streaming-json`). Flags follow docs.x.ai (-p/--single,
@@ -51,3 +52,5 @@ export class GrokAdapter extends OneShotAdapter implements AgentAdapter {
     if (text && /assistant|message|text/.test(String(e.type ?? e.role ?? ""))) ctx.host.emit({ type: "chat", from: "agent", text: text.slice(0, 8000) });
   }
 }
+
+registerAdapter("grok", (id, c, o) => new GrokAdapter(id, c.command?.length ? c.command : ["grok"], selectionFrom(o || c.model), c.args ?? []));

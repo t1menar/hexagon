@@ -808,7 +808,7 @@ export class App {
     const t = this.input.trim();
     if (t.startsWith("/")) return { label: "command", style: S.gray };
     const m = /^@(\S+)/.exec(t);
-    if (m) return { label: /^(lead|control|assistant|claude)$/i.test(m[1]!) ? "chat" : `to ${m[1]}`, style: S.cyan };
+    if (m) return { label: /^(lead|control|assistant)$/i.test(m[1]!) ? "chat" : `to ${m[1]}`, style: S.cyan };
     const route = this.route(t);
     return { label: route.label, style: route.style };
   }
@@ -883,7 +883,7 @@ export class App {
   }
 
   private async tell(to: string, body: string) {
-    if (/^(lead|control|assistant|claude)$/i.test(to)) return await this.chat(body);
+    if (/^(lead|control|assistant)$/i.test(to)) return await this.chat(body);
     if (/^planner$/i.test(to)) { await this.client.call("draft.revise", { feedback: body }); this.select("planner"); return; }
     const target = TASK_RE.test(to) ? normTask(to) : `@${to}`;
     await this.client.call("message.send", { to: target, body });
@@ -941,7 +941,8 @@ export class App {
           const list = args.length >= 2
             ? await c.call<M>("models.set", { role: args[0]!.toLowerCase(), model: args[1] === "default" ? null : args[1] })
             : await c.call<M>("models.list");
-          this.log(list.map((m) => `${padTo(m.role, 12)} ${padTo(m.model, 10)} effort ${m.effort}${m.agent !== "claude" ? `  (agent ${m.agent})` : ""}`).join("\n"), S.white);
+          const distinct = new Set(list.map((m) => m.agent)).size > 1; // name the agent only when roles use different ones
+          this.log(list.map((m) => `${padTo(m.role, 12)} ${padTo(m.model, 10)} effort ${m.effort}${distinct ? `  (agent ${m.agent})` : ""}`).join("\n"), S.white);
           if (args.length < 2) this.log("Change with /model <role> <identifier|default>. `default` keeps the CLI's own model; /agents shows what each CLI reports.", S.gray);
           this.select(HEX);
           return;
@@ -1393,7 +1394,7 @@ export class App {
     if (id === HEX) {
       const cs = this.sessions.get(HEX);
       const busy = cs?.state === "running";
-      const m = this.meta(cs?.agent ?? "claude");
+      const m = this.meta(cs?.agent ?? "");
       return {
         sym: busy ? this.look("working").sym : this.caps.unicode ? "◆" : "*", symStyle: busy ? this.tk("active") : this.tk("brand"), title: "Hexagon Assistant",
         l2: m ? m.provider : "works in this repo", l2b: m ? `${m.adapter}${m.diagnostics?.version ? ` ${m.diagnostics.version}` : ""}` : "",
@@ -1512,9 +1513,9 @@ export class App {
     const a = this.full.get(id);
     const s = this.sessions.get(id);
     if (!a) {
-      const m = this.meta(s?.agent ?? "claude");
+      const m = this.meta(s?.agent ?? "");
       sec("IDENTITY");
-      row("Agent", s?.agent ?? "claude");
+      row("Agent", s?.agent ?? "—");
       row("Provider", m?.provider ?? "unknown");
       row("CLI", m ? `${m.adapter}${m.diagnostics?.version ? ` ${m.diagnostics.version}` : ""}` : "unknown");
       row("Model", m?.selection?.mode === "cli-default" ? "CLI default (selection)" : m?.selection ? `override ${(m.selection as { identifier?: string }).identifier}` : "CLI-managed");
