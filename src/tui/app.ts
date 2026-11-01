@@ -44,6 +44,8 @@ const COMMANDS: [string, string][] = [
   ["/resume [T-n]", "resume"],
   ["/cancel [T-n]", "cancel an agent"],
   ["/retry [T-n] [--agent X] [--effort E]", "start a new attempt"],
+  ["/approve-spec [file]", "approve the spec under review (Enter on the analyst tab)"],
+  ["/respec <change>", "change the approved spec: it is reviewed and approved again before planning"],
   ["/compact [agent|T-n]", "compact an agent's session at its next safe point"],
   ["/takeover [T-n]", "work in the agent's session yourself (Ctrl-T)"],
   ["/open [T-n]", "open the agent in a new terminal window (Ctrl-O)"],
@@ -337,6 +339,16 @@ export class App {
       case "notice": this.log(p.data.text, p.data.level === "info" ? S.cyan : S.orange); this.flash(p.data.text, p.data.level); break;
       case "session": this.sessions.set(p.data.id, p.data); break;
       case "permissions": this.snap.permissions = p.data; break;
+      case "spec_review":
+        this.snap.spec_review = p.data;
+        if (p.data) {
+          this.log(`Spec ready: ${p.data.requirements.map((r) => `${r.id} ${r.title} (${r.acceptance} AC)`).join(" · ")}`, S.cyan);
+          this.log(`Read ${p.data.spec_path}${p.data.design_path ? ` and ${p.data.design_path}` : ""}. Enter approves it; type what to change instead.`, S.cyan);
+          this.flash("Spec ready — read it, then press Enter to approve (or type what to change)", "attention");
+          this.select("planner");
+        }
+        this.invalidate();
+        break;
       case "draft":
         this.snap.draft = p.data;
         if (p.data) {
@@ -452,7 +464,7 @@ export class App {
     const out = [HEX];
     for (const s of this.sessions.values()) {
       if (s.id === HEX) continue;
-      if (["running", "waiting_input", "idle"].includes(s.state) || !this.snap.run || s.id === this.selected || (s.id === "planner" && this.snap.draft)) out.push(s.id);
+      if (["running", "waiting_input", "idle"].includes(s.state) || !this.snap.run || s.id === this.selected || (s.id === "planner" && (this.snap.draft || this.snap.spec_review))) out.push(s.id);
     }
     const plan = this.plan();
     if (this.snap.run && !this.showingDraft()) for (const t of plan?.tasks ?? this.runAgents().map((a) => ({ id: a.task_id }))) out.push(t.id);
@@ -514,6 +526,7 @@ export class App {
     const q = this.openQuestion();
     const sel = this.selected;
     if (q && q.from === sel) return `answer ${q.id}…`;
+    if (this.snap.spec_review && !this.plannerBusy() && (sel === HEX || sel === "planner")) return "Enter = approve the spec · or type what to change";
     if (this.snap.draft && !this.plannerBusy() && (sel === HEX || sel === "planner")) return sel === "planner" ? "Enter = run this plan · or type what to change" : "Enter = run the plan · or chat with Claude…";
     if (sel === "planner" && this.plannerBusy()) return "tell the planner something…";
     const a = this.full.get(sel);
@@ -728,6 +741,11 @@ export class App {
       switch (route.kind) {
         case "none": return;
         case "run": return await this.command("/run");
+        case "approve": {
+          const r = await this.client.call<{ approved: string; planning: boolean }>("spec.approve", {});
+          this.flash(`approved ${r.approved}${r.planning ? " — the analyst is writing the plan" : ""}`);
+          return;
+        }
         case "answer":
           await this.client.call("question.answer", { question_id: route.id, answer: text });
           return;
@@ -746,15 +764,16 @@ export class App {
   }
 
   /** Where plain text goes, given the selection and state. */
-  private route(text: string): { kind: "none" | "run" | "answer" | "session" | "revise" | "agent" | "chat"; id: string; label: string; style: string } {
+  private route(text: string): { kind: "none" | "run" | "approve" | "answer" | "session" | "revise" | "agent" | "chat"; id: string; label: string; style: string } {
     const sel = this.selected;
     const q = this.openQuestion();
+    if (!text && this.snap.spec_review && !this.plannerBusy() && (sel === HEX || sel === "planner")) return { kind: "approve", id: "", label: "Enter = approve spec", style: S.orange };
     if (!text && this.snap.draft && !this.plannerBusy() && (sel === HEX || sel === "planner")) return { kind: "run", id: "", label: "Enter = run plan", style: S.orange };
     if (q && q.from === sel) return { kind: "answer", id: q.id, label: `answer ${q.id}`, style: S.orange };
     if (sel !== HEX) {
       const sess = this.sessions.get(sel);
       if (sess && ["running", "waiting_input", "idle"].includes(sess.state)) return { kind: "session", id: sel, label: `to ${sel}`, style: S.blue };
-      if (sel === "planner" && this.snap.draft) return { kind: "revise", id: "planner", label: "revise plan", style: S.orange };
+      if (sel === "planner" && (this.snap.draft || this.snap.spec_review)) return { kind: "revise", id: "planner", label: this.snap.spec_review ? "revise spec" : "revise plan", style: S.orange };
       const a = this.full.get(sel);
       if (a && !TERMINAL_STATES.has(a.state) && this.activeRun()) return { kind: "agent", id: sel, label: `to ${sel}`, style: S.blue };
       if (a && CONTINUABLE.has(a.state)) return { kind: "agent", id: sel, label: `continue ${sel}`, style: S.orange };
@@ -905,6 +924,17 @@ export class App {
           return;
         }
         case "/cancel": { const t = this.target(args); await c.call("agent.cancel", { task: t }); this.flash(`${t} cancelled`); return; }
+        case "/approve-spec": {
+          const r = await c.call<{ approved: string; planning: boolean }>("spec.approve", { spec: args[0] });
+          this.flash(`approved ${r.approved}${r.planning ? " — the analyst is writing the plan" : ""}`);
+          return;
+        }
+        case "/respec": {
+          if (!args.length) throw new Error("usage: /respec <what to change in the spec>");
+          await c.call("spec.revise", { feedback: args.join(" ") });
+          this.select("planner");
+          return;
+        }
         case "/compact": {
           const t = args.find((a) => !a.startsWith("-"));
           const r = await c.call<{ agents: string[] }>("session.compact", { agent: t ? (/^t-?\d+$/i.test(t) ? normTask(t) : t) : undefined });
@@ -1124,7 +1154,8 @@ export class App {
       const start = Date.parse(r.started_at ?? "") || 0;
       const end = r.state === "done" || r.state === "aborted" ? Date.parse(r.updated_at) : Date.now();
       parts.push([`${this.caps.unicode ? "⏱" : "t"} ${dur(start ? end - start : r.totals.wall_ms)}`, this.tk("muted")]);
-    } else if (this.snap.draft) parts.push(["plan awaiting approval", this.tk("warning")]);
+    } else if (this.snap.spec_review) parts.push(["spec awaiting approval", this.tk("warning")]);
+    else if (this.snap.draft) parts.push(["plan awaiting approval", this.tk("warning")]);
     else if (this.plannerBusy()) parts.push([`${this.look("running").sym} planning`, this.tk("active")]);
     else parts.push(["idle", this.tk("muted")]);
     if (this.agentInfo.length) {

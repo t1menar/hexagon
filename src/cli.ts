@@ -37,6 +37,7 @@ ${c.bold("Watch & steer")}
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
   hexagon compact [agent|T-n]      compact an agent's session at its next safe point  ·  hexagon stats [--json]  tokens by cause
   hexagon bus send|read|subscribe  agents: structured messages between agents (handoff, decision, finding, question …)
+  hexagon approve-spec [file]      approve the spec under review (or a spec file): nothing is planned or built before that
   hexagon trace                    requirement → task → agent → verification → review → completion
   hexagon allow <cmd…> | all       let agents run these commands (e.g. allow brew curl) or everything
   hexagon model [role model|default]  show/set a model override per role (default = the CLI's own)
@@ -53,7 +54,7 @@ ${c.bold("Agent protocol")} (run by agents inside their sessions)
   hexagon review approve|changes --summary "…" [--finding "high: file:line issue -> fix" …]
   hexagon plan-check`;
 
-const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "return", "bus", "exec", "install", "sudo"]);
+const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "stage-check", "return", "bus", "exec", "install", "sudo"]);
 const TASK_RE = /^t-?\d+$/i;
 const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
@@ -246,6 +247,11 @@ async function main(argv: string[]): Promise<void> {
         else if (cmd === "cancel") throw new Error("usage: hexagon cancel <T-n>");
         else await client.call(`run.${cmd}`);
         console.log(`${cmd}: ${t ? normTask(t) : "run"}`);
+        break;
+      }
+      case "approve-spec": {
+        const r = await client.call<{ approved: string; requirements: number; planning: boolean }>("spec.approve", { spec: rest[0] });
+        console.log(`approved ${r.approved} (${r.requirements} requirement(s))${r.planning ? "; the analyst is writing the plan" : ""}`);
         break;
       }
       case "compact": {
@@ -470,7 +476,7 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
   const r = process.env.HEXAGON_ROOT ?? findProjectRoot();
   if (!r) { console.error("hexagon: not inside a Hexagon project"); process.exit(2); }
   const a = [...args];
-  let op = cmd === "plan-check" ? "plan_check" : cmd;
+  let op = cmd === "plan-check" || cmd === "stage-check" ? "plan_check" : cmd;
   let params: Record<string, unknown> = {};
   switch (cmd) {
     case "report": {

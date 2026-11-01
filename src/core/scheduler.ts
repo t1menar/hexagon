@@ -30,6 +30,8 @@ export class Scheduler extends EventEmitter {
   /** Agents waiting for a task they returned work to. */
   private waiters = new Map<string, ((r: { state: AgentState; summary: string }) => void)[]>();
   private returns = new Map<string, number>();
+  /** Tasks held back by the spec gate; they start by themselves once the spec is approved again. */
+  private gated = new Set<string>();
   private tasks: Task[];
   paused = false;
   aborted = false;
@@ -133,6 +135,16 @@ export class Scheduler extends EventEmitter {
       }
       if (!deps.ready) { this.reason(id, `waiting for ${deps.waitingOn}`); continue; }
       if (this.paused) { this.reason(id, "run paused"); continue; }
+      const gate = this.rc.gate?.(t);
+      if (gate && !gate.ok) {
+        const why = `spec gate: ${gate.problems[0]}`;
+        this.rc.store.apply(id, { type: "state", state: "blocked", reason: why });
+        this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `${t.id} did not start. ${why}. Review and approve the spec (hexagon approve-spec <file>); the task then starts by itself.` });
+        this.gated.add(t.id);
+        this.outcome.set(t.id, "blocked");
+        changed = true;
+        continue;
+      }
       const lease = this.leaseConflict(t);
       if (lease) { this.reason(id, `waiting for file lease held by ${lease}`); continue; }
       if (this.active.size >= this.maxParallel) { this.reason(id, `waiting for a free slot (${this.maxParallel} max)`); continue; }
@@ -204,6 +216,24 @@ export class Scheduler extends EventEmitter {
     this.reviveDependents(taskId);
     this.createStatus(t, next);
     if (!cur) this.tick(); // otherwise finish() of the cancelled run ticks
+  }
+
+  /** After a (re-)approval: tasks held back by the spec gate that pass now start again. Finished tasks whose requirement changed are reported, not re-run. */
+  reviveGated(): void {
+    for (const id of [...this.gated]) {
+      const t = this.task(id);
+      if (!t || this.rc.gate?.(t).ok === false) continue;
+      this.gated.delete(id);
+      this.outcome.delete(id);
+      this.reviveDependents(id);
+      this.rc.store.apply(`${id}-a${this.attempts.get(id)}`, { type: "state", state: "queued", reason: "spec approved" });
+    }
+    for (const t of this.tasks) {
+      if (this.outcome.get(t.id) !== "done") continue;
+      const g = this.rc.gate?.(t);
+      if (g && !g.ok) this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `${t.id} is done but ${g.problems[0]}. /retry ${t.id} to redo it against the new text.` });
+    }
+    this.tick();
   }
 
   /** Dependents that were blocked by this task get another chance. */

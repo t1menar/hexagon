@@ -48,6 +48,8 @@ export class DaemonServer {
       "goal.new": (p) => o.newGoal(str(p.goal, "goal")),
       "chat.send": (p) => { o.chat(str(p.text, "text")); return { ok: true }; },
       "draft.revise": (p) => { o.revise(str(p.feedback, "feedback")); return { ok: true }; },
+      "spec.approve": (p) => o.approveSpec(p.spec ? String(p.spec) : undefined),
+      "spec.revise": (p) => { o.respec(str(p.feedback, "feedback")); return { ok: true }; },
       "draft.reload": () => o.reloadDraft(),
       "draft.approve": async (p) => ({ run_id: await o.approve({ max_parallel: p.max_parallel as number | undefined, agent: (p.agent as string) ?? null }) }),
       "draft.discard": () => { o.discardDraft(); return { ok: true }; },

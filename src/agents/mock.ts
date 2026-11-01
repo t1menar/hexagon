@@ -7,6 +7,7 @@ import type { Task } from "../contracts/types.js";
 import { runShell } from "../util/shell.js";
 import { AdapterBase } from "./contracts/base.js";
 import { capabilities } from "./contracts/capabilities.js";
+import { parseSpec } from "../core/spec.js";
 import { COMPACT_TAG } from "../core/compaction.js";
 import type { AdapterOutcome, AgentAdapter, AgentRunContext, Injected } from "./types.js";
 
@@ -204,27 +205,37 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     }
   }
 
+  /** The analyst's three stages, driven by the `<stage>` tag Hexagon puts in each message. */
   private async plan(ctx: AgentRunContext, step: (a: string) => Promise<void>): Promise<AdapterOutcome> {
     const out = ctx.env.HEXAGON_OUT!;
-    const goal = /<goal>\n?([\s\S]*?)\n?<\/goal>/.exec(ctx.prompt)?.[1]?.trim() ?? "Demo";
-    ctx.api.report({ phase: "planning", activity: "Writing the spec" });
-    await step("Drafting tasks");
+    const text = `${ctx.followUp ?? ""}\n${ctx.prompt}`;
+    const stage = /<stage>(\w+)<\/stage>/.exec(text)?.[1] ?? "analyze";
+    const goal = /<goal>\n?([\s\S]*?)\n?<\/goal>/.exec(text)?.[1]?.trim() ?? (fs.existsSync(path.join(out, "goal.txt")) ? fs.readFileSync(path.join(out, "goal.txt"), "utf8") : "Demo");
     const parts = goal.split(/\s+(?:and|then)\s+/i).slice(0, 4);
     const reqs = parts.map((p, i) => ({ id: `REQ-GOAL-${String(i + 1).padStart(3, "0")}`, title: p, file: `hexagon-mock/part-${i + 1}.md` }));
-    const spec = [
-      "---", "spec: goal", "---", `# ${goal}`, "",
-      ...reqs.flatMap((r) => [`## ${r.id}: ${r.title}`, `${r.title}.`, "", "**Acceptance**", `- AC-1: ${r.file} exists`, "", `**Touches**: \`${r.file}\``, ""]),
-    ].join("\n");
     fs.mkdirSync(out, { recursive: true });
-    fs.writeFileSync(path.join(out, "spec.md"), spec);
-    const plan = {
-      tasks: reqs.map((r, i) => ({
-        id: `T-${i + 1}`, title: r.title, role: "developer", requirements: [r.id], acceptance: ["AC-1"],
-        depends_on: i > 0 ? [`T-${i}`] : [], files: { write: [r.file] }, verify: [`test -f ${r.file}`],
-      })),
-    };
-    fs.writeFileSync(path.join(out, "plan.json"), JSON.stringify(plan, null, 2));
-    const r = ctx.api.done({ summary: `${reqs.length} task(s) for: ${goal}` });
+    ctx.api.report({ phase: "planning", activity: `Stage: ${stage}` });
+    if (stage === "analyze") {
+      await step("Reading the codebase");
+      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", "none", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
+    } else if (stage === "specify") {
+      await step("Writing the spec");
+      fs.writeFileSync(path.join(out, "spec.md"), [
+        "---", "spec: goal", "---", `# ${goal}`, "",
+        ...reqs.flatMap((r) => [`## ${r.id}: ${r.title}`, `${r.title}.`, "", "**Acceptance**", `- AC-1: ${r.file} exists`, "", `**Touches**: \`${r.file}\``, ""]),
+      ].join("\n"));
+    } else {
+      await step("Drafting tasks");
+      const spec = parseSpec(path.join(out, "spec.md"));
+      const plan = {
+        tasks: spec.requirements.map((r, i) => ({
+          id: `T-${i + 1}`, title: r.title, role: "developer", requirements: [r.id], acceptance: ["AC-1"],
+          depends_on: i > 0 ? [`T-${i}`] : [], files: { write: r.touches }, verify: [`test -f ${r.touches[0]}`],
+        })),
+      };
+      fs.writeFileSync(path.join(out, "plan.json"), JSON.stringify(plan, null, 2));
+    }
+    const r = ctx.api.done({ summary: `${stage} done for: ${goal}` });
     if (!r.ok) return { kind: "error", error: { kind: "invalid_output", message: r.message, retryable: false } };
     return { kind: "finished" };
   }
