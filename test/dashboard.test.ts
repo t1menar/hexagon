@@ -425,4 +425,22 @@ describe("dashboard (real App, fake daemon)", () => {
     expect(unchangedBytes).toBeLessThan(1500);
     client.emit("close");
   });
+
+  it("/add, /rm, /link and /unlink call the typed graph commands", async () => {
+    const { app, client, exit } = await boot({ "T-1": "done", "T-2": "working" });
+    client.reply["command.exec"] = { status: "done", result: {} };
+    const a = app as never as { command(line: string): Promise<void> };
+    await a.command("/add qa Write the tests after t1,T-2");
+    await a.command("/rm t3");
+    await a.command("/link T-1 T-3");
+    await a.command("/unlink T-1 T-3");
+    const calls = client.calls.filter((c) => c.m === "command.exec").map((c) => c.p);
+    expect(calls).toEqual([
+      { name: "graph.addNode", args: { role: "qa", title: "Write the tests", depends_on: ["T-1", "T-2"] } },
+      { name: "graph.removeNode", args: { id: "T-3" } },
+      { name: "graph.addEdge", args: { from: "T-1", to: "T-3" } },
+      { name: "graph.removeEdge", args: { from: "T-1", to: "T-3" } },
+    ]);
+    exit();
+  });
 });

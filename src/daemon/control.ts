@@ -4,7 +4,7 @@ import type { Plan } from "../contracts/types.js";
 import { applyGraph, commandDef, edgesOf, fromTask, graphDiff, parseArgs, type CommandDef } from "../core/commands.js";
 import { canonicalRole } from "../core/roles.js";
 import { nowIso } from "../util/fsx.js";
-import type { Orchestrator } from "./orchestrator.js";
+import type { ActiveRun, Orchestrator } from "./orchestrator.js";
 
 export interface Proposal {
   id: string;
@@ -13,6 +13,8 @@ export interface Proposal {
   /** What will change, one line each (graph diff or a one-line description). */
   diff: string[];
   destructive: boolean;
+  /** Who asked: the control agent, or you (a destructive command of your own waits for a yes too). */
+  by: "agent" | "user";
   created_at: string;
 }
 
@@ -35,15 +37,17 @@ export class ControlService {
   }
 
   /** `via: "agent"` is the control agent; anything else is the user acting directly. */
-  async exec(name: string, raw: Record<string, unknown>, via: "user" | "agent"): Promise<CommandResult> {
+  async exec(name: string, raw: Record<string, unknown>, via: "user" | "agent", confirmed = false): Promise<CommandResult> {
     const def = commandDef(name);
     if (!def) throw new Error(`unknown command "${name}" (hexagon commands lists them)`);
     const args = parseArgs(def, raw);
-    if (def.kind === "read" || via === "user") return { status: "done", result: await this.run(def, args) };
+    // Destructive commands wait for a yes from the user, whoever types them: your own call is a proposal until `confirmed`.
+    const needsYes = def.kind === "destructive" && !confirmed;
+    if (def.kind === "read" || (via === "user" && !needsYes)) return { status: "done", result: await this.run(def, args) };
     const diff = this.preview(def, args); // validates against current state before the user is asked
     const destructive = def.kind === "destructive";
     if (!destructive && this.o.cfg.control.auto_apply) return { status: "done", result: await this.run(def, args) };
-    const proposal: Proposal = { id: `P-${this.seq++}`, command: name, args, diff, destructive, created_at: nowIso() };
+    const proposal: Proposal = { id: `P-${this.seq++}`, command: name, args, diff, destructive, by: via, created_at: nowIso() };
     this.proposals.set(proposal.id, proposal);
     this.onChange(this.list());
     return { status: "proposed", proposal, message: `Proposed ${proposal.id}: ${diff.join("; ")}. Nothing changed yet; the user must confirm it. Tell them what you proposed and stop.` };
@@ -66,15 +70,31 @@ export class ControlService {
     this.onChange(this.list());
   }
 
+  /** A running graph is edited live; otherwise the draft plan. */
+  private liveRun() {
+    const c = this.o.current;
+    return c && c.store.runState !== "done" && c.store.runState !== "aborted" ? c : null;
+  }
+
   private draftPlan(): Plan {
+    const live = this.liveRun();
+    if (live) return live.plan;
     const d = this.o.draft;
-    if (!d) throw new Error("there is no draft plan to edit (editing a running graph is not supported yet)");
+    if (!d) throw new Error("there is no graph to edit: no run is active and there is no draft plan");
     return d.plan;
   }
 
+  /** The same checks the scheduler makes, so a proposal that could never apply is refused when it is made. */
+  private checkLive(s: ActiveRun["scheduler"], name: string, a: Record<string, unknown>): void {
+    const bad = name === "graph.removeNode" ? s.whyNotEditable(String(a.id)) : name === "graph.addEdge" || name === "graph.removeEdge" ? s.whyNotEditable(String(a.to)) : null;
+    if (bad) throw new Error(bad);
+  }
+
   private preview(def: CommandDef, a: Record<string, unknown>): string[] {
-    if (def.name.startsWith("graph.")) {
+    if (def.name.startsWith("graph.") && def.kind !== "read") {
       const before = this.draftPlan();
+      const live = this.liveRun();
+      if (live) this.checkLive(live.scheduler, def.name, a);
       const d = graphDiff(before, applyGraph(before, def.name, a));
       return d.length ? d : ["no change"];
     }
@@ -97,6 +117,11 @@ export class ControlService {
   private async run(def: CommandDef, a: Record<string, unknown>): Promise<unknown> {
     const o = this.o;
     if (def.name.startsWith("graph.") && def.kind !== "read") {
+      const live = this.liveRun();
+      if (live) {
+        live.scheduler.editGraph(def.name as Parameters<typeof live.scheduler.editGraph>[0], a);
+        return { tasks: live.plan.tasks.length, live: true };
+      }
       const d = o.draft;
       const next = applyGraph(this.draftPlan(), def.name, a);
       fs.writeFileSync(d!.plan_path, JSON.stringify(next, null, 2));
@@ -105,9 +130,14 @@ export class ControlService {
     switch (def.name) {
       case "status.get": return { run: o.status(), draft: o.draft ? { goal: o.draft.goal, tasks: o.draft.plan.tasks.length, errors: o.draft.check.errors } : null, spec_review: o.specReview ? { spec: o.specReview.spec_path } : null, proposals: this.list() };
       case "graph.show": {
-        const plan = o.current?.plan ?? o.draft?.plan ?? null;
+        const live = this.liveRun();
+        const plan = live?.plan ?? o.draft?.plan ?? o.current?.plan ?? null;
         if (!plan) return { tasks: [], edges: [] };
-        return { source: o.current ? "run" : "draft", tasks: plan.tasks.map((t) => ({ id: t.id, title: t.title, role: t.role })), edges: edgesOf(plan) };
+        return {
+          source: live ? "run" : o.draft ? "draft" : "last run",
+          tasks: plan.tasks.map((t) => ({ id: t.id, title: t.title, role: t.role, ...(live ? { editable: live.scheduler.editable(t.id) } : {}) })),
+          edges: edgesOf(plan),
+        };
       }
       case "agent.configure": {
         if (a.agent) o.setRoleAgent(String(a.role), String(a.agent));

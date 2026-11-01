@@ -110,12 +110,27 @@ async function main(argv: string[]): Promise<void> {
     const def = name ? commandDef(name) : undefined;
     if (!def) { console.error(`usage: hexagon do <command> [--param value …]   (hexagon commands lists them)`); process.exit(2); }
     let args: Record<string, unknown>;
+    const yesFlag = bool(rest, "--yes");
     try { args = parseArgs(def, argsFromFlags(def, rest.slice(1))); } catch (e) { console.error((e as Error).message); process.exit(2); }
     // From the control agent: a proposal. From you: executed at once.
     if (process.env.HEXAGON_AGENT) return agentOp("command", [JSON.stringify({ name: def.name, args })]);
     const client = await HexClient.connect(root());
     try {
-      const res = await client.call<{ status: string; result?: unknown }>("command.exec", { name: def.name, args });
+      const res = await client.call<{ status: string; result?: unknown; proposal?: { id: string; diff: string[] } }>("command.exec", { name: def.name, args });
+      if (res.status === "proposed" && res.proposal) {
+        // Destructive: show what will be lost and wait for a yes.
+        console.log(`${def.name} is destructive. It would:\n${res.proposal.diff.map((d) => `  ${d}`).join("\n")}`);
+        let yes = yesFlag;
+        if (!yes && process.stdin.isTTY) {
+          const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+          yes = /^y(es)?$/i.test((await rl.question("Apply? [y/N] ")).trim());
+          rl.close();
+        }
+        if (!yes) { await client.call("command.reject", { id: res.proposal.id }); console.log(yesFlag || process.stdin.isTTY ? "dropped" : "not applied (pass --yes to confirm without a terminal)"); process.exitCode = 1; return; }
+        const done = await client.call<{ result: unknown }>("command.confirm", { id: res.proposal.id });
+        console.log(JSON.stringify(done.result ?? null, null, 2));
+        return;
+      }
       console.log(JSON.stringify(res.result ?? null, null, 2));
     } finally { client.close(); }
     return;

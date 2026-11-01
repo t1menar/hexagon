@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 import type { AgentState, Effort, Plan, Task } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
-import { globToRegExp } from "../util/fsx.js";
+import { atomicWriteJson, globToRegExp } from "../util/fsx.js";
+import { applyGraph } from "./commands.js";
 import { roleConfig } from "./config.js";
 import { AgentRun, type RunContext } from "./supervisor.js";
 
@@ -233,6 +234,62 @@ export class Scheduler extends EventEmitter {
       const g = this.rc.gate?.(t);
       if (g && !g.ok) this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `${t.id} is done but ${g.problems[0]}. /retry ${t.id} to redo it against the new text.` });
     }
+    this.tick();
+  }
+
+  // ───────────── live graph editing ─────────────
+
+  /** A task may be changed only while nothing of it exists yet: it never launched, has no outcome, is not running. */
+  editable(id: string): boolean {
+    const prior = this.opts.prior?.get(id);
+    return this.tasks.some((t) => t.id === id) && !this.active.has(id) && !this.outcome.has(id) && !this.last.has(id) && (!prior || prior.state === "queued");
+  }
+
+  /** Why `id` cannot be edited, or null. */
+  whyNotEditable(id: string): string | null {
+    if (!this.tasks.some((t) => t.id === id)) return `no task ${id} in this run`;
+    if (this.editable(id)) return null;
+    const o = this.outcome.get(id);
+    return o ? `${id} already finished (${o}); /retry ${id} runs it again` : `${id} already started; cancel it first (agent.cancel), then edit`;
+  }
+
+  private persistGraph(): void {
+    atomicWriteJson(this.rc.run.plan, this.plan);
+    this.emit("graph", this.plan);
+  }
+
+  /**
+   * Apply a graph command to the running graph. Tasks and edges can be added any time; a task can be removed, and
+   * its incoming edges changed, only while it has not started. The result is validated first (unknown ids, cycles).
+   */
+  editGraph(name: "graph.addNode" | "graph.removeNode" | "graph.addEdge" | "graph.removeEdge", a: Record<string, unknown>): void {
+    if (this.aborted || this.rc.store.runState === "aborted") throw new Error("the run was aborted");
+    if (this.rc.store.runState === "done") throw new Error("the run is finished; start a new one");
+    const next = applyGraph(this.plan, name, a); // throws on unknown ids and cycles
+    if (name === "graph.removeNode") { const why = this.whyNotEditable(String(a.id)); if (why) throw new Error(why); }
+    if (name === "graph.addEdge" || name === "graph.removeEdge") { const why = this.whyNotEditable(String(a.to)); if (why) throw new Error(why); }
+    if (name === "graph.addNode") roleConfig(this.rc.cfg, String(a.role)); // unknown role: error with the list
+    if (name === "graph.removeNode") {
+      const started = this.plan.tasks.find((t) => t.depends_on.includes(String(a.id)) && !this.editable(t.id));
+      if (started) throw new Error(`${started.id} depends on ${String(a.id)} and has already started or finished`);
+    }
+    const before = new Set(this.plan.tasks.map((t) => t.id));
+    // Edit in place: the plan, the run context and running agents all hold these task objects.
+    const keep = this.plan.tasks;
+    const nextById = new Map(next.tasks.map((t) => [t.id, t]));
+    for (let i = keep.length - 1; i >= 0; i--) if (!nextById.has(keep[i]!.id)) keep.splice(i, 1);
+    for (const t of keep) t.depends_on = nextById.get(t.id)!.depends_on;
+    for (const t of next.tasks) if (!before.has(t.id)) keep.push(t);
+    this.tasks = this.tasks === keep ? keep : [...this.tasks.filter((t) => nextById.has(t.id)), ...next.tasks.filter((t) => !before.has(t.id))];
+    for (const t of keep) {
+      if (!before.has(t.id)) { this.attempts.set(t.id, 1); this.createStatus(t, 1); }
+    }
+    if (name === "graph.removeNode") {
+      const id = String(a.id);
+      this.rc.store.apply(`${id}-a${this.attempts.get(id)}`, { type: "state", state: "cancelled", reason: "removed from the graph" });
+      this.attempts.delete(id);
+    }
+    this.persistGraph();
     this.tick();
   }
 

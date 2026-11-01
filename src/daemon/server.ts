@@ -50,7 +50,7 @@ export class DaemonServer {
       "draft.revise": (p) => { o.revise(str(p.feedback, "feedback")); return { ok: true }; },
       "spec.approve": (p) => o.approveSpec(p.spec ? String(p.spec) : undefined),
       "spec.revise": (p) => { o.respec(str(p.feedback, "feedback")); return { ok: true }; },
-      "command.exec": async (p) => o.control.exec(str(p.name, "name"), (p.args as Record<string, unknown>) ?? {}, "user"),
+      "command.exec": async (p) => o.control.exec(str(p.name, "name"), (p.args as Record<string, unknown>) ?? {}, "user", p.confirmed === true),
       "command.confirm": async (p) => ({ result: await o.control.confirm(str(p.id, "id")) }),
       "command.reject": (p) => { o.control.reject(str(p.id, "id")); return { ok: true }; },
       "command.list": () => o.control.list(),
