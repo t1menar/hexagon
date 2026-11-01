@@ -60,11 +60,11 @@ export type ParticleKind = "information" | "execution" | "review" | "completion"
 
 interface KindLook { token: Token; glyph: [string, string]; ascii: string; priority: number; size: 1 | 2 }
 const KIND: Record<ParticleKind, KindLook> = {
-  information: { token: "info", glyph: ["■", "▪"], ascii: "#", priority: 3, size: 2 },
-  execution: { token: "active", glyph: ["■", "▪"], ascii: "#", priority: 2, size: 1 },
-  review: { token: "warning", glyph: ["■", "▪"], ascii: "#", priority: 4, size: 2 },
-  completion: { token: "success", glyph: ["■", "▪"], ascii: "#", priority: 4, size: 2 },
-  recovery: { token: "brand", glyph: ["■", "▪"], ascii: "#", priority: 4, size: 2 },
+  information: { token: "info", glyph: ["⬢", "⬡"], ascii: "O", priority: 3, size: 2 },
+  execution: { token: "active", glyph: ["⬡", "·"], ascii: "o", priority: 2, size: 1 },
+  review: { token: "warning", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
+  completion: { token: "success", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
+  recovery: { token: "brand", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
   ambient: { token: "border", glyph: ["·", "·"], ascii: ".", priority: 0, size: 1 },
 };
 
@@ -118,8 +118,8 @@ export class ParticleSystem {
   clear() { for (const p of this.pool) p.active = false; }
 
   /** Current cell of every visible particle (for tests and drawing). */
-  visible(now: number): { x: number; y: number; kind: ParticleKind; alpha: number; u: number }[] {
-    const out: { x: number; y: number; kind: ParticleKind; alpha: number; u: number }[] = [];
+  visible(now: number): { x: number; y: number; kind: ParticleKind; alpha: number; u: number; trail: Pt[] }[] {
+    const out: { x: number; y: number; kind: ParticleKind; alpha: number; u: number; trail: Pt[] }[] = [];
     for (const p of this.pool) {
       if (!p.active || now < p.start) continue;
       const t = clamp01((now - p.start) / p.duration);
@@ -127,7 +127,10 @@ export class ParticleSystem {
       const [x, y] = p.path.at(u);
       // Fade in over the first 12 %, out over the last 18 %: opacity simulated through colour.
       const alpha = Math.min(1, t / 0.12, (1 - t) / 0.18);
-      out.push({ x, y, kind: p.kind, alpha: clamp01(alpha), u });
+      // Comet trail: the two path cells behind the head (only for the larger particle kinds).
+      const len = Math.max(1, p.path.length);
+      const trail: Pt[] = KIND[p.kind].size === 2 ? [p.path.at(Math.max(0, u - 1 / len)), p.path.at(Math.max(0, u - 2 / len))] : [];
+      out.push({ x, y, kind: p.kind, alpha: clamp01(alpha), u, trail });
     }
     return out;
   }
@@ -144,6 +147,13 @@ export class ParticleSystem {
       if (under === undefined || !(under === " " || LINE_CELLS.has(under))) continue;
       const col = mix(bg, TOKENS[look.token], 0.35 + 0.65 * v.alpha);
       const glyph = !o.unicode ? look.ascii : look.glyph[v.alpha > 0.55 ? 0 : 1];
+      v.trail.forEach(([tx, ty], i) => {
+        if ((tx === v.x && ty === v.y) || (i === 1 && tx === v.trail[0]![0] && ty === v.trail[0]![1])) return;
+        const u2 = c.chars[ty]?.[tx];
+        if (u2 === undefined || !(u2 === " " || LINE_CELLS.has(u2))) return;
+        const tcol = mix(bg, TOKENS[look.token], (0.5 - 0.2 * i) * v.alpha + 0.1);
+        c.set(tx, ty, !o.unicode ? "." : i === 0 ? "⬡" : "·", st(sgr(tcol, o.depth)));
+      });
       c.set(v.x, v.y, glyph, st(sgr(col, o.depth), v.alpha > 0.7 && v.kind !== "ambient" ? "1" : ""));
     }
   }

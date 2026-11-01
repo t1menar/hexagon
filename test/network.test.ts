@@ -188,3 +188,29 @@ describe("edge routing", () => {
     }
   });
 });
+
+describe("graph restructuring and edge states", () => {
+  const before = [node({ id: "T-1" }), node({ id: "T-2", deps: ["T-1"] })];
+  const after = [node({ id: "T-1" }), node({ id: "T-2", deps: ["T-1"] }), node({ id: "T-3", deps: ["T-1"] }), node({ id: "T-4", deps: ["T-2", "T-3"] })];
+  const rects = (ns: DagNode[]) => new Map([...render({ still: true }, ns).nodes].map(([id, r]) => [id, { x: r.x, y: r.y }]));
+  it("nodes glide from their old position to the new one and settle exactly", () => {
+    const from = rects(before), to = rects(after);
+    const at = (k: number) => render({ morph: { from, k, prevEdges: new Set(["T-1>T-2"]) } }, after);
+    const mid = at(0.5).canvas.lines(true).join("\n");
+    expect(mid).not.toBe(at(0).canvas.lines(true).join("\n"));
+    expect(at(1).canvas.lines(true).join("\n")).toBe(render({}, after).canvas.lines(true).join("\n")); // k=1 is exactly the final picture
+    expect([...at(0.5).nodes]).toEqual([...render({ still: true }, after).nodes]); // geometry always reports final positions
+    void to;
+  });
+  it("new nodes are absent at the start and edges of moving nodes wait", () => {
+    const from = rects(before);
+    const start = plain(render({ morph: { from, k: 0.05, prevEdges: new Set(["T-1>T-2"]) }, still: false }, after).canvas);
+    expect(start).not.toContain("T-3");
+    expect(start).not.toContain("T-4");
+  });
+  it("failed and blocked edges use their own colours", () => {
+    const col = (state: DagNode["state"]) => render({ still: true }, [node({ id: "T-1", state: "done" }), node({ id: "T-2", deps: ["T-1"], state })]).canvas.lines(true).join("\n");
+    expect(col("failed")).not.toBe(col("queued"));
+    expect(col("blocked")).not.toBe(col("failed"));
+  });
+});

@@ -134,3 +134,35 @@ describe("particles", () => {
     expect(n).toBe(1);
   });
 });
+
+import { AmbientField } from "../src/tui/ambient.js";
+
+describe("ambient layer", () => {
+  it("is deterministic: same time, same cells", () => {
+    const a = new AmbientField(), b = new AmbientField();
+    expect(a.cells(80, 24, 12_345)).toEqual(b.cells(80, 24, 12_345));
+  });
+  it("level scales the amount and 0 shows nothing", () => {
+    const f = new AmbientField();
+    const count = (lvl: number) => { let n = 0; for (let t = 0; t < 30_000; t += 500) n += f.cells(80, 24, t, lvl).length; return n; };
+    expect(count(0)).toBe(0);
+    expect(count(0.35)).toBeLessThan(count(1));
+    expect(count(1)).toBeGreaterThan(0);
+  });
+  it("only lands on blank cells with blank neighbours and respects the blocked area", () => {
+    const f = new AmbientField();
+    const c = new Canvas(80, 24);
+    c.text(10, 5, "agent information that must stay intact", "");
+    const label = "agent information that must stay intact";
+    const blocked = (x: number, y: number) => x >= 40;
+    for (let t = 0; t < 40_000; t += 400) f.draw(c, 0, 0, 80, 24, t, { depth: 0, unicode: true, level: 1, blocked });
+    const out = c.lines(false);
+    expect(out[5]!.slice(10, 10 + label.length)).toBe(label); // text untouched
+    out.forEach((l, y) => { if (y !== 5) expect([...l].slice(40).every((ch) => ch === " ")).toBe(true); });
+    expect(out.join("").replace(/\s/g, "").length).toBeGreaterThan(label.replace(/\s/g, "").length); // and something was drawn elsewhere
+  });
+  it("cells stay in the field and drift slowly", () => {
+    const f = new AmbientField();
+    for (let t = 0; t < 60_000; t += 700) for (const cell of f.cells(60, 20, t)) { expect(cell.a).toBeGreaterThanOrEqual(0); expect(cell.a).toBeLessThanOrEqual(0.6); }
+  });
+});
