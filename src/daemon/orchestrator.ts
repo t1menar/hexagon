@@ -24,6 +24,7 @@ import { MessageRouter } from "../core/router.js";
 import { formatTrace, trace, type TaskEvidence } from "../core/trace.js";
 import { WaitStore } from "../core/recovery.js";
 import { AgentBus, type BusActivity, type Envelope } from "../core/bus.js";
+import { Approvals, ARTIFACT, checkStage, specHash, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
 import { Scheduler, type PriorTask } from "../core/scheduler.js";
@@ -50,7 +51,21 @@ export interface ActiveRun {
   base: string;
 }
 
-/** A plan proposed by the planner, waiting for the user to approve, revise or discard it. */
+/** The spec the analyst wrote, waiting for the user's approval. Nothing is planned or built before it is approved. */
+export interface SpecReview {
+  id: string;
+  goal: string;
+  out_dir: string;
+  spec_path: string;
+  analysis_path: string;
+  design_path: string | null;
+  /** The spec's requirements (id: title), for a quick look. */
+  requirements: { id: string; title: string; acceptance: number }[];
+  warnings: string[];
+  summary: string;
+}
+
+/** A plan proposed by the analyst, waiting for the user to approve, revise or discard it. */
 export interface Draft {
   id: string;
   goal: string;
@@ -73,6 +88,7 @@ export type Push =
   | { event: "notice"; data: { level: "info" | "attention" | "error"; text: string } }
   | { event: "session"; data: SessionStatus }
   | { event: "draft"; data: Draft | null }
+  | { event: "spec_review"; data: SpecReview | null }
   | { event: "permissions"; data: PermissionRequest[] };
 
 export interface Snapshot {
@@ -82,6 +98,7 @@ export interface Snapshot {
   agents: AgentStatus[];
   sessions: SessionStatus[];
   draft: Draft | null;
+  spec_review: SpecReview | null;
   has_context: boolean;
   permissions: PermissionRequest[];
 }
@@ -139,6 +156,10 @@ export class Orchestrator extends EventEmitter {
   cfg: HexagonConfig;
   current: ActiveRun | null = null;
   draft: Draft | null = null;
+  specReview: SpecReview | null = null;
+  /** The stage the analyst is in (drives what `hexagon plan-check` validates). */
+  private stage: Stage = "analyze";
+  readonly approvals: Approvals;
   private adapters = new Map<string, AgentAdapter>();
   private sessions = new Map<string, SoloSession>();
   private nextSoloQuestion = 1;
@@ -154,11 +175,14 @@ export class Orchestrator extends EventEmitter {
     this.paths = new ProjectPaths(root);
     migrateConfigFile(this.paths.config);
     this.cfg = loadConfig(this.paths.config);
+    this.approvals = new Approvals(path.join(this.paths.hex, "approvals.json"), root);
     this.agentSessions = new SessionRegistry(this.paths.sessions);
     this.pool = new IdentityPool(this.agentSessions);
     applyToolchainEnv();
     const d = readJson<Draft>(path.join(this.paths.hex, "drafts", "current.json"));
     if (d && fs.existsSync(d.plan_path)) this.draft = d;
+    const sr = readJson<SpecReview>(path.join(this.paths.hex, "drafts", "spec-review.json"));
+    if (sr && fs.existsSync(sr.spec_path)) this.specReview = sr;
     void this.autoClose();
   }
 
@@ -349,6 +373,7 @@ export class Orchestrator extends EventEmitter {
       agents: this.current?.store.all() ?? [],
       sessions: [...this.sessions.values()].map((s) => s.status),
       draft: this.draft,
+      spec_review: this.specReview,
       has_context: contextFile(this.root) !== null,
       permissions: [...this.permissions.values()],
     };
@@ -429,74 +454,191 @@ export class Orchestrator extends EventEmitter {
     return { id: s.id };
   }
 
-  /** Goal → planner agent → spec.md + plan.json draft for approval. */
+  /**
+   * Goal → analyst, in gated stages: analyze (analysis.md) → specify (spec.md [+ design.md]) → the user approves the
+   * spec → plan (plan.json). Each stage must validate before the next one starts.
+   */
   newGoal(goal: string): { id: string } {
     if (!goal.trim()) throw new Error("describe what you want built");
     this.reloadConfig();
     const id = `p-${stamp()}`;
     const out = path.join(this.paths.hex, "drafts", id);
     fs.mkdirSync(out, { recursive: true });
-    const s = this.solo("planner", "analyst", {
-      system: this.roleSystem("analyst"),
-      env: this.agentEnv("planner", { HEXAGON_OUT: out }),
-      allowCommands: [...new Set([...PLANNER_COMMANDS, ...this.cfg.sandbox.allow_commands])],
-      validate: () => draftCheck(this.root, out).reply,
-    });
+    fs.writeFileSync(path.join(out, "goal.txt"), goal.trim());
+    const s = this.analystSession(out);
     const existingSpecs = fs.existsSync(path.join(this.root, "specs")) ? fs.readdirSync(path.join(this.root, "specs")).filter((f) => f.endsWith(".md")) : [];
+    this.draft = null;
+    this.specReview = null;
+    this.saveDraft();
+    this.push({ event: "draft", data: null });
+    this.push({ event: "spec_review", data: null });
+    this.stage = "analyze";
     const prompt = [
       `<goal>\n${goal.trim()}\n</goal>`,
-      "",
+      "<stage>analyze</stage>",
       `Output directory: ${out}`,
       existingSpecs.length ? `Existing specs (for context; don't modify them): ${existingSpecs.map((f) => `specs/${f}`).join(", ")}` : "",
       "",
-      "Write spec.md and plan.json into the output directory as described in your instructions, run `hexagon plan-check`, then `hexagon done`.",
+      "Stage 1 of 3: analyze. Read the codebase and the request, then write analysis.md with the sections Current state, Constraints, Risks, Open questions, Impacted areas. Ask the user only about decisions that change the outcome. Run `hexagon plan-check`, then `hexagon done`.",
     ].filter((l) => l !== "").join("\n");
-    this.draft = null;
-    this.saveDraft();
-    this.push({ event: "draft", data: null });
-    void this.runPlanner(s, id, goal.trim(), out, prompt);
+    void this.runPipeline(s, id, goal.trim(), out, "analyze", prompt);
     return { id };
   }
 
-  /** Feedback on the current draft (or an answer to the planner's question). */
+  private analystSession(out: string): SoloSession {
+    return this.solo("planner", "analyst", {
+      system: this.roleSystem("analyst"),
+      env: this.agentEnv("planner", { HEXAGON_OUT: out }),
+      allowCommands: [...new Set([...PLANNER_COMMANDS, ...this.cfg.sandbox.allow_commands])],
+      validate: () => this.stageCheck(out),
+    });
+  }
+
+  /** What `hexagon plan-check` / `done` validate: the artifact of the stage the analyst is in. */
+  private stageCheck(out: string): Reply {
+    if (this.stage === "plan") return draftCheck(this.root, out).reply;
+    const { errors, warnings } = checkStage(this.stage, out, listProjectFiles(this.root, 5000));
+    const lines = [
+      errors.length ? `✖ ${errors.length} error(s) in ${ARTIFACT[this.stage]}:\n${errors.map((e) => `  - ${e}`).join("\n")}` : `✔ ${ARTIFACT[this.stage]} is valid`,
+      warnings.length ? `! ${warnings.length} warning(s):\n${warnings.map((w) => `  - ${w}`).join("\n")}` : "",
+    ].filter(Boolean);
+    return { ok: errors.length === 0, message: lines.join("\n") };
+  }
+
+  /** Feedback on the spec under review, on the draft plan, or an answer to the analyst's question. */
   revise(feedback: string): void {
     const s = this.sessions.get("planner");
     if (s && (s.status.state === "running" || s.status.state === "waiting_input")) return s.say(feedback);
+    const sr = this.specReview;
+    if (sr && s) {
+      this.stage = "specify";
+      this.specReview = null;
+      this.saveSpecReview();
+      this.push({ event: "spec_review", data: null });
+      this.registry.register("planner", s.api());
+      const followUp = `The user reviewed spec.md and wants changes:\n<user_message>\n${feedback}\n</user_message>\n\n<stage>specify</stage>\nUpdate spec.md${sr.design_path ? " (and design.md)" : ""} in ${sr.out_dir}, run \`hexagon plan-check\`, then \`hexagon done\`.`;
+      void this.runPipeline(s, sr.id, sr.goal, sr.out_dir, "specify", "", followUp);
+      return;
+    }
     const d = this.draft;
-    if (!d || !s) throw new Error("no plan to revise — describe a goal first");
-    const followUp = `The user reviewed your draft and wants changes:\n<user_message>\n${feedback}\n</user_message>\n\nUpdate spec.md and plan.json in ${d.out_dir}, run \`hexagon plan-check\`, then \`hexagon done\`.`;
+    if (!d || !s) throw new Error("nothing to revise: describe a goal first");
+    this.stage = "plan";
+    const followUp = `The user reviewed your plan and wants changes:\n<user_message>\n${feedback}\n</user_message>\n\n<stage>plan</stage>\nUpdate plan.json in ${d.out_dir} (the approved spec.md stays as it is; if the change needs a different spec, say so with \`hexagon done --status needs_spec_change\`), run \`hexagon plan-check\`, then \`hexagon done\`.`;
     this.registry.register("planner", s.api());
-    void this.runPlanner(s, d.id, d.goal, d.out_dir, "", followUp);
+    void this.runPipeline(s, d.id, d.goal, d.out_dir, "plan", "", followUp);
   }
 
-  private async runPlanner(s: SoloSession, id: string, goal: string, out: string, prompt: string, followUp?: string) {
+  /** The user wants the approved spec changed: back to the specify stage; the old approval stops covering the new text. */
+  respec(feedback: string): void {
+    const d = this.draft;
+    const s = this.sessions.get("planner");
+    if (!d || !s) throw new Error("no plan to re-spec");
+    this.draft = null;
+    this.saveDraft();
+    this.push({ event: "draft", data: null });
+    this.stage = "specify";
+    this.registry.register("planner", s.api());
+    const followUp = `The user wants the spec changed:\n<user_message>\n${feedback}\n</user_message>\n\n<stage>specify</stage>\nUpdate spec.md in ${d.out_dir}, run \`hexagon plan-check\`, then \`hexagon done\`. The spec will be reviewed and approved again before a plan is made.`;
+    void this.runPipeline(s, d.id, d.goal, d.out_dir, "specify", "", followUp);
+  }
+
+  private async runStage(s: SoloSession, prompt: string, followUp?: string): Promise<boolean> {
     await s.run(prompt, followUp);
     if (!s.done) {
-      if (s.status.state !== "cancelled") this.notice("error", `planner failed: ${s.status.error ?? "unknown error"}`);
-      return;
+      if (s.status.state !== "cancelled") this.notice("error", `analyst failed: ${s.status.error ?? "unknown error"}`);
+      return false;
     }
     if (s.status.result_status && s.status.result_status !== "completed") {
-      this.notice("attention", `The planner stopped without a plan: ${s.status.summary ?? s.status.result_status}`);
-      return;
+      this.notice("attention", `The analyst stopped at the ${this.stage} stage: ${s.status.summary ?? s.status.result_status}`);
+      return false;
     }
+    return true;
+  }
+
+  private async runPipeline(s: SoloSession, id: string, goal: string, out: string, from: Stage, prompt: string, followUp?: string) {
     try {
+      if (from === "analyze") {
+        if (!(await this.runStage(s, prompt, followUp))) return;
+        this.stage = "specify";
+        from = "specify";
+        prompt = "";
+        followUp = `<stage>specify</stage>\nanalysis.md is accepted. Stage 2 of 3: specify. Write spec.md in ${out} (frontmatter, one \`## REQ-…: title\` per requirement with observable \`- AC-n:\` criteria, non-goals, **Touches**). If the change needs a design, also write design.md with the sections Interfaces, Data flow, Trade-offs. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
+      }
+      if (from === "specify") {
+        if (!(await this.runStage(s, prompt, followUp))) return;
+        this.specReview = this.makeSpecReview(id, goal, out, s.status.summary ?? "");
+        this.saveSpecReview();
+        this.push({ event: "spec_review", data: this.specReview });
+        this.notice("attention", `The spec is ready (${this.specReview.requirements.length} requirement(s)). Read ${path.relative(this.root, this.specReview.spec_path)}, then approve it (Enter) or say what to change.`);
+        return;
+      }
+      if (!(await this.runStage(s, prompt, followUp))) return;
       this.draft = this.materialize(id, goal, out, s.status.summary ?? "");
       this.saveDraft();
       this.push({ event: "draft", data: this.draft });
     } catch (e) {
-      this.notice("error", `planner output is invalid: ${e instanceof Error ? e.message : String(e)}`);
+      this.notice("error", `analyst output is invalid: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  private makeSpecReview(id: string, goal: string, out: string, summary: string): SpecReview {
+    const spec = parseSpec(path.join(out, "spec.md"));
+    const warnings = lintSpec(spec).filter((i) => i.level === "warning").map((i) => `line ${i.line} ${i.message}`);
+    const prev = this.specReview?.id === id ? this.specReview.spec_path : null;
+    let specPath = prev ?? path.join(this.root, "specs", `${(spec.meta.spec || slugify(spec.title ?? goal)).replace(/[^a-z0-9-]/gi, "-").toLowerCase() || id}.spec.md`);
+    if (!prev && fs.existsSync(specPath)) specPath = specPath.replace(/\.spec\.md$/, `-${id.slice(2)}.spec.md`);
+    fs.mkdirSync(path.dirname(specPath), { recursive: true });
+    fs.copyFileSync(path.join(out, "spec.md"), specPath);
+    const design = path.join(out, "design.md");
+    return {
+      id, goal, out_dir: out, spec_path: specPath, analysis_path: path.join(out, "analysis.md"), design_path: fs.existsSync(design) ? design : null,
+      requirements: spec.requirements.map((r) => ({ id: r.id, title: r.title, acceptance: r.acceptance.length })), warnings, summary,
+    };
+  }
+
+  private saveSpecReview() {
+    const f = path.join(this.paths.hex, "drafts", "spec-review.json");
+    if (this.specReview) atomicWriteJson(f, this.specReview);
+    else fs.rmSync(f, { force: true });
+  }
+
+  /**
+   * The user approves the spec under review (or any spec file, for plans written by hand). The approval records exactly
+   * what was approved; a plan is only derived from, and tasks only run against, text that still matches it.
+   */
+  approveSpec(specFile?: string): { approved: string; requirements: number; planning: boolean } {
+    const sr = this.specReview;
+    if (!specFile && !sr) throw new Error("no spec is waiting for approval; name a spec file: hexagon approve-spec <file>");
+    const target = specFile ? path.resolve(this.root, specFile) : sr!.spec_path;
+    if (!fs.existsSync(target)) throw new Error(`no such spec: ${specFile}`);
+    const a = this.approvals.approve(target, "user");
+    if (sr && target === sr.spec_path) atomicWriteJson(path.join(sr.out_dir, "approved.json"), { spec_path: target, hash: a.hash, approved_at: a.approved_at });
+    const rel = path.relative(this.root, target);
+    this.notice("info", `Approved ${rel} (${Object.keys(a.requirements).length} requirement(s)).`);
+    this.current?.scheduler.reviveGated();
+    if (!sr || (specFile && target !== sr.spec_path)) return { approved: rel, requirements: Object.keys(a.requirements).length, planning: false };
+    const s = this.sessions.get("planner");
+    if (!s) throw new Error("the analyst session is gone; describe the goal again");
+    this.specReview = null;
+    this.saveSpecReview();
+    this.push({ event: "spec_review", data: null });
+    this.stage = "plan";
+    this.registry.register("planner", s.api());
+    const followUp = `<stage>plan</stage>\nThe user approved spec.md (${Object.keys(a.requirements).join(", ")}). Stage 3 of 3: plan. Write plan.json in ${sr.out_dir}: tasks that each cite requirement and acceptance ids, depends_on, non-overlapping files.write, verify commands. Do not change spec.md. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
+    void this.runPipeline(s, sr.id, sr.goal, sr.out_dir, "plan", "", followUp);
+    return { approved: rel, requirements: Object.keys(a.requirements).length, planning: true };
   }
 
   private materialize(id: string, goal: string, out: string, summary: string): Draft {
     const check = draftCheck(this.root, out);
     if (!check.plan || !check.spec) throw new Error(check.reply.message);
-    const slug = (check.spec.meta.spec || slugify(check.spec.title ?? goal)).replace(/[^a-z0-9-]/gi, "-").toLowerCase() || id;
-    const prev = this.draft?.id === id ? this.draft.spec_path : null;
-    let specPath = prev ?? path.join(this.root, "specs", `${slug}.spec.md`);
-    if (!prev && fs.existsSync(specPath)) specPath = path.join(this.root, "specs", `${slug}-${id.slice(2)}.spec.md`);
-    fs.mkdirSync(path.dirname(specPath), { recursive: true });
-    fs.copyFileSync(path.join(out, "spec.md"), specPath);
+    const specPath = this.draft?.id === id ? this.draft.spec_path : readJson<{ spec_path: string }>(path.join(out, "approved.json"))?.spec_path;
+    if (!specPath) throw new Error("the spec of this plan was never approved");
+    // The plan may only rest on the spec the user approved.
+    const ap = this.approvals.get(specPath);
+    if (!ap || ap.hash !== specHash(fs.readFileSync(path.join(out, "spec.md"), "utf8"))) {
+      throw new Error("spec.md was changed after you approved it; the plan was not accepted. Ask for the change with /respec so it is reviewed again.");
+    }
     const plan = normalizePlan(readJson(path.join(out, "plan.json")), { id, specs: [path.relative(this.root, specPath)] });
     const planPath = path.join(this.paths.plans, `${id}.json`);
     atomicWriteJson(planPath, plan);
@@ -539,6 +681,12 @@ export class Orchestrator extends EventEmitter {
   discardDraft(): void {
     const d = this.draft;
     this.sessions.get("planner")?.cancel();
+    if (this.specReview) {
+      fs.rmSync(this.specReview.spec_path, { force: true });
+      this.specReview = null;
+      this.saveSpecReview();
+      this.push({ event: "spec_review", data: null });
+    }
     if (d) {
       fs.rmSync(d.plan_path, { force: true });
       fs.rmSync(d.spec_path, { force: true });
@@ -587,6 +735,10 @@ export class Orchestrator extends EventEmitter {
     let specs: Spec[] = [];
     try { specs = plan.specs.map((s) => parseSpec(path.resolve(this.root, s))); } catch { specs = []; }
     const check = checkPlan(plan, specs);
+    const gated = plan.tasks.flatMap((t) => this.approvals.check(t, plan.specs).problems.map((p) => `${t.id}: ${p}`));
+    if (gated.length) {
+      throw new Error(`spec gate: ${[...new Set(gated)].slice(0, 5).join("; ")}. Approve the spec first (Enter on the spec review, or hexagon approve-spec <file>).`);
+    }
     if (check.errors.length) throw new Error(`invalid plan: ${check.errors.join("; ")}`);
     if (opts.agent) this.adapter(opts.agent);
 
@@ -627,6 +779,7 @@ export class Orchestrator extends EventEmitter {
       root: this.root, paths: this.paths, run, runId, cfg: this.cfg, store, router, registry: this.registry, specs,
       skills: loadSkills(this.paths), context: projectContext(this.root), integration,
       adapterFor: (role, override) => this.adapterFor(role, override),
+      gate: (task) => this.approvals.check(task, plan.specs),
       waits,
       sessions: this.agentSessions, pool: this.pool, bus,
       agentEnv: (id) => this.agentEnv(id),

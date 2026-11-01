@@ -95,8 +95,13 @@ describe("end to end with the mock agent", () => {
     client.on("push", (p) => { if (p.event === "message") pushes.push(p.data); });
 
     // Planner (mock) turns the goal into a spec + plan draft.
+    const reviewed = new Promise<{ spec_path: string }>((resolve) => client.on("push", (p) => { if (p.event === "spec_review" && p.data) resolve(p.data); }));
     const drafted = new Promise<Draft>((resolve) => client.on("push", (p) => { if (p.event === "draft" && p.data) resolve(p.data); }));
     await client.call("goal.new", { goal: "Greeting and farewell" });
+    // Gate: the spec is reviewed and approved by the user before any plan exists.
+    const review = await reviewed;
+    expect(fs.existsSync(review.spec_path)).toBe(true);
+    await client.call("spec.approve", {});
     const draft = await drafted;
     expect(draft.plan.tasks).toHaveLength(2);
     expect(fs.existsSync(draft.spec_path)).toBe(true);

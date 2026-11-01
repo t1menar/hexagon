@@ -45,6 +45,8 @@ export interface RunContext {
   sessions: SessionRegistry;
   pool: IdentityPool;
   bus: AgentBus;
+  /** May this task start? A task that cites requirements runs only against a spec that still matches its approval. */
+  gate?(task: Task): { ok: boolean; problems: string[]; changed: string[] };
   /** Environment for agent processes: lets them run `hexagon report|ask|…`. */
   agentEnv(agentId: string): Record<string, string>;
 }
