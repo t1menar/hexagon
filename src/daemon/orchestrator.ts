@@ -8,11 +8,13 @@ import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "
 import { TERMINAL_STATES } from "../contracts/types.js";
 import { atomicWriteJson, nowIso, readJson, readJsonl } from "../util/fsx.js";
 import { selfCommand } from "../util/resources.js";
+import { describeResult, isAllowed, quoteArgv, runCommand, shq, sudoScript, waitForCode, type Decision } from "./broker.js";
+import { openTerminal } from "../shell/open.js";
 import { DiscoveryCache, type ModelDiscoveryResult } from "../agents/contracts/model-selection.js";
 import type { AdapterDiagnostics } from "../agents/contracts/adapter.js";
 import type { AgentCapabilities, SecurityCapabilities as AdapterSecurity } from "../agents/contracts/capabilities.js";
 import type { ModelSelection } from "../agents/contracts/model-selection.js";
-import { addAgent, allowCommands, loadConfig, setRoleAgent, setRoleModel, type HexagonConfig } from "../core/config.js";
+import { addAgent, allowCommands, allowLocal, loadConfig, setRoleAgent, setRoleModel, type HexagonConfig } from "../core/config.js";
 import { applyToolchainEnv, install as installToolchain, installed as installedToolchains, onPath, toolchainFor, TOOLCHAINS } from "../core/toolchains.js";
 import * as g from "../core/git.js";
 import { checkPlan, normalizePlan, type PlanCheck } from "../core/plan.js";
@@ -88,6 +90,12 @@ export interface PermissionRequest {
   /** Rule to allow (e.g. "brew", "git push"); null for compound commands, which only "allow all" covers. */
   prefix: string | null;
   asked_at: string;
+  /** Set for requests that came through `hexagon exec|install|sudo` (the agent's call is waiting); absent for refused native tool calls. */
+  action?: "exec" | "install" | "sudo";
+  /** Why the agent wants it, in its own words. */
+  reason?: string;
+  /** What the user can answer. `key` is the shortcut in the dashboard. */
+  choices?: { id: Decision; label: string; key: string }[];
 }
 
 const SUBCOMMAND_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "go", "cargo", "docker", "kubectl", "gh"]);
@@ -288,7 +296,7 @@ export class Orchestrator extends EventEmitter {
   }
 
   /** `hexagon report|ask|note|done|review|plan-check` from an agent process. */
-  agentApi(agent: string | null, cwd: string | null, op: ApiOp, args: Record<string, unknown>): Reply {
+  agentApi(agent: string | null, cwd: string | null, op: ApiOp, args: Record<string, unknown>): Reply | Promise<Reply> {
     let id = agent;
     if (!id && cwd) {
       const m = /\/\.hexagon\/worktrees\/[^/]+\/([^/]+)(?:\/|$)/.exec(cwd);
@@ -296,6 +304,7 @@ export class Orchestrator extends EventEmitter {
     }
     if (!id) id = [...this.sessions.values()].find((s) => s.status.state === "running" || s.status.state === "waiting_input")?.id ?? null;
     if (!id) return { ok: false, message: "Hexagon could not tell which agent you are (HEXAGON_AGENT is not set)." };
+    if (op === "exec" || op === "install" || op === "sudo") return this.brokerCall(id, cwd, op, args);
     return this.registry.call(id, op, args);
   }
 
@@ -715,25 +724,31 @@ export class Orchestrator extends EventEmitter {
   }
 
   /** Download a toolchain, then resume agents that were blocked on it and restart the chat with the new PATH. */
-  async installToolchain(name: string): Promise<string> {
+  /** Tell a running agent something without restarting it: the message arrives inside its live session. */
+  private tellAgent(taskId: string, body: string): void {
+    this.current?.router.send({ from: { kind: "orchestrator" }, to: { kind: "agent", id: taskId }, type: "instruction", body });
+  }
+
+  async installToolchain(name: string, opts: { except?: string } = {}): Promise<string> {
     const key = toolchainFor(name);
     if (!key) throw new Error(`Hexagon can install: ${Object.keys(TOOLCHAINS).join(", ")}`);
     this.notice("info", `Installing ${key}…`);
     const t = await installToolchain(key, (l) => this.notice("info", l));
     this.missingNoticed.delete(key);
     const words = [key, ...TOOLCHAINS[key]!.commands];
-    const note = `${key} ${t.version} is now installed (on PATH: ${t.bin}). Run what needed it again and continue.`;
+    const note = `${key} ${t.version} is now installed. Run its commands through \`hexagon exec -- <command>\` (that has it on PATH) and continue.`;
     const r = this.current;
     if (r) {
       for (const s of r.store.all()) {
+        if (s.task_id === opts.except) continue;
         const why = `${s.state_reason ?? ""} ${s.last_error?.message ?? ""} ${s.activity ?? ""}`.toLowerCase();
         if (!words.some((w) => why.includes(w))) continue;
         if (r.scheduler.canContinue(s.task_id)) r.scheduler.continueTask(s.task_id, note);
-        else r.scheduler.run(s.task_id)?.restart(note);
+        else if (r.scheduler.run(s.task_id)) this.tellAgent(s.task_id, note); // still alive: same session, no restart
       }
     }
     const chat = this.sessions.get("claude");
-    if (chat?.alive) chat.restart(note, chat.allowCommands);
+    if (chat?.alive && !opts.except) chat.restart(`${key} ${t.version} is now installed (on PATH: ${t.bin}). Run what needed it again and continue.`, chat.allowCommands);
     const msg = `${key} ${t.version} installed for agents.`;
     this.notice("info", msg);
     return msg;
@@ -760,6 +775,103 @@ export class Orchestrator extends EventEmitter {
     this.notice("attention", text);
   }
 
+  // ───────────── command broker: hexagon exec | install | sudo ─────────────
+
+  private pendingDecisions = new Map<string, (d: Decision) => void>();
+
+  /** Note in the agent's feed so the user can see what was run on its behalf. */
+  private agentNote(agent: string, text: string): void {
+    const st = this.current?.store.byTask(agent);
+    if (st) this.current!.store.apply(st.agent_run_id, { type: "chat", from: "hexagon", text });
+  }
+
+  private askUser(agent: string, action: "exec" | "install" | "sudo", command: string, reason?: string): Promise<Decision> {
+    const kind: PermissionRequest["kind"] = this.sessions.has(agent) ? "session" : "task";
+    const prefix = action === "exec" ? commandPrefix(command) : null;
+    const choices: NonNullable<PermissionRequest["choices"]> =
+      action === "sudo" ? [{ id: "terminal", label: "run it in a terminal (you type the password)", key: "t" }, { id: "deny", label: "deny", key: "n" }]
+      : action === "install" ? [{ id: "once", label: "install it", key: "y" }, { id: "deny", label: "deny", key: "n" }]
+      : [
+        { id: "once", label: "run it this once", key: "y" },
+        ...(prefix ? [{ id: "always" as const, label: `always allow \`${prefix}\``, key: "a" }] : []),
+        { id: "all", label: "allow every command", key: "*" },
+        { id: "deny", label: "deny", key: "n" },
+      ];
+    const req: PermissionRequest = { id: `P-${this.nextPermission++}`, agent, kind, command: action === "sudo" ? `sudo ${command}` : command, prefix, asked_at: nowIso(), action, reason, choices };
+    this.permissions.set(req.id, req);
+    this.pushPermissions();
+    this.notice("attention", `${agent} asks to ${action === "install" ? "" : "run "}\`${req.command}\`${reason ? ` (${reason})` : ""}. Answer in the approval box.`);
+    return new Promise<Decision>((resolve) => {
+      const timer = setTimeout(() => { if (this.pendingDecisions.delete(req.id)) { this.permissions.delete(req.id); this.pushPermissions(); resolve("deny"); } }, 30 * 60_000);
+      timer.unref?.();
+      this.pendingDecisions.set(req.id, (d) => { clearTimeout(timer); resolve(d); });
+    });
+  }
+
+  /** Remember an approval (personal file, never committed) and let the live run see it. */
+  private rememberApproval(d: Decision, command: string): void {
+    const rule = d === "all" ? "*" : d === "always" ? commandPrefix(command) : null;
+    if (!rule) return;
+    allowLocal(this.paths.config, [rule]);
+    this.reloadConfig();
+    if (this.current) this.current.rc.cfg.sandbox.allow_commands = this.cfg.sandbox.allow_commands;
+  }
+
+  private async brokerCall(agent: string, cwd: string | null, op: "exec" | "install" | "sudo", args: Record<string, unknown>): Promise<Reply> {
+    const dir = cwd && path.resolve(cwd).startsWith(this.root) ? path.resolve(cwd) : this.root;
+    const reason = typeof args.reason === "string" && args.reason.trim() ? args.reason.trim() : undefined;
+    const argv = Array.isArray(args.argv) ? (args.argv as unknown[]).map(String) : [];
+    const shell = typeof args.shell === "string" && args.shell.trim() ? args.shell : undefined;
+    const line = shell ?? quoteArgv(argv);
+    const denied = (what: string): Reply => ({ ok: false, message: `The user denied ${what}. Don't retry it or work around it; carry on without it and say what is left undone.` });
+
+    if (op === "install") {
+      const key = toolchainFor(String(args.tool ?? ""));
+      if (!key) return { ok: false, message: `Hexagon installs: ${Object.keys(TOOLCHAINS).join(", ")}. For anything else use \`hexagon ask\` to tell the user what you need.` };
+      if (TOOLCHAINS[key]!.commands.some((c) => onPath(c))) return { ok: true, message: `${key} is already installed.` };
+      const d = await this.askUser(agent, "install", `install ${key} (official release into ~/.hexagon/toolchains, no sudo)`, reason);
+      if (d === "deny") return denied(`installing ${key}`);
+      try {
+        await this.installToolchain(key, { except: agent });
+        const v = installedToolchains()[key];
+        this.agentNote(agent, `⬇ installed ${key} ${v?.version ?? ""}`.trim());
+        return { ok: true, message: `${key} ${v?.version ?? ""} is installed. Run its commands through \`hexagon exec -- <command>\` (e.g. \`hexagon exec -- ${TOOLCHAINS[key]!.commands[0]} version\`): that has it on PATH.` };
+      } catch (e) {
+        return { ok: false, message: `install of ${key} failed: ${(e as Error).message}` };
+      }
+    }
+
+    if (!line.trim()) return { ok: false, message: `usage: hexagon ${op} [--reason "…"] -- <command> [args…]` };
+
+    if (op === "sudo") {
+      const d = await this.askUser(agent, "sudo", line, reason);
+      if (d !== "terminal") return denied(`\`sudo ${line}\``);
+      const sc = sudoScript({ id: `${Date.now()}`, agent, cwd: dir, argv: shell === undefined ? argv : undefined, shell, reason });
+      const how = await openTerminal(`sudo · ${agent}`, `sh ${shq(sc.script)}`, this.cfg.ui.open_with);
+      this.notice("attention", `Finish \`sudo ${line}\` in the terminal window for ${agent}. ${how}`);
+      this.agentNote(agent, `🔐 waiting for you to run: sudo ${line}`);
+      const code = await waitForCode(sc.codeFile, 10 * 60_000);
+      let out = "";
+      try { out = fs.readFileSync(sc.outFile, "utf8").slice(-8000).trim(); } catch { /* none */ }
+      fs.rmSync(path.dirname(sc.script), { recursive: true, force: true });
+      if (code === null) return { ok: false, message: "The user did not finish the sudo command in time. Carry on without it and say what is left undone." };
+      this.agentNote(agent, `🔐 sudo ${line} → exit ${code}`);
+      return { ok: code === 0, message: `\`sudo ${line}\`: exit ${code}${out ? `\n${out}` : ""}` };
+    }
+
+    // exec
+    let how = "allowed";
+    if (!isAllowed(line, this.cfg.sandbox.allow_commands)) {
+      const d = await this.askUser(agent, "exec", line, reason);
+      if (d === "deny") return denied(`\`${line}\``);
+      this.rememberApproval(d, line);
+      how = d === "once" ? "approved once" : d === "always" ? "approved" : "everything approved";
+    }
+    this.agentNote(agent, `⏵ ${line}  (${how})`);
+    const r = await runCommand({ argv: shell === undefined ? argv : undefined, shell, cwd: dir, timeoutMs: this.cfg.sandbox.command_timeout_s * 1000 });
+    return { ok: r.code === 0 && !r.timedOut, message: describeResult(r, `\`${line}\``) };
+  }
+
   /**
    * `/allow <prefix>…` or `/allow all`: let agents run these commands from now on. Live sessions and
    * working agents restart in their own sessions so the new rules apply right away.
@@ -767,16 +879,18 @@ export class Orchestrator extends EventEmitter {
   allow(rules: string[]): string {
     const list = rules.map((r) => (/^(all|everything|\*)$/i.test(r.trim()) ? "*" : r.trim())).filter(Boolean);
     if (!list.length) throw new Error("usage: /allow <command prefix> … | /allow all");
-    allowCommands(this.paths.config, list);
+    allowLocal(this.paths.config, list);
     this.reloadConfig();
     if (this.current) this.current.rc.cfg.sandbox.allow_commands = this.cfg.sandbox.allow_commands;
     const what = list.includes("*") ? "every command" : list.map((l) => `\`${l}\``).join(", ");
     const note = `The user now allows ${what}. Retry anything that was refused and continue.`;
-    for (const s of this.sessions.values()) if (s.alive) s.restart(note, [...new Set([...s.allowCommands, ...list])]);
-    for (const run of this.current?.scheduler.activeRuns() ?? []) run.restart(note);
+    // No restarts: the broker (`hexagon exec`) reads the new rules immediately, so live sessions just get told.
+    const live = `${note} Use \`hexagon exec -- <command>\` to run it now.`;
+    for (const s of this.sessions.values()) if (s.alive) s.inject(live);
+    for (const run of this.current?.scheduler.activeRuns() ?? []) this.tellAgent(run.task.id, live);
     for (const p of [...this.permissions.values()]) if (list.includes("*") || (p.prefix && list.includes(p.prefix))) this.permissions.delete(p.id);
     this.pushPermissions();
-    const msg = `Agents may now run ${what} (saved in .hexagon/config.toml).`;
+    const msg = `Agents may now run ${what} (saved in .hexagon/local.toml, not committed).`;
     this.notice("info", msg);
     return msg;
   }
@@ -786,6 +900,18 @@ export class Orchestrator extends EventEmitter {
     const req = this.permissions.get(id.toUpperCase());
     if (!req) throw new Error(`no permission request ${id}`);
     const a = answer.trim().toLowerCase();
+    if (req.action && req.choices) {
+      // A waiting `hexagon exec|install|sudo` call: answer by choice id, shortcut key or number; the agent's session continues.
+      const n = /^\d+$/.test(a) ? req.choices[Number(a) - 1] : undefined;
+      const pick = n ?? req.choices.find((c) => c.id === a || c.key === a || (a.length > 2 && c.label.toLowerCase().startsWith(a)));
+      if (!pick) throw new Error(`answer with one of: ${req.choices.map((c, i) => `${i + 1}/${c.key} ${c.id}`).join(", ")}`);
+      this.permissions.delete(req.id);
+      this.pushPermissions();
+      const resolve = this.pendingDecisions.get(req.id);
+      this.pendingDecisions.delete(req.id);
+      resolve?.(pick.id);
+      return req.agent;
+    }
     const all = a === "2" || /^(all|allow all|everything|\*)/.test(a);
     const deny = a === "3" || /^(no|deny|n)\b/.test(a);
     const allow = !deny && (all || a === "1" || /^(y|yes|ok|allow|approve)/.test(a));
@@ -795,14 +921,14 @@ export class Orchestrator extends EventEmitter {
     let note: string;
     if (allow) {
       const rule = all || !req.prefix ? "*" : req.prefix;
-      allowCommands(this.paths.config, [rule]);
+      allowLocal(this.paths.config, [rule]);
       this.reloadConfig();
       if (this.current) this.current.rc.cfg.sandbox.allow_commands = this.cfg.sandbox.allow_commands;
       // Same command again from another agent: nothing more to ask.
       for (const p of [...this.permissions.values()]) if (rule === "*" || p.prefix === rule) this.permissions.delete(p.id);
       this.pushPermissions();
       note = `The user approved \`${req.command}\`: Hexagon now allows ${rule === "*" ? "every command" : `\`${rule}\` commands`}. Run it again and continue.`;
-      this.notice("info", `${rule === "*" ? "All commands" : `\`${rule}\``} allowed for agents in this project (.hexagon/config.toml).`);
+      this.notice("info", `${rule === "*" ? "All commands" : `\`${rule}\``} allowed for agents in this project (saved in .hexagon/local.toml, not committed).`);
     } else {
       note = `The user denied \`${req.command}\`. Don't retry it or work around it; continue without it, and say what is left undone.`;
     }
@@ -810,8 +936,7 @@ export class Orchestrator extends EventEmitter {
       const s = this.sessions.get(req.agent);
       if (s) {
         const list = allow ? [...new Set([...s.allowCommands, all || !req.prefix ? "*" : req.prefix])] : s.allowCommands;
-        if (allow) s.restart(note, list);
-        else if (s.alive) s.inject(note);
+        if (s.alive) s.inject(allow ? `${note} Use \`hexagon exec -- ${req.command}\` to run it now.` : note);
       }
       return req.agent;
     }
@@ -819,7 +944,7 @@ export class Orchestrator extends EventEmitter {
     if (!r) return req.agent;
     const run = r.scheduler.run(req.agent);
     if (run) {
-      if (!allow || !run.restart(note)) r.router.send({ from: { kind: "orchestrator" }, to: { kind: "agent", id: req.agent }, type: "instruction", body: note });
+      this.tellAgent(req.agent, allow ? `${note} Use \`hexagon exec -- ${req.command}\` to run it now.` : note);
     } else if (allow && r.scheduler.canContinue(req.agent)) {
       r.scheduler.continueTask(req.agent, note);
     }

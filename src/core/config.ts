@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { parse } from "smol-toml";
 import type { Effort, Role } from "../contracts/types.js";
 import { adapterNames } from "../agents/registry.js";
@@ -104,6 +105,14 @@ export function loadConfig(file: string): HexagonConfig {
   if ("fix_loops" in rawRun && !("max_fix_cycles" in rawRun)) cfg.run.max_fix_cycles = cfg.run.fix_loops;
   delete (cfg.run as Record<string, unknown>).budget_usd; // v0.1 setting; budgets are in tokens now
   if (cfg.run.budget_tokens !== null && cfg.run.budget_tokens <= 0) cfg.run.budget_tokens = null;
+  // Approvals the user gave while working live in .hexagon/local.toml: personal, never committed.
+  const local = path.join(path.dirname(file), "local.toml");
+  if (fs.existsSync(local)) {
+    try {
+      const extra = (parse(fs.readFileSync(local, "utf8")) as { sandbox?: { allow_commands?: string[] } }).sandbox?.allow_commands ?? [];
+      cfg.sandbox.allow_commands = [...extra.filter((x) => typeof x === "string"), ...cfg.sandbox.allow_commands];
+    } catch { /* a broken local file must not stop the daemon */ }
+  }
   cfg.sandbox.allow_commands = [...new Set([...cfg.sandbox.allow_commands, ...SAFE_COMMANDS])];
   return cfg;
 }
@@ -121,6 +130,33 @@ export function allowCommands(file: string, add: string[]): string[] {
     ? text.replace(/^allow_commands\s*=.*$/m, `allow_commands = ${list}`)
     : text.replace(/^\[sandbox\]\s*$/m, `[sandbox]\nallow_commands = ${list}`);
   fs.writeFileSync(file, next);
+  return fresh;
+}
+
+/**
+ * Remember commands the user approved while working. They go to .hexagon/local.toml (kept out of git through
+ * .git/info/exclude), so a personal "allow everything" never lands in the committed project config.
+ */
+export function allowLocal(configFile: string, add: string[]): string[] {
+  const dir = path.dirname(configFile);
+  const file = path.join(dir, "local.toml");
+  const have = fs.existsSync(file) ? ((parse(fs.readFileSync(file, "utf8")) as { sandbox?: { allow_commands?: string[] } }).sandbox?.allow_commands ?? []) : [];
+  const fresh = add.map((a) => a.trim()).filter((a) => a && !have.includes(a));
+  if (!fresh.length) return [];
+  fs.mkdirSync(dir, { recursive: true });
+  const list = JSON.stringify([...fresh, ...have]).replace(/","/g, '", "');
+  fs.writeFileSync(file, `# Your personal approvals (not committed). Edit freely.\n[sandbox]\nallow_commands = ${list}\n`);
+  try {
+    const gitDir = path.join(path.dirname(dir), ".git");
+    if (fs.statSync(gitDir).isDirectory()) {
+      const ex = path.join(gitDir, "info", "exclude");
+      const cur = fs.existsSync(ex) ? fs.readFileSync(ex, "utf8") : "";
+      if (!cur.split("\n").includes(".hexagon/local.toml")) {
+        fs.mkdirSync(path.dirname(ex), { recursive: true });
+        fs.writeFileSync(ex, `${cur}${cur && !cur.endsWith("\n") ? "\n" : ""}.hexagon/local.toml\n`);
+      }
+    }
+  } catch { /* not a git repo, or a worktree layout: nothing to exclude */ }
   return fresh;
 }
 

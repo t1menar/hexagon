@@ -78,11 +78,11 @@ describe("end to end with the mock agent", () => {
     expect(s1.tokens.steps).toBeGreaterThan(0);
     await client.call("chat.send", { text: "second message" });
     await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.feed.some((f) => f.kind === "agent" && f.text.includes("second message"))));
-    // A denied command becomes an approval request; approving restarts the session with the new rule.
+    // A denied command becomes an approval request; approving tells the live session (no restart, same process).
     await client.call("chat.send", { text: "check go\n@needs: curl -sO https://go.dev/dl" });
     const perm = await until(async () => (await client.call<{ permissions: { id: string; agent: string }[] }>("ui.snapshot")).permissions.find((p) => p.agent === "claude"));
     await client.call("question.answer", { question_id: perm.id, answer: "1" });
-    await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.state === "idle" && s.feed.some((f) => f.text.includes("Approved, running it now"))));
+    await until(async () => (await client.call<Snap>("ui.snapshot")).sessions.find((s) => s.id === "claude" && s.state === "idle" && s.feed.some((f) => f.text.includes("approved") && f.text.includes("hexagon exec"))));
   });
 
   it("rejects protocol calls from unknown agents", async () => {
@@ -194,9 +194,28 @@ describe("end to end with the mock agent", () => {
     expect(perm).toMatchObject({ agent: "T-1", prefix: "brew" });
     await until(async () => (await client.call<AgentStatus>("agent.status", { task: "T-1" })).state === "blocked");
     await client.call("question.answer", { question_id: perm.id, answer: "1" });
-    expect(fs.readFileSync(path.join(root, ".hexagon/config.toml"), "utf8")).toMatch(/allow_commands = \["brew"/);
+    expect(fs.readFileSync(path.join(root, ".hexagon/local.toml"), "utf8")).toMatch(/allow_commands = \["brew"/); // personal, not in the committed config
     await until(async () => (await client.call<AgentStatus>("agent.status", { task: "T-1" })).state === "done");
     expect((await client.call<{ permissions: unknown[] }>("ui.snapshot")).permissions).toEqual([]);
+  });
+  it("a dependent that never ran keeps its single attempt when its dependency is continued", async () => {
+    const planFile = path.join(root, ".hexagon/dep-plan.json");
+    fs.writeFileSync(planFile, JSON.stringify({
+      tasks: [
+        { id: "T-1", title: "Needs go", role: "implementer", description: "@needs: zip -r out.zip .", acceptance: ["AC-1"], files: { write: ["hexagon-mock/dep-1.md"] }, verify: ["test -f hexagon-mock/dep-1.md"] },
+        { id: "T-2", title: "After", role: "implementer", depends_on: ["T-1"], acceptance: ["AC-1"], files: { write: ["hexagon-mock/dep-2.md"] }, verify: ["test -f hexagon-mock/dep-2.md"] },
+      ],
+    }));
+    await client.call("run.start", { plan_path: planFile });
+    const perm = await until(async () => (await client.call<{ permissions: { id: string; agent: string }[] }>("ui.snapshot")).permissions.find((p) => p.agent === "T-1"));
+        await until(async () => (await client.call<AgentStatus>("agent.status", { task: "T-2" })).state === "blocked");
+        await client.call("question.answer", { question_id: perm.id, answer: "1" });
+    await until(async () => { return (await client.call<AgentStatus>("agent.status", { task: "T-1" })).state === "done"; });
+    const t2 = await until(async () => { const s = await client.call<AgentStatus>("agent.status", { task: "T-2" }); return s.state === "done" ? s : null; });
+    expect(t2.attempt).toBe(1); // it waited, it was not re-attempted
+    const runs = fs.readdirSync(path.join(root, ".hexagon/runs")).sort();
+    const agents = fs.readdirSync(path.join(root, ".hexagon/runs", runs.at(-1)!, "agents"));
+    expect(agents.filter((d) => d.startsWith("T-2-"))).toEqual(["T-2-a1"]);
   });
   it("an agent returns a defect to the task that owns the code, then continues with the fix", async () => {
     const planFile = path.join(root, ".hexagon/return-plan.json");

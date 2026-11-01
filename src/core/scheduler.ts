@@ -210,9 +210,15 @@ export class Scheduler extends EventEmitter {
     for (const d of this.tasks) {
       if (d.depends_on.includes(taskId) && this.outcome.get(d.id) === "blocked") {
         this.outcome.delete(d.id);
-        const n = (this.attempts.get(d.id) ?? 1) + 1;
-        this.attempts.set(d.id, n);
-        this.createStatus(d, n);
+        if (this.last.has(d.id)) {
+          // It really ran before: a new attempt, as /retry would do.
+          const n = (this.attempts.get(d.id) ?? 1) + 1;
+          this.attempts.set(d.id, n);
+          this.createStatus(d, n);
+        } else {
+          // It never started (only its dependency failed): same attempt, waiting again. No empty attempts piling up.
+          this.rc.store.apply(`${d.id}-a${this.attempts.get(d.id)}`, { type: "state", state: "queued", reason: `waiting for ${taskId}` });
+        }
       }
     }
   }
