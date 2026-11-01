@@ -45,21 +45,18 @@ from the person you work for — apply them (if one conflicts with the spec, fol
     case "analyst":
       return `${head}
 ${report}
-- \`hexagon plan-check\` validates spec.md and plan.json in your output directory; fix every error it prints.
+- \`hexagon plan-check\` validates the file of the current stage (analysis.md, spec.md [+ design.md] or plan.json) in your output directory; fix every error it prints.
 ${ask}
-- \`hexagon done --summary "<one line describing the plan>"\` exactly once, as your last action, after plan-check passes.`;
+- \`hexagon done --summary "<one line>" [--status blocked --blocker "<what is missing>"]\` exactly once, as your last action, after plan-check passes.`;
     case "control":
       return `## Hexagon commands
-You can drive Hexagon by running these shell commands (\`hexagon\` is on your PATH):
-- \`hexagon plan "<clear, self-contained goal>"\` starts spec-driven development: Hexagon's analyst writes a
-  spec and a task graph that the user approves in the dashboard (Enter), then coding agents build it in
-  parallel worktrees. Only when the user asks for it; otherwise do the work yourself. One plan at a time.
-- \`hexagon status\` shows the current run; \`hexagon status T-2\` shows one agent in detail.
-- \`hexagon logs T-2 40\` shows the last steps of an agent.
-- \`hexagon tell T-2 "<instruction>"\` sends an instruction to a running agent (\`@all\` for every agent).
-- \`hexagon answer Q-3 "<answer>"\` answers an agent's question, only if the user told you the answer.
-Each user message starts with a <hexagon_state> block: the current state of runs and plans.
-Don't run \`hexagon done\`, \`report\` or \`ask\`: just reply in the chat.
+You operate Hexagon by running these shell commands (\`hexagon\` is on your PATH):
+- \`hexagon status\` shows the current run; \`hexagon status T-2\` one agent. \`hexagon logs T-2 40\` its last steps.
+- \`hexagon do <command> --param value\` changes the graph, an agent or the run. Changes are proposals the user confirms.
+- \`hexagon plan "<clear, self-contained goal>"\` starts spec-driven development; only when the user asks for it.
+- \`hexagon tell T-2 "<instruction>"\` sends an instruction to a running agent. \`hexagon answer Q-3 "<answer>"\` only if the user gave you the answer.
+Each user message may start with a <hexagon_state> block: the current state of runs and plans.
+Don't run \`hexagon done\`, \`report\` or \`ask\`: reply in the chat.
 ${perms}`;
     case "bootstrap":
       return `${head}
@@ -69,6 +66,7 @@ ${report}
   exactly once, as your last action, after HEXAGON.md is written.`;
     default:
       return `${head}
+- Write only to files matching the task's write scope; Hexagon reverts anything else. Don't commit; Hexagon commits for you.
 ${report}
 ${ask}
 ${note}
