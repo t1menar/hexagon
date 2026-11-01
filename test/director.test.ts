@@ -115,4 +115,30 @@ describe("director seeding", () => {
     expect(m.particles.activeCount).toBe(0); // but nothing is replayed
     expect(d.activity).toHaveLength(0);
   });
+
+  it("bus traffic between tasks on an edge sends particles along it, scaled by size; model calls only pulse", () => {
+    const { m, d } = setup();
+    d.bus({ from: "T-1", to: "T-2", kind: "handoff", size: 3000 });
+    expect(m.particles.activeCount).toBe(3);
+    expect(d.activity.at(-1)!.text).toMatch(/handoff → T-2 \(2\.9 KB\)/);
+    const { m: m2, d: d2 } = setup();
+    d2.bus({ from: "T-1", to: "T-2", kind: "decision", size: 100 });
+    expect(m2.particles.activeCount).toBe(1);
+    const { m: m3, d: d3 } = setup();
+    d3.bus({ from: "T-1", to: "model", kind: "model_call", size: 5000 });
+    expect(m3.particles.activeCount).toBe(0);
+    expect(d3.activity).toHaveLength(0);
+  });
+  it("bus traffic to a role or topic fans out downstream; with no edge nothing is invented", () => {
+    const { m, d } = setup();
+    d.bus({ from: "T-1", to: "role:qa", kind: "broadcast", size: 50 });
+    expect(m.particles.activeCount).toBe(1);
+    const { m: m2, d: d2 } = setup();
+    d2.bus({ from: "T-2", to: "T-1", kind: "question", size: 50 }); // reverse of the T-1→T-2 edge: drawn backwards
+    expect(m2.particles.activeCount).toBe(1);
+    const { m: m3, d: d3 } = setup();
+    d3.bus({ from: "T-9", to: "T-8", kind: "request", size: 50 });
+    expect(m3.particles.activeCount).toBe(0);
+    expect(d3.activity).toHaveLength(1);
+  });
 });

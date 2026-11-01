@@ -5,6 +5,7 @@
  */
 import type { AgentState, AgentStatus, Message, StampedEvent } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
+import type { BusActivity } from "../core/bus.js";
 import type { Geometry, NodeFx } from "./network.js";
 import { AnimationManager, ease, Path } from "./motion.js";
 import { STATE_LOOK, TOKENS, type Token } from "./theme.js";
@@ -201,6 +202,44 @@ export class Director {
     this.flash(a, TOKENS.info, 500);
     if (!path) return;
     for (let k = 0; k < 2; k++) this.m.spawn("information", path, { delay: k * 160, tag: `msg:${a}`, onArrive: k === 1 ? () => this.flash(b, TOKENS.info, 600) : undefined });
+  }
+
+  /**
+   * Something travelled on the agent bus. A message between two tasks that share a dependency edge sends particles
+   * along it (more for a bigger payload); one without such an edge, or to a role/topic, leaves the sender fanning out
+   * downstream. Model calls only pulse the card. Everything lands in the activity timeline.
+   */
+  bus(a: BusActivity): void {
+    const task = (x: string) => /^T-\d+$/.test(x);
+    if (a.kind === "model_call" || a.kind === "model_response") {
+      const id = task(a.from) ? a.from : a.to;
+      if (!task(id)) return;
+      const now = this.m.clock.now();
+      const key = `${a.kind}:${id}`;
+      if (now - (this.lastTool.get(key) ?? -1e9) < 450) return;
+      this.lastTool.set(key, now);
+      this.flash(id, a.kind === "model_call" ? TOKENS.active : TOKENS.brand, 300);
+      return;
+    }
+    if (!task(a.from)) {
+      this.log(a.to, "comm", `${a.kind} from ${a.from}`, "info");
+      return;
+    }
+    const color = a.kind === "handoff" ? TOKENS.success : a.kind === "finding" ? TOKENS.warning : a.kind === "decision" ? TOKENS.brand2 : TOKENS.info;
+    const kind = a.kind === "finding" ? "review" : a.kind === "handoff" ? "completion" : "information";
+    const n = a.size < 400 ? 1 : a.size < 2000 ? 2 : 3;
+    this.log(a.from, "comm", `${a.kind} → ${a.to} (${a.size < 1024 ? `${a.size} B` : `${(a.size / 1024).toFixed(1)} KB`})`, a.kind === "finding" ? "warning" : "info");
+    this.flash(a.from, color, 500);
+    const edges = this.geometry?.edges ?? [];
+    let paths: Path[];
+    if (task(a.to)) {
+      const fwd = edges.find((e) => e.from === a.from && e.to === a.to);
+      const back = edges.find((e) => e.from === a.to && e.to === a.from);
+      const p = fwd?.path ?? back?.path.reversed();
+      paths = p ? [p] : [];
+      if (p) this.flash(a.to, color, 700);
+    } else paths = this.outgoing(a.from).slice(0, 2);
+    for (const [i, p] of paths.entries()) for (let k = 0; k < n; k++) this.m.spawn(kind, p, { delay: k * 140 + i * 60, tag: `bus:${a.from}` });
   }
 
   dispose(): void { this.m.cancelAll(); this.fx.clear(); this.activity.length = 0; this.activeSet.clear(); this.waitingSet.clear(); }

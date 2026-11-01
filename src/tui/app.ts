@@ -384,6 +384,7 @@ export class App {
         break;
       }
       case "message": this.onMessage(p.data); this.director.message(p.data); break;
+      case "bus_activity": this.director.bus(p.data); break;
       case "notice": this.log(p.data.text, p.data.level === "info" ? S.cyan : S.orange); this.flash(p.data.text, p.data.level); break;
       case "session": {
         const m = mergeSession(this.sessions.get(p.data.id), p.data);
