@@ -10,7 +10,9 @@ import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
 import type { SessionStatus } from "./core/solo.js";
 import { findSpecs, lintSpec, listProjectFiles, parseSpec } from "./core/spec.js";
-import type { Draft, Push } from "./daemon/orchestrator.js";
+import type { ModelDiscoveryResult } from "./agents/contracts/model-selection.js";
+import type { AgentInfo, Draft, Push } from "./daemon/orchestrator.js";
+import { configureInteractive, formatAgent, formatModels } from "./shell/agents.js";
 import { agentDetail, formatEvent, formatMessage, runTable } from "./shell/render.js";
 import { readJson } from "./util/fsx.js";
 import { readResource } from "./util/resources.js";
@@ -34,7 +36,8 @@ ${c.bold("Watch & steer")}
   hexagon takeover <T-n>           continue the agent's own session yourself (claude --resume)
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
   hexagon allow <cmd…> | all       let agents run these commands (e.g. allow brew curl) or everything
-  hexagon model [role model]       show/set the model per role (e.g. model planner opus)
+  hexagon model [role model|default]  show/set a model override per role (default = the CLI's own)
+  hexagon agents [list|doctor|models <agent>|configure|add]   providers, CLI versions, auth, capabilities, discovered models
   hexagon install [go|node|java|maven]   install a toolchain for agents (official release, no Homebrew)
 
 ${c.bold("Agent protocol")} (run by agents inside their sessions)
@@ -271,6 +274,33 @@ async function main(argv: string[]): Promise<void> {
           ? await client.call<M>("models.set", { role: rest[0]!.toLowerCase(), model: rest[1] === "default" ? null : rest[1] })
           : await client.call<M>("models.list");
         for (const m of list) console.log(`${m.role.padEnd(12)} ${m.model.padEnd(10)} effort ${m.effort}`);
+        break;
+      }
+      case "agents": {
+        const sub = rest[0] ?? "list";
+        if (sub === "list" || sub === "doctor") {
+          const list = await client.call<AgentInfo[]>("agents.list");
+          console.log(list.map((a) => formatAgent(a, sub === "doctor")).join("\n\n"));
+          const bad = list.filter((a) => a.error || a.diagnostics?.installed === false || a.diagnostics?.auth === "unauthenticated");
+          if (sub === "doctor") {
+            console.log(bad.length ? `\n${bad.length} agent(s) need attention.` : "\nAll configured agents look usable.");
+            if (bad.length) process.exitCode = 1;
+          }
+        } else if (sub === "models") {
+          if (!rest[1]) throw new Error("usage: hexagon agents models <agent>");
+          console.log(formatModels(rest[1], await client.call<ModelDiscoveryResult>("agents.models", { agent: rest[1], fresh: true })));
+        } else if (sub === "configure") {
+          if (rest[1] && rest[2]) {
+            await client.call("agents.role", { role: rest[1].toLowerCase(), agent: rest[2] });
+            console.log(`${rest[1]} → ${rest[2]}`);
+          } else await configureInteractive((m, p) => client.call(m, p));
+        } else if (sub === "add") {
+          const [, id, adapter] = rest;
+          if (!id || !adapter) throw new Error("usage: hexagon agents add <id> <adapter> [--provider P] [--command bin]");
+          const command = one(rest, "--command");
+          await client.call("agents.add", { id, adapter, provider: one(rest, "--provider"), command: command ? command.split(/\s+/) : undefined });
+          console.log(`added agent ${id} (${adapter})`);
+        } else throw new Error("usage: hexagon agents [list|doctor|models <agent>|configure [role agent]|add <id> <adapter>]");
         break;
       }
       case "allow": console.log((await client.call<{ text: string }>("allow", { rules: rest })).text); break;

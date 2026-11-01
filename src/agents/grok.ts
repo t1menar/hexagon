@@ -27,7 +27,11 @@ export class GrokAdapter extends OneShotAdapter implements AgentAdapter {
   override async discoverModels(): Promise<ModelDiscoveryResult> {
     const r = await probe(this.command.slice(0, 1), ["models"], 15000);
     if (!r.ok) return { supported: false, diagnostic: r.missing ? "grok is not installed" : `\`grok models\` failed: ${(r.stderr || r.stdout).trim().slice(0, 160)}` };
-    const models: DiscoveredModel[] = r.stdout.split("\n").map((l) => l.trim()).filter((l) => l && !/^(available|models?|name|id)\b[:\s]*$/i.test(l) && !/^[-=─]+$/.test(l))
+    // Output format is undocumented: if the CLI prints a bulleted list, only bullets are models (headers are skipped);
+    // otherwise each non-empty, non-separator line contributes its first token.
+    const lines = r.stdout.split("\n").map((l) => l.trim()).filter((l) => l && !/^[-=─_]{3,}$/.test(l));
+    const bullets = lines.filter((l) => /^[-*•]\s+/.test(l));
+    const models: DiscoveredModel[] = (bullets.length ? bullets : lines)
       .map((l) => ({ identifier: l.replace(/^[-*•]\s*/, "").split(/\s+/)[0]! })).filter((m) => m.identifier);
     return { supported: true, models, source: "cli", discoveredAt: new Date().toISOString() };
   }

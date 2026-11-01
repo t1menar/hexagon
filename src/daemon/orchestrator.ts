@@ -8,7 +8,11 @@ import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "
 import { TERMINAL_STATES } from "../contracts/types.js";
 import { atomicWriteJson, nowIso, readJson, readJsonl } from "../util/fsx.js";
 import { selfCommand } from "../util/resources.js";
-import { allowCommands, loadConfig, setRoleModel, type HexagonConfig } from "../core/config.js";
+import { DiscoveryCache, type ModelDiscoveryResult } from "../agents/contracts/model-selection.js";
+import type { AdapterDiagnostics } from "../agents/contracts/adapter.js";
+import type { AgentCapabilities } from "../agents/contracts/capabilities.js";
+import type { ModelSelection } from "../agents/contracts/model-selection.js";
+import { addAgent, allowCommands, loadConfig, setRoleAgent, setRoleModel, type HexagonConfig } from "../core/config.js";
 import { applyToolchainEnv, install as installToolchain, installed as installedToolchains, onPath, toolchainFor, TOOLCHAINS } from "../core/toolchains.js";
 import * as g from "../core/git.js";
 import { checkPlan, normalizePlan, type PlanCheck } from "../core/plan.js";
@@ -21,6 +25,13 @@ import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.j
 import { SoloSession, type SessionStatus } from "../core/solo.js";
 import { StatusStore } from "../core/status.js";
 import type { RunContext } from "../core/supervisor.js";
+
+export interface AgentInfo {
+  id: string; configured_provider: string | null; command: string[] | null;
+  roles: { role: string; model_override: string | null }[];
+  provider: string; adapter: string; display_name: string;
+  capabilities: AgentCapabilities | null; selection: ModelSelection | null; diagnostics: AdapterDiagnostics | null; error: string | null;
+}
 
 export interface ActiveRun {
   runId: string;
@@ -178,6 +189,49 @@ export class Orchestrator extends EventEmitter {
       const r = this.cfg.roles[role];
       return { role, agent: r.agent, model: r.model ?? this.cfg.agents[r.agent]?.model ?? "cli-default", effort: r.effort };
     });
+  }
+
+  private discovery = new DiscoveryCache();
+
+  /** Every configured agent with live diagnostics (executable, version, auth) and declared capabilities. */
+  async agentsInfo(): Promise<AgentInfo[]> {
+    const roles = Object.entries(this.cfg.roles);
+    return Promise.all(Object.entries(this.cfg.agents).map(async ([id, conf]): Promise<AgentInfo> => {
+      const base = { id, configured_provider: conf.provider ?? null, command: conf.command ?? null, roles: roles.filter(([, r]) => r.agent === id).map(([n, r]) => ({ role: n, model_override: r.model ?? null })) };
+      try {
+        const a = this.adapter(id);
+        const diag = await a.detect();
+        return {
+          ...base, provider: a.provider, adapter: a.adapterId, display_name: a.displayName, capabilities: a.capabilities,
+          selection: a.selection, diagnostics: diag, error: null,
+        };
+      } catch (e) {
+        return { ...base, provider: conf.provider ?? "unknown", adapter: conf.adapter, display_name: conf.adapter, capabilities: null, selection: null, diagnostics: null, error: (e as Error).message };
+      }
+    }));
+  }
+
+  /** Models the agent's own CLI reports right now (cached per CLI version; never a built-in list). */
+  async discoverModels(agentId: string, fresh = false): Promise<ModelDiscoveryResult> {
+    const a = this.adapter(agentId);
+    if (!a.capabilities.supportsModelDiscovery) return a.discoverModels();
+    if (fresh) this.discovery.clear();
+    const diag = await a.detect();
+    return this.discovery.get(`${a.adapterId}:${agentId}:${diag.executable}:${diag.version}`, () => a.discoverModels());
+  }
+
+  setRoleAgent(role: string, agent: string): void {
+    if (!Object.keys(this.cfg.roles).includes(role)) throw new Error(`unknown role "${role}" (roles: ${Object.keys(this.cfg.roles).join(", ")})`);
+    if (!this.cfg.agents[agent]) throw new Error(`unknown agent "${agent}" (configured: ${Object.keys(this.cfg.agents).join(", ")})`);
+    setRoleAgent(this.paths.config, role as Role, agent);
+    this.reloadConfig();
+    this.notice("info", `${role} now uses agent ${agent} (new sessions; running agents keep theirs).`);
+  }
+
+  addAgentConfig(a: { id: string; adapter: string; provider?: string; command?: string[]; model?: string }): void {
+    createAdapter(a.id, { id: a.id, adapter: a.adapter, provider: a.provider, command: a.command, model: a.model }); // validates the adapter name
+    addAgent(this.paths.config, a);
+    this.reloadConfig();
   }
 
   setModel(role: string, model: string | null): void {

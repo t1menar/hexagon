@@ -38,7 +38,7 @@ const COMMANDS: [string, string][] = [
   ["/abort", "stop the run"],
   ["/clean", "remove worktrees of finished runs (and close the run)"],
   ["/close", "hide the finished run from the dashboard (without merging)"],
-  ["/model [role] [model]", "show or set the model per role, e.g. /model planner opus · /model implementer sonnet"],
+  ["/model [role] [model]", "show or set a model override per role (default = the CLI's own) · /agents lists agents, versions and discovered models"],
   ["/allow <cmd…> | all", "let agents run these commands (e.g. /allow brew curl), or everything"],
   ["/install <tool>", "install go, node, java or maven for agents (official release, no Homebrew)"],
   ["/stop", "stop the daemon and every agent, then quit"],
@@ -523,7 +523,8 @@ export class App {
       } else if (cmd === "/model" && argIdx === 1) {
         items = ["planner", "implementer", "tester", "reviewer", "lead", "init"].map((r) => ({ value: r, desc: r === "lead" ? "the Claude chat" : "" })).filter((i) => match(i.value));
       } else if (cmd === "/model" && argIdx === 2) {
-        items = [["opus", "deepest analysis"], ["sonnet", "fast, strong coding"], ["haiku", "cheapest"], ["default", "the agent's model"]].map(([v, d]) => ({ value: v!, desc: d! })).filter((i) => match(i.value));
+        // No built-in model list: "default" keeps the CLI's own choice; `/models <agent>` shows what the CLI reports.
+        items = [{ value: "default", desc: "the CLI's own default (no override)" }].filter((i) => match(i.value));
       } else if (cmd === "/install" && argIdx === 1) {
         items = [["go", "Go toolchain"], ["node", "Node.js LTS"], ["java", "Temurin JDK 21"], ["maven", "Apache Maven"]].map(([v, d]) => ({ value: v!, desc: d! })).filter((i) => match(i.value));
       } else if (cmd === "/answer" && argIdx === 1) {
@@ -695,7 +696,7 @@ export class App {
             ? await c.call<M>("models.set", { role: args[0]!.toLowerCase(), model: args[1] === "default" ? null : args[1] })
             : await c.call<M>("models.list");
           this.log(list.map((m) => `${padTo(m.role, 12)} ${padTo(m.model, 10)} effort ${m.effort}${m.agent !== "claude" ? `  (agent ${m.agent})` : ""}`).join("\n"), S.white);
-          if (args.length < 2) this.log("Change with /model <role> <opus|sonnet|haiku|full model id|default>", S.gray);
+          if (args.length < 2) this.log("Change with /model <role> <identifier|default>. `default` keeps the CLI's own model; /agents shows what each CLI reports.", S.gray);
           this.select(HEX);
           return;
         }

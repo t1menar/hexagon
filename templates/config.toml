@@ -3,56 +3,79 @@
 [run]
 max_parallel = 4        # agents running at once
 max_attempts = 2        # attempts per task (a retry escalates effort one level)
-fix_loops = 2           # verify/review fix rounds within an attempt
+fix_loops = 2           # how many times an agent may hand work back to another task
+max_fix_cycles = 0      # verify/review repair cycles per task; 0 = unlimited (stops early on identical repeated failures)
+max_identical_failures = 3  # same failure this many times in a row = no progress, escalate to you
 budget_tokens = 0       # pause the run after this many tokens (input + cached + output; 0 = no limit)
 # base_branch = "main"  # default: the branch checked out when the run starts
 
-# Which agent, model and effort each role uses. Agents are defined below. `model` overrides the
-# agent's default model for that role (any value `claude --model` accepts: opus, sonnet, haiku, a full id).
-# Change it from the dashboard with /model <role> <model>, e.g. /model planner opus.
+# Which agent and effort each role uses. Agents are defined below. Hexagon ships NO model names: each CLI
+# keeps using its own configured default. To override for a role add `model = "<identifier>"` (an opaque string
+# handed to that CLI as-is; `hexagon agents models <agent>` lists what the CLI reports, when it can).
+# Optional `fallback_agent = "<agent>"` is used only when [recovery].allow_provider_failover = true.
+# Change from the dashboard with /model <role> <model|default>, or `hexagon agents configure`.
 [roles.init]
 agent = "claude"
-model = "sonnet"
 effort = "medium"
 [roles.planner]
 agent = "claude"
-model = "opus"
 effort = "high"
 [roles.implementer]
 agent = "claude"
-model = "sonnet"
 effort = "medium"
 [roles.tester]
 agent = "claude"
-model = "sonnet"
 effort = "medium"
 [roles.reviewer]
 agent = "claude"
-model = "opus"
 effort = "high"
 [roles.lead]
 agent = "claude"
-model = "opus"
 effort = "low"
 
 # Agents are coding CLIs that Hexagon wraps; each runs in its own git worktree.
 # claude-code: the Claude Code CLI (streams events, takes live messages, takeover = `claude --resume`).
 [agents.claude]
 adapter = "claude-code"
+provider = "anthropic"
 command = ["claude"]
-model = "sonnet"        # any value `claude --model` accepts
+# model = "..."         # optional override; omit to use Claude Code's own default
 # args = ["--add-dir", "../shared"]
 
-# Any other non-interactive coding CLI ({prompt} is replaced by the task prompt):
+# OpenAI Codex CLI and xAI Grok CLI (integrations are unverified against the real CLIs; see docs/PROVIDERS.md):
 # [agents.codex]
+# adapter = "codex"
+# provider = "openai"
+# command = ["codex"]
+# [agents.grok]
+# adapter = "grok"
+# provider = "xai"
+# command = ["grok"]
+
+# Any other non-interactive coding CLI ({prompt} is replaced by the task prompt):
+# [agents.other]
 # adapter = "exec"
-# command = ["codex", "exec", "--full-auto", "{prompt}"]
+# provider = "acme"
+# command = ["acme-agent", "run", "{prompt}"]
 
 # Scripted offline agent, useful to try the workflow without spending anything:
 #   set agent = "mock" for every role, or `hexagon run plan.json --agent mock`
 [agents.mock]
 adapter = "mock"
 step_ms = 600
+
+# Provider limits (rate limit, usage quota, context overflow, truncation) never count as repair cycles or attempts.
+[recovery]
+enabled = true
+auto_resume = true              # wait for the reset and continue the same task and session by itself
+unlimited_quota_wait = true
+allow_provider_failover = false # true: a role's `fallback_agent` may take over when its provider is exhausted
+initial_backoff_seconds = 60    # used only when the provider reports no reset time (labelled "estimated")
+max_backoff_seconds = 3600
+backoff_multiplier = 2
+backoff_jitter = true
+max_wait_seconds = 0            # 0 = wait as long as it takes
+max_context_recoveries = 3      # fresh compacted sessions after context overflow
 
 [review]
 mode = "agent"          # "agent" | "off"
