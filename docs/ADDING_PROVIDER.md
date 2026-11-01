@@ -1,5 +1,7 @@
 # Adding a CLI provider
 
+> Just want to use another CLI without writing code? Use the generic `exec` adapter: see [Adding another coding CLI](../README.md#adding-another-coding-cli). This page is for writing a full adapter.
+
 A new integration is one class plus one `registerAdapter` call. The scheduler, supervisor, recovery and TUI only see the `AgentAdapter` contract. A complete, tested example is [`examples/acme-provider.ts`](../examples/acme-provider.ts) (exercised by `test/providers.test.ts`).
 
 ## 1. Architecture
