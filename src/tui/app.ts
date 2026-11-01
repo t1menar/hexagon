@@ -6,7 +6,7 @@ import type { HexClient } from "../client/client.js";
 import type { AgentState, AgentStatus, Message, Plan, RunStatus, StampedEvent } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
 import type { SessionStatus } from "../core/solo.js";
-import type { Draft, PermissionRequest, Push, Snapshot } from "../daemon/orchestrator.js";
+import type { Draft, PermissionRequest, Push, RunChanges, Snapshot } from "../daemon/orchestrator.js";
 import { hexagonCommand, openTerminal } from "../shell/open.js";
 import { Canvas, clip, padTo, S, st, wrap } from "./canvas.js";
 import { AnimationManager } from "./motion.js";
@@ -46,6 +46,7 @@ const COMMANDS: [string, string][] = [
   ["/takeover [T-n]", "work in the agent's session yourself (Ctrl-T)"],
   ["/open [T-n]", "open the agent in a new terminal window (Ctrl-O)"],
   ["/diff [T-n]", "show the agent's changes (Ctrl-D)"],
+  ["/changes", "where the work lives: branches, folders, files changed, what is not in your branch yet"],
   ["/merge", "merge the finished run into your branch"],
   ["/abort", "stop the run"],
   ["/clean", "remove worktrees of finished runs (and close the run)"],
@@ -148,6 +149,8 @@ export class App {
   private scroll = 0;
   private frames = 0;
   private modalHidden: string | null = null;
+  private changes: RunChanges | null = null;
+  private changesAt = 0;
   private ambient = new AmbientField();
   private ambientOn = true;
   private lastInput = Date.now();
@@ -222,11 +225,13 @@ export class App {
       if (minute !== this.lastMinute) { this.lastMinute = minute; changed = true; }
       if (this.snap?.run?.state === "running") changed = true;
       void this.refreshAgentInfo();
+      void this.refreshChanges();
       if (this.syncAmbient()) changed = true;
       if (changed) this.invalidate();
     }, 1000);
     this.housekeeping.unref();
     void this.refreshAgentInfo();
+    void this.refreshChanges(true);
     await new Promise<void>((r) => (this.done = r));
   }
 
@@ -292,6 +297,7 @@ export class App {
 
   private onPush(p: Push) {
     this.invalidate();
+    if (p.event === "run" || (p.event === "agent_event" && ["state", "files"].includes(p.data.event.type))) void this.refreshChanges();
     switch (p.event) {
       case "status": {
         const prevAttempt = this.full.get(p.data.task_id)?.attempt;
@@ -405,6 +411,17 @@ export class App {
     const changed = lvl !== this.ambientLevelShown;
     this.ambientLevelShown = lvl;
     return changed;
+  }
+
+  /** Where the work lives (branches, worktrees, size of the change). Throttled; only redraws when it changed. */
+  private async refreshChanges(force = false): Promise<void> {
+    if (!this.snap?.run) { if (this.changes) { this.changes = null; this.invalidate(); } return; }
+    if (!force && Date.now() - this.changesAt < 3000) return;
+    this.changesAt = Date.now();
+    try {
+      const c = await this.client.call<RunChanges | null>("run.changes");
+      if (JSON.stringify(c) !== JSON.stringify(this.changes)) { this.changes = c; this.invalidate(); }
+    } catch { /* daemon busy: keep the last picture */ }
   }
 
   private setMotion(arg: string) {
@@ -913,6 +930,26 @@ export class App {
           await this.suspend(() => page(r.diff));
           return;
         }
+        case "/changes": {
+          const ch = await c.call<RunChanges | null>("run.changes");
+          this.changes = ch;
+          if (!ch) { this.log("There is no run yet, so there are no changes.", S.gray); this.select(HEX); return; }
+          const lines = [
+            `Where the work is (run ${ch.run_id}):`,
+            `  your branch   ${ch.base_branch}: untouched until /merge`,
+            `  integration   ${ch.integration_branch}`,
+            `  folder        ${ch.integration_worktree}  (cd there to look around)`,
+            `  size          ${ch.files} file(s), +${ch.insertions} −${ch.deletions}, ${ch.commits} commit(s)${ch.merged ? " — already in your branch" : ch.files ? " — not in your branch yet" : ""}`,
+            ...ch.file_list.slice(0, 40).map((f) => `    +${String(f.added).padEnd(4)} −${String(f.deleted).padEnd(4)} ${f.path}`),
+            ...(ch.file_list.length > 40 ? [`    … ${ch.file_list.length - 40} more`] : []),
+            "  agents:",
+            ...ch.agents.map((a) => `    ${a.task_id.padEnd(5)} ${a.state.padEnd(14)} ${a.worktree ?? "(no worktree yet)"}${a.branch ? `  [${a.branch}]` : ""}`),
+            "/diff T-n shows one agent's change · /merge applies the integration branch to your branch.",
+          ];
+          this.log(lines.join("\n"), S.white);
+          this.select(HEX);
+          return;
+        }
         case "/merge": { const r = await c.call<{ text: string }>("merge.base"); this.log(r.text, S.green); return; }
         case "/abort": await c.call("run.abort"); this.log("run aborted", S.orange); return;
         case "/clean": { const r = await c.call<{ removed: string[] }>("worktrees.clean"); this.log(`removed ${r.removed.length} worktree(s)`, S.gray); return; }
@@ -978,7 +1015,7 @@ export class App {
     ];
     if (p.reason) rows.push({ k: "Why", v: p.reason, style: this.tk("text") });
     const wt = a?.workspace?.worktree;
-    rows.push({ k: "Where", v: wt ? path.relative(this.root, wt) || wt : "project root", style: this.tk("muted") });
+    rows.push({ k: "Where", v: wt ?? "project root", style: this.tk("muted") });
     if (p.action === "sudo") rows.push({ k: "How", v: "you type the password in a terminal; Hexagon never sees it", style: this.tk("muted") });
     else if (p.action === "install") rows.push({ k: "How", v: "official release into ~/.hexagon/toolchains, no sudo", style: this.tk("muted") });
     else rows.push({ k: "Runs", v: "in the agent's directory, output goes back to the agent", style: this.tk("muted") });
@@ -1077,6 +1114,10 @@ export class App {
       const seen = new Set<string>();
       const prov = this.agentInfo.filter((a) => a.adapter !== "mock" && !seen.has(a.provider) && seen.add(a.provider));
       if (prov.length) parts.push([prov.map((a) => `${a.provider} ${a.diagnostics?.installed && a.diagnostics.auth !== "unauthenticated" ? (this.caps.unicode ? "✔" : "+") : (this.caps.unicode ? "✖" : "x")}`).join("  "), this.tk("muted")]);
+    }
+    if (this.changes && this.changes.files > 0 && !this.changes.merged) {
+      const c = this.changes;
+      parts.push([`${this.caps.unicode ? "Δ" : "~"} ${c.files} file${c.files === 1 ? "" : "s"} +${c.insertions} ${this.caps.unicode ? "−" : "-"}${c.deletions} · not in ${c.base_branch} yet`, this.tk("info")]);
     }
     const nApprovals = (this.snap.permissions ?? []).length;
     if (nApprovals) parts.unshift([`${this.caps.unicode ? "⚠" : "!"} ${nApprovals} approval${nApprovals === 1 ? "" : "s"} waiting${this.approvalModal() ? "" : " (F5)"}`, this.tk("warning", S.bold)]);
@@ -1328,6 +1369,15 @@ export class App {
       row("Model", m?.selection?.mode === "cli-default" ? "CLI default (selection)" : m?.selection ? `override ${(m.selection as { identifier?: string }).identifier}` : "CLI-managed");
       row("Discovery", m?.capabilities?.supportsModelDiscovery ? "supported" : "unsupported");
       if (s) { y++; sec("SESSION"); row("State", s.state); row("Tokens", `${tok(sessTok(s))} (${s.tokens?.steps ?? 0} steps)`); }
+      if (this.changes) {
+        const c = this.changes;
+        y++; sec("WHERE THE WORK IS");
+        row("Your branch", `${c.base_branch}, untouched until /merge`);
+        row("Integration", c.integration_branch);
+        row("Folder", c.integration_worktree);
+        row("Changes", `${c.files} file${c.files === 1 ? "" : "s"}, +${c.insertions} −${c.deletions}${c.merged ? " (already in your branch)" : ""}`, c.files ? this.tk("info") : this.tk("muted"));
+        row("Next", "/changes lists files · /diff T-n · /merge");
+      }
       return;
     }
     const m = this.meta(a.agent.id);
@@ -1340,6 +1390,12 @@ export class App {
     row("Selection", a.agent.model_mode === "cli-default" || !a.agent.model ? "native CLI default" : `${a.agent.model_mode}: ${a.agent.model}`);
     row("Runtime", a.agent.runtime_model ?? "unknown (CLI-managed)", a.agent.runtime_model ? this.tk("text") : this.tk("muted"));
     row("Discovery", m?.capabilities?.supportsModelDiscovery ? "supported" : m ? "unsupported" : "unknown");
+    if (a.workspace?.worktree) {
+      y++; sec("WORKSPACE");
+      row("Folder", a.workspace.worktree);
+      row("Branch", a.workspace.branch ?? "");
+      row("Changed", `${a.files_touched?.length ?? 0} file${(a.files_touched?.length ?? 0) === 1 ? "" : "s"} (/diff ${a.task_id})`);
+    }
     y++; sec("EXECUTION");
     row("State", `${lk.sym} ${lk.label}${a.state_reason ? ` — ${a.state_reason}` : ""}`, lk.style);
     row("Task", `${a.task_id} ${this.taskTitle(a.task_id)}`);

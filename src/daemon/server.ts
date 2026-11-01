@@ -60,6 +60,7 @@ export class DaemonServer {
         }),
       }),
       "run.status": () => o.status(),
+      "run.changes": () => o.changes(),
       "run.pause": () => { o.requireRun().scheduler.pauseAll(); return { ok: true }; },
       "run.resume": () => { o.requireRun().scheduler.resumeAll(); return { ok: true }; },
       "run.abort": () => { o.requireRun().scheduler.abort(); return { ok: true }; },

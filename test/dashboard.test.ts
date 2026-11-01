@@ -31,7 +31,8 @@ function makeSnapshot(states: Record<string, string>) {
 class FakeClient extends EventEmitter {
   constructor(public snap: unknown) { super(); }
   calls: { m: string; p: unknown }[] = [];
-  async call(m: string, p?: unknown) { this.calls.push({ m, p }); if (m === "ui.snapshot") return this.snap; if (m === "agents.list") return []; return []; }
+  reply: Record<string, unknown> = {};
+  async call(m: string, p?: unknown) { this.calls.push({ m, p }); if (m in this.reply) return this.reply[m]; if (m === "ui.snapshot") return this.snap; if (m === "agents.list") return []; return []; }
   async subscribe() {}
   close() {}
 }
@@ -69,9 +70,15 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-async function boot(states: Record<string, string>, cols = 160, rows = 45, env: Record<string, string | undefined> = {}) {
+const CHANGES = {
+  run_id: "R1", base_branch: "main", integration_branch: "hexagon/R1/integration", integration_worktree: ".hexagon/worktrees/R1/integration", merged: false, commits: 3, files: 2, insertions: 138, deletions: 4,
+  file_list: [{ path: "go.mod", added: 3, deleted: 0 }, { path: "internal/server/server.go", added: 135, deleted: 4 }],
+  agents: [{ task_id: "T-1", state: "done", branch: "hexagon/R1/T-1-a1", worktree: ".hexagon/worktrees/R1/T-1-a1", files: 1 }],
+};
+async function boot(states: Record<string, string>, cols = 160, rows = 45, env: Record<string, string | undefined> = {}, reply: Record<string, unknown> = { "run.changes": CHANGES }) {
   setTerm(cols, rows, env);
   const client = new FakeClient(makeSnapshot(states));
+  client.reply = reply;
   const app = new App(client as never, tmp);
   void app.start();
   await vi.waitFor(() => expect(text()).toContain("HEXAGON"));
@@ -303,6 +310,27 @@ describe("dashboard (real App, fake daemon)", () => {
     await settle(100);
     expect(text()).toContain("APPROVAL NEEDED");
     for (const l of screen) expect([...strip(l ?? "")].length).toBeLessThanOrEqual(60);
+    exit();
+  });
+
+  it("says where the work is: header badge, run-level inspector and /changes", async () => {
+    const { app, exit } = await boot({ "T-1": "done", "T-2": "running" });
+    await vi.waitFor(() => expect(text()).toContain("not in main yet"));
+    expect(text()).toMatch(/2 files \+138/);
+    await vi.waitFor(() => expect(text()).toContain("WHERE THE WORK IS"));
+    for (const w of ["untouched", "hexagon/R1/integration", "Folder"]) expect(text(), w).toContain(w);
+    await (app as never as { command(c: string): Promise<void> }).command("/changes");
+    await settle(100);
+    const t = text();
+    for (const w of ["server.go"]) expect(t, w).toContain(w);
+    exit();
+  });
+  it("an agent's inspector shows its folder and branch", async () => {
+    const { app, client, exit } = await boot({ "T-1": "done", "T-2": "running" });
+    push(client, "status", agent("T-2", "running", { workspace: { worktree: ".hexagon/worktrees/R1/T-2-a1", branch: "hexagon/R1/T-2-a1" }, files_touched: ["a.go", "b.go"] }));
+    (app as never as { select(id: string): void }).select("T-2");
+    await settle(120);
+    for (const w of ["WORKSPACE", ".hexagon/worktrees/R1/T-2-a1", "hexagon/R1/T-2-a1", "2 files"]) expect(text(), w).toContain(w);
     exit();
   });
 });

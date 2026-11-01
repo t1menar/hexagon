@@ -80,6 +80,22 @@ export interface Snapshot {
   permissions: PermissionRequest[];
 }
 
+/** Where the run's work lives and how much of it there is. Nothing here touches the user's own branch until /merge. */
+export interface RunChanges {
+  run_id: string;
+  base_branch: string;
+  integration_branch: string;
+  /** Project-relative path of the integration worktree. */
+  integration_worktree: string;
+  merged: boolean;
+  commits: number;
+  files: number;
+  insertions: number;
+  deletions: number;
+  file_list: { path: string; added: number; deleted: number }[];
+  agents: { task_id: string; state: string; branch: string | null; worktree: string | null; files: number }[];
+}
+
 /** An agent was refused a command; the user decides. */
 export interface PermissionRequest {
   id: string;
@@ -543,7 +559,7 @@ export class Orchestrator extends EventEmitter {
     if (opts.agent) this.adapter(opts.agent);
 
     const missing = this.missingForPlan(plan);
-    if (missing.length) this.notice("attention", `Verify commands need ${missing.join(", ")}, which ${missing.length > 1 ? "aren't" : "isn't"} installed. Agents will report blocked until then: ${missing.map((m) => `/install ${m}`).join(" · ")}`);
+    if (missing.length) void this.preflightInstall(plan, missing);
     // Agents work in git worktrees: a new project gets a repository and an initial commit.
     const setup = await g.ensureRepo(this.root);
     if (setup) this.notice("info", `This folder wasn't ready for agents yet: Hexagon ${setup}.`);
@@ -705,6 +721,16 @@ export class Orchestrator extends EventEmitter {
     if (!tc || this.missingNoticed.has(tc) || installedToolchains()[tc]) return;
     this.missingNoticed.add(tc);
     this.notice("attention", `\`${command}\` isn't installed on this machine. /install ${tc} downloads the official ${tc} release for Hexagon's agents (into ~/.hexagon/toolchains, no Homebrew or sudo).`);
+  }
+
+  /** The plan's verify commands need tools that aren't here: offer the install now, before agents run into it. */
+  private async preflightInstall(plan: Plan, missing: string[]): Promise<void> {
+    for (const key of missing) {
+      const users = plan.tasks.filter((t) => t.verify.some((v) => TOOLCHAINS[key]!.commands.includes(v.trim().split(/\s+/)[0] ?? ""))).map((t) => t.id);
+      const d = await this.askUser("hexagon", "install", `install ${key} (official release into ~/.hexagon/toolchains, no sudo)`, `the plan's verify commands (${users.join(", ")}) need ${key}`);
+      if (d === "deny") { this.notice("attention", `${key} stays missing: ${users.join(", ")} will report blocked at verification. /install ${key} later resumes them.`); continue; }
+      try { await this.installToolchain(key); } catch (e) { this.notice("error", `install of ${key} failed: ${(e as Error).message}`); }
+    }
   }
 
   /** Verify commands whose tool isn't installed, as toolchain names. */
@@ -1035,6 +1061,32 @@ export class Orchestrator extends EventEmitter {
     await g.git(wt, ["add", "-A", "-N"]);
     const out = await g.git(wt, ["diff", ...(stat ? ["--stat"] : []), r.rc.integration.branch]);
     return out.stdout || "(no changes)";
+  }
+
+  /** Where the work is: branches, worktrees, and what is not yet in the user's branch. */
+  async changes(): Promise<RunChanges | null> {
+    const r = this.current;
+    if (!r) return null;
+    const br = r.rc.integration.branch;
+    const num = await g.git(this.root, ["diff", "--numstat", `${r.base}...${br}`]);
+    const file_list = num.ok ? num.stdout.split("\n").filter(Boolean).map((l) => {
+      const [a, d, ...f] = l.split("\t");
+      return { path: f.join("\t"), added: Number(a) || 0, deleted: Number(d) || 0 };
+    }) : [];
+    const cnt = await g.git(this.root, ["rev-list", "--count", `${r.base}..${br}`]);
+    const commits = cnt.ok ? Number(cnt.stdout.trim()) || 0 : 0;
+    // "Merged" only means something once work existed: an untouched integration branch is trivially an ancestor of base.
+    const inBase = (await g.git(this.root, ["merge-base", "--is-ancestor", br, r.base])).ok;
+    const merged = inBase && commits === 0 && file_list.length === 0 && r.store.all().some((x) => x.state === "done");
+    return {
+      run_id: r.runId, base_branch: r.base, integration_branch: br,
+      integration_worktree: path.relative(this.root, r.rc.integration.worktree),
+      merged,
+      commits, files: file_list.length,
+      insertions: file_list.reduce((n, f) => n + f.added, 0), deletions: file_list.reduce((n, f) => n + f.deleted, 0),
+      file_list,
+      agents: r.store.all().map((s) => ({ task_id: s.task_id, state: s.state, branch: s.workspace?.branch ?? null, worktree: s.workspace?.worktree ?? null, files: s.files_touched?.length ?? 0 })),
+    };
   }
 
   async mergeToBase(): Promise<string> {
