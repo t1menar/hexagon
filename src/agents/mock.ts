@@ -112,8 +112,10 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
       const lim = /@limit:\s*(.+)$/m.exec(task.description ?? "");
       if (lim) {
         const mark = path.join(os.tmpdir(), `hexagon-mock-limit-${createHash("sha1").update(ctx.cwd).digest("hex").slice(0, 16)}`);
+        fs.appendFileSync(`${mark}.runs`, `${ctx.resume ? "resume" : "new"}\n`); // test hook: did the retry continue the session?
         if (!fs.existsSync(mark)) {
           fs.writeFileSync(mark, "1");
+          host.emit({ type: "progress", text: "session started" }); // like the real CLI: the session exists even though the run fails
           return { kind: "error", error: { kind: "transient", message: lim[1]!.trim(), retryable: true, raw: lim[1]!.trim() } };
         }
       }

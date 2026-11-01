@@ -68,6 +68,19 @@ describe("provider-limit recovery (mock agent)", () => {
     expect(done.agent.runtime_model ?? null).toBeNull(); // the mock reports none: never invented
   }, 60000);
 
+  it("after a limit the retry resumes the session the CLI already created (never re-creates it)", async () => {
+    const root = project();
+    const { client } = await boot(root);
+    await client.call("run.start", { plan_path: plan(root, "@limit: 5-hour usage limit reached, resets in 2 seconds") });
+    const done = await until(async () => { const s = await client.call<AgentStatus>("agent.status", { task: "T-1" }); return s.state === "done" ? s : null; });
+    const wt = done.workspace?.worktree;
+    expect(wt).toBeTruthy();
+    const { createHash } = await import("node:crypto");
+    const os = await import("node:os");
+    const mark = path.join(os.tmpdir(), `hexagon-mock-limit-${createHash("sha1").update(path.resolve(root, wt!)).digest("hex").slice(0, 16)}.runs`);
+    expect(fs.readFileSync(mark, "utf8").trim().split("\n")).toEqual(["new", "resume"]);
+  }, 60000);
+
   it("auth failure blocks with an actionable reason and does not retry", async () => {
     const root = project();
     const { client } = await boot(root);
