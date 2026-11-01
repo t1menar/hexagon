@@ -15,6 +15,7 @@ export interface SendInput {
   requires_ack?: boolean;
   priority?: "low" | "normal" | "urgent";
   thread_id?: string | null;
+  bus_id?: string;
 }
 
 export interface RouterHooks {
@@ -162,6 +163,7 @@ export class MessageRouter extends EventEmitter {
       reply_to: input.reply_to ?? null,
       priority: input.priority ?? "normal",
       requires_ack: input.requires_ack ?? input.type === "instruction",
+      ...(input.bus_id ? { bus_id: input.bus_id } : {}),
       delivery,
     };
   }

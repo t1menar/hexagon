@@ -500,3 +500,45 @@ The ResultEnvelope gains one field: `"assumptions": [{ "text": "…", "question_
 | 5 | `hexagon attach`, `/open` (tmux → iTerm → Terminal), Lead agent | 5 |
 | 6 | `/takeover` (Claude Code resume, API chat, shell fallback), hand-back flow | 6 |
 | 7 | Notes/requests → blackboard and follow-up tasks; communication metrics (questions/task, instructions/task, takeover rate) | 7 |
+
+## The agent bus (v0.3)
+
+> The sections above describe the original hub-and-spoke router. The router is still the single writer of
+> `messages.jsonl` and of every agent's inbox. The bus (`src/core/bus.ts`) sits on top of it: it validates, orders,
+> deduplicates and records typed envelopes in `.hexagon/runs/<run>/bus.jsonl`, and delivers through the router.
+
+**Envelope** (`B-n`): `kind` (`handoff`, `decision`, `question`, `answer`, `finding`, `request`, `broadcast`), `from`
+(task id, `user`, `reviewer`, `orchestrator`), `to` (`agent` | `role` | `topic`, or nothing for decisions and
+broadcasts), `channel` + `seq`, `subject` (≤120 chars), `fields` (≤12 small key/values), `body` (≤2000 chars),
+`artifact` (path to the full thing), `refs`, `reply_to`, `blocking`/`timeout_s`, `state`, `message_ids`.
+`bus.jsonl` holds `env`, `state` and `sub` (subscription) lines; the last line per id wins, so a restart replays it
+exactly (sequence numbers, dedupe, subscriptions, open blocking questions).
+
+**Guarantees.** Ordering per channel (`agent:T-2`, `role:x`, `topic:y`, `all`); duplicates (same kind, sender,
+target, text) return the original envelope; delivery follows the router messages `queued → delivered → acked`;
+30 envelopes per agent per run; oversize text is cut and flagged `truncated`.
+
+**Trust.** Bus text is data. Secrets (private keys, `sk-…`, `ghp_…`, `AKIA…`, `password=…`) are redacted before it is
+written; tags that could close or forge Hexagon's wrappers (`hexagon_message`, `user_message`, `task`, …) are
+neutralised; delivery uses the existing `<hexagon_message>` wrapper, which the protocol tells agents is information.
+
+**Blocking questions** never block a shell command: the agent ends its turn and the answer arrives as its next
+message. Hexagon keeps a waits-for graph, rejects a question that would close a cycle (`deadlock: T-2 → T-1 → T-2`),
+and after `timeout_s` (default 600) tells the asker to continue with an assumption.
+
+**Context hygiene.** An agent about to start gets `<upstream_handoffs>`: the newest handoff of each upstream task,
+decisions, and findings/answers addressed to it, as fields first, text capped (400 chars each, 3 KB total), with
+`full:` pointers to the artifacts. Never transcripts. Blackboard notes are filtered the same way: notes from
+unrelated tasks are replaced by a count.
+
+**Routing.** A finished task publishes a handoff to each dependent (result file as artifact). `hexagon note` also
+lands on the bus (broadcast), `hexagon return` as a `request`, a reviewer's change request as a `finding`; these are
+recorded only, their delivery path is unchanged.
+
+**CLI** (agents, any provider): `hexagon bus send --kind K (--to T-n | --role R | --topic X) [--subject S]
+[--field k=v] [--artifact path] [--reply-to B-n] [--blocking [--timeout s]] "<text>"`, `hexagon bus read [--kind K]
+[--since SEQ]`, `hexagon bus subscribe <topic>`.
+
+**Observability.** `run.status` / `hexagon status --json` carry `bus` (totals by kind and state, who waits for whom,
+the last 10). The daemon pushes `bus` (envelope or state change) and `bus_activity` `{from, to, kind, size}` for every
+bus message and, per model call, `task → model` / `model → task`; Phase D draws them.

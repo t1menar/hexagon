@@ -23,6 +23,7 @@ import { ApiRegistry, type ApiOp } from "../core/registry.js";
 import { MessageRouter } from "../core/router.js";
 import { formatTrace, trace, type TaskEvidence } from "../core/trace.js";
 import { WaitStore } from "../core/recovery.js";
+import { AgentBus, type BusActivity, type Envelope } from "../core/bus.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
 import { Scheduler, type PriorTask } from "../core/scheduler.js";
 import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
@@ -65,6 +66,9 @@ export type Push =
   | { event: "agent_event"; data: StampedEvent }
   | { event: "message"; data: Message }
   | { event: "run"; data: RunStatus | null }
+  /** Something travelled: a bus message, a handoff, a model call. The UI animates it (from → to, by kind, sized). */
+  | { event: "bus_activity"; data: BusActivity }
+  | { event: "bus"; data: Envelope }
   | { event: "notice"; data: { level: "info" | "attention" | "error"; text: string } }
   | { event: "session"; data: SessionStatus }
   | { event: "draft"; data: Draft | null }
@@ -598,12 +602,14 @@ export class Orchestrator extends EventEmitter {
     }
     let scheduler!: Scheduler;
     const router = new MessageRouter(run, runId, this.cfg.messaging, { activeTasks: (role) => scheduler.activeTaskIds(role) });
+    const bus = new AgentBus(run, runId, router, { activeTasks: (role) => scheduler.activeTaskIds(role) });
+    store.runExtra = () => ({ bus: bus.summary() });
     const rc: RunContext = {
       root: this.root, paths: this.paths, run, runId, cfg: this.cfg, store, router, registry: this.registry, specs,
       skills: loadSkills(this.paths), context: projectContext(this.root), integration,
       adapterFor: (role, override) => this.adapterFor(role, override),
       waits,
-      sessions: this.agentSessions, pool: this.pool,
+      sessions: this.agentSessions, pool: this.pool, bus,
       agentEnv: (id) => this.agentEnv(id),
       tasks: plan.tasks,
       returnTask: (from, to, issue) => scheduler.returnTask(from, to, issue),
@@ -611,8 +617,15 @@ export class Orchestrator extends EventEmitter {
     scheduler = new Scheduler(rc, plan, { only: opts.only, agentOverride: opts.agent ?? null, maxParallel: opts.max_parallel, prior: opts.resume_run_id ? prior : undefined });
 
     store.on("status", (s: AgentStatus) => this.push({ event: "status", data: s }));
+    bus.on("activity", (a: BusActivity) => this.push({ event: "bus_activity", data: a }));
+    bus.on("envelope", (e: Envelope) => this.push({ event: "bus", data: e }));
+    bus.on("state", (e: Envelope) => this.push({ event: "bus", data: e }));
     store.on("event", (e: StampedEvent) => {
       this.push({ event: "agent_event", data: e });
+      if (e.event.type === "usage" && e.event.step) {
+        bus.activity({ from: e.task_id, to: "model", kind: "model_call", size: e.event.input + e.event.cache_read });
+        bus.activity({ from: "model", to: e.task_id, kind: "model_response", size: e.event.output });
+      }
       if (e.event.type === "permission_denied") this.requestPermission(e.task_id, "task", e.event.command, e.event.tool);
       if (e.event.type === "tool_missing") this.toolMissing(e.event.command);
     });
@@ -1163,6 +1176,7 @@ export class Orchestrator extends EventEmitter {
 
   shutdown(): void {
     this.current?.scheduler.shutdown();
+    this.current?.rc.bus.close();
     for (const s of this.sessions.values()) if (s.status.state === "running" || s.status.state === "waiting_input") s.cancel();
   }
 }

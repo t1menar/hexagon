@@ -169,6 +169,10 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         await waitForAnswer();
       }
 
+      // `@decide: <text>`: record an architectural decision on the bus for downstream agents.
+      const decide = /@decide:\s*(.+)$/m.exec(task.description ?? "");
+      if (decide && firstOfTask) api.bus?.({ action: "send", kind: "decision", subject: decide[1]!.trim(), body: decide[1]!.trim() });
+
       api.report({ phase: "editing", activity: "Writing files" });
       const files = task.files.write.filter((g) => !/[*?{]/.test(g));
       if (files.length === 0) files.push(defaultFile(task));
