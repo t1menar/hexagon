@@ -1,5 +1,6 @@
 import type { AgentEvent, Effort, ErrorKind, Phase, ResultEnvelope, ReviewVerdict, Role, Task } from "../contracts/types.js";
 import type { Spec } from "../core/spec.js";
+import type { AdapterDiscovery, AdapterIdentity } from "./contracts/adapter.js";
 
 /** A message to inject into an agent's conversation. */
 export interface Injected {
@@ -61,6 +62,7 @@ export interface AgentRunContext {
   conversational?: boolean;
   host: AgentHost;
   api: AgentApi;
+  /** Security policy for this execution (same for first run, retries after limits, and failover). */
   /** Aborting ends the process; the outcome is "interrupted". */
   signal: AbortSignal;
   specs?: Spec[];
@@ -68,12 +70,11 @@ export interface AgentRunContext {
 
 export interface AdapterOutcome {
   kind: "finished" | "interrupted" | "error";
-  error?: { kind: ErrorKind; message: string; retryable: boolean };
+  error?: { kind: ErrorKind; message: string; retryable: boolean; raw?: string };
 }
 
-export interface AgentAdapter {
-  readonly id: string;
-  readonly provider: string;
+export interface AgentAdapter extends AdapterIdentity, AdapterDiscovery {
+  /** The user's explicit override (null = the CLI picks; nothing is passed). Not the runtime model. */
   readonly model: string | null;
   readonly supportsLiveInput: boolean;
   run(ctx: AgentRunContext): Promise<AdapterOutcome>;

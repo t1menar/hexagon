@@ -30,12 +30,16 @@
         "id": { "type": "string" },
         "provider": { "type": "string" },
         "model": { "type": ["string", "null"] },
+        "adapter": { "type": ["string", "null"] },
+        "model_mode": { "enum": ["cli-default", "custom", "discovered", null] },
+        "runtime_model": { "type": ["string", "null"] },
+        "cli_version": { "type": ["string", "null"] },
         "effort": { "enum": ["low", "medium", "high", "xhigh", "max", null] }
       }
     },
 
     "state": {
-      "enum": ["queued", "starting", "running", "waiting_input", "paused", "verifying", "reviewing", "merging", "done", "failed", "blocked", "cancelled"]
+      "enum": ["queued", "starting", "running", "waiting_input", "paused", "waiting_quota", "verifying", "reviewing", "merging", "done", "failed", "blocked", "cancelled"]
     },
     "state_reason": { "type": ["string", "null"], "description": "Human-readable reason, e.g. 'waiting for lease src/auth/login.ts held by T-006'." },
     "state_since": { "type": "string", "format": "date-time" },
@@ -155,6 +159,20 @@
           }
         }
       ]
+    },
+    "fix_cycle": { "type": "integer", "minimum": 0 },
+    "recovery": {
+      "type": ["object", "null"],
+      "properties": {
+        "cls": { "type": "string" },
+        "status": { "enum": ["waiting", "resuming", "recovered", "blocked"] },
+        "next_retry_at": { "type": ["string", "null"] },
+        "reset_source": { "enum": ["provider", "estimate", null] },
+        "waits": { "type": "integer" },
+        "waited_s": { "type": "number" },
+        "message": { "type": "string" },
+        "history": { "type": "array", "items": { "type": "object" } }
+      }
     },
     "result_path": { "type": ["string", "null"], "description": "Set when state is terminal; points to result.json (ResultEnvelope)." }
   }

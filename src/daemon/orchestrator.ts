@@ -1,9 +1,7 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { ClaudeCodeAdapter } from "../agents/claude-code.js";
-import { ExecAdapter } from "../agents/exec.js";
-import { MockAdapter } from "../agents/mock.js";
+import { createAdapter } from "../agents/registry.js";
 import { contextFile, loadSkills, projectContext, systemPrompt } from "../agents/prompts.js";
 import type { AgentAdapter, Reply } from "../agents/types.js";
 import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "../contracts/types.js";
@@ -17,7 +15,8 @@ import { checkPlan, normalizePlan, type PlanCheck } from "../core/plan.js";
 import { ProjectPaths, type RunPaths } from "../core/project.js";
 import { ApiRegistry, type ApiOp } from "../core/registry.js";
 import { MessageRouter } from "../core/router.js";
-import { Scheduler } from "../core/scheduler.js";
+import { WaitStore } from "../core/recovery.js";
+import { Scheduler, type PriorTask } from "../core/scheduler.js";
 import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
 import { SoloSession, type SessionStatus } from "../core/solo.js";
 import { StatusStore } from "../core/status.js";
@@ -163,15 +162,7 @@ export class Orchestrator extends EventEmitter {
     if (a) return a;
     const conf = this.cfg.agents[agentId];
     if (!conf) throw new Error(`unknown agent "${agentId}" (configured: ${Object.keys(this.cfg.agents).join(", ")})`);
-    switch (conf.adapter) {
-      case "mock": a = new MockAdapter(agentId, conf.step_ms ?? 600); break;
-      case "exec":
-        if (!conf.command?.length) throw new Error(`[agents.${agentId}] needs command = ["…"]`);
-        a = new ExecAdapter(agentId, conf.command, conf.interactive ?? null);
-        break;
-      default:
-        a = new ClaudeCodeAdapter(agentId, { command: conf.command?.length ? conf.command : ["claude"], model: model || conf.model || null, args: conf.args ?? [] });
-    }
+    a = createAdapter(agentId, conf, model);
     this.adapters.set(key, a);
     return a;
   }
@@ -185,7 +176,7 @@ export class Orchestrator extends EventEmitter {
   models(): { role: Role; agent: string; model: string; effort: string }[] {
     return (Object.keys(this.cfg.roles) as Role[]).map((role) => {
       const r = this.cfg.roles[role];
-      return { role, agent: r.agent, model: r.model ?? this.cfg.agents[r.agent]?.model ?? "default", effort: r.effort };
+      return { role, agent: r.agent, model: r.model ?? this.cfg.agents[r.agent]?.model ?? "cli-default", effort: r.effort };
     });
   }
 
@@ -432,7 +423,31 @@ export class Orchestrator extends EventEmitter {
 
   // ───────────── runs ─────────────
 
-  async startRun(opts: { plan_path: string; only?: string[]; agent?: string | null; max_parallel?: number; budget_tokens?: number | null }): Promise<string> {
+  /**
+   * Daemon (re)start: runs that were waiting for a provider limit continue on their own, in their own worktrees and
+   * CLI sessions. Tasks that were done stay done; cancelled ones are not restarted.
+   */
+  async recoverRuns(): Promise<string[]> {
+    const resumed: string[] = [];
+    if (!fs.existsSync(this.paths.runs)) return resumed;
+    for (const runId of fs.readdirSync(this.paths.runs)) {
+      const run = this.paths.run(runId);
+      const waits = new WaitStore(path.join(run.dir, "waits.json"));
+      waits.recoverInterrupted();
+      if (!waits.pending().length || this.isClosed(runId) || !fs.existsSync(run.plan)) continue;
+      if (this.current && this.current.store.runState === "running") break; // one active run at a time
+      try {
+        await this.startRun({ plan_path: path.relative(this.root, run.plan), resume_run_id: runId });
+        resumed.push(runId);
+      } catch (e) {
+        this.notice("error", `could not resume run ${runId}: ${(e as Error).message}`);
+      }
+    }
+    if (resumed.length) this.notice("info", `Resumed ${resumed.join(", ")} after restart (tasks waiting for a provider limit continue automatically).`);
+    return resumed;
+  }
+
+  async startRun(opts: { resume_run_id?: string; plan_path: string; only?: string[]; agent?: string | null; max_parallel?: number; budget_tokens?: number | null }): Promise<string> {
     if (this.current && this.current.store.runState !== "done" && this.current.store.runState !== "aborted") {
       throw new Error(`run ${this.current.runId} is still active; /abort it first`);
     }
@@ -453,30 +468,42 @@ export class Orchestrator extends EventEmitter {
     // Agents work in git worktrees: a new project gets a repository and an initial commit.
     const setup = await g.ensureRepo(this.root);
     if (setup) this.notice("info", `This folder wasn't ready for agents yet: Hexagon ${setup}.`);
-    const base = this.cfg.run.base_branch ?? (await g.currentBranch(this.root));
-    const runId = `r-${stamp()}`;
+    const base = (opts.resume_run_id && readJson<RunStatus>(this.paths.run(opts.resume_run_id).status)?.base_branch) || this.cfg.run.base_branch || (await g.currentBranch(this.root));
+    const prevRun = opts.resume_run_id ? readJson<RunStatus>(this.paths.run(opts.resume_run_id).status) : undefined;
+    const runId = opts.resume_run_id ?? `r-${stamp()}`;
     const run = this.paths.run(runId);
     fs.mkdirSync(run.dir, { recursive: true });
-    atomicWriteJson(run.plan, plan);
+    if (!opts.resume_run_id) atomicWriteJson(run.plan, plan);
 
     const integration = { branch: `hexagon/${runId}/integration`, worktree: path.join(this.paths.worktrees, runId, "integration") };
     // Specs written by the planner may be uncommitted: agents still read them from the task card.
     await g.addWorktree(this.root, integration.worktree, integration.branch, base);
 
     const store = new StatusStore(run, runId, {
-      plan_path: path.relative(this.root, planFile), integration_branch: integration.branch, base_branch: base, budget_tokens: this.cfg.run.budget_tokens, started_at: nowIso(),
+      plan_path: path.relative(this.root, planFile), integration_branch: integration.branch, base_branch: base, budget_tokens: this.cfg.run.budget_tokens, started_at: prevRun?.started_at ?? nowIso(),
     });
+    const hydrated = opts.resume_run_id ? store.hydrate() : new Map<string, AgentStatus>();
+    const waits = new WaitStore(path.join(run.dir, "waits.json"));
+    const prior = new Map<string, PriorTask>();
+    for (const st of hydrated.values()) {
+      const cur = prior.get(st.task_id);
+      if (!cur || st.attempt > cur.attempt) {
+        const w = waits.get(st.agent_run_id);
+        prior.set(st.task_id, { state: st.state, attempt: st.attempt, sessionId: st.attach?.native_session_id ?? null, nextRetryAt: w?.next_retry_at ?? st.recovery?.next_retry_at ?? null });
+      }
+    }
     let scheduler!: Scheduler;
     const router = new MessageRouter(run, runId, this.cfg.messaging, { activeTasks: (role) => scheduler.activeTaskIds(role) });
     const rc: RunContext = {
       root: this.root, paths: this.paths, run, runId, cfg: this.cfg, store, router, registry: this.registry, specs,
       skills: loadSkills(this.paths), context: projectContext(this.root), integration,
       adapterFor: (role, override) => this.adapterFor(role, override),
+      waits,
       agentEnv: (id) => this.agentEnv(id),
       tasks: plan.tasks,
       returnTask: (from, to, issue) => scheduler.returnTask(from, to, issue),
     };
-    scheduler = new Scheduler(rc, plan, { only: opts.only, agentOverride: opts.agent ?? null, maxParallel: opts.max_parallel });
+    scheduler = new Scheduler(rc, plan, { only: opts.only, agentOverride: opts.agent ?? null, maxParallel: opts.max_parallel, prior: opts.resume_run_id ? prior : undefined });
 
     store.on("status", (s: AgentStatus) => this.push({ event: "status", data: s }));
     store.on("event", (e: StampedEvent) => {
@@ -848,7 +875,7 @@ export class Orchestrator extends EventEmitter {
   }
 
   shutdown(): void {
-    this.current?.scheduler.abort();
+    this.current?.scheduler.shutdown();
     for (const s of this.sessions.values()) if (s.status.state === "running" || s.status.state === "waiting_input") s.cancel();
   }
 }

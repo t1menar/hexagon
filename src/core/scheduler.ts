@@ -7,7 +7,12 @@ import { AgentRun, type RunContext } from "./supervisor.js";
 const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 export const escalate = (e: Effort, steps: number): Effort => EFFORTS[Math.min(EFFORTS.indexOf(e) + steps, EFFORTS.length - 1)]!;
 
+/** State a previous daemon left for a task (restart recovery). */
+export interface PriorTask { state: AgentState; attempt: number; sessionId?: string | null; nextRetryAt?: string | null }
+
 export interface SchedulerOptions {
+  /** Resuming a run after a restart: statuses are already on disk and must not be recreated or duplicated. */
+  prior?: Map<string, PriorTask>;
   only?: string[];
   agentOverride?: string | null;
   maxParallel?: number;
@@ -38,8 +43,12 @@ export class Scheduler extends EventEmitter {
 
   start(): void {
     for (const t of this.tasks) {
-      this.attempts.set(t.id, 1);
-      this.createStatus(t, 1);
+      const p = this.opts.prior?.get(t.id);
+      if (p && TERMINAL_STATES.has(p.state)) { this.attempts.set(t.id, p.attempt); this.outcome.set(t.id, p.state); continue; } // never restarted
+      if (p && p.state === "waiting_quota") { this.attempts.set(t.id, p.attempt); continue; } // same task, same attempt, same session
+      const n = p ? (p.state === "queued" ? p.attempt : p.attempt + 1) : 1; // interrupted mid-run: a new attempt, as /retry would do
+      this.attempts.set(t.id, n);
+      this.createStatus(t, n);
     }
     this.rc.store.startHeartbeat();
     this.tick();
@@ -70,7 +79,10 @@ export class Scheduler extends EventEmitter {
     const adapter = this.rc.adapterFor(t.role, this.overrides.get(t.id)?.agent ?? this.opts.agentOverride ?? t.agent_hint);
     this.rc.store.create({
       task: t, attempt, role: t.role,
-      agent: { id: adapter.id, provider: adapter.provider, model: adapter.model, effort: this.effortFor(t, attempt, role.effort) },
+      agent: {
+        id: adapter.id, provider: adapter.provider, model: adapter.model, effort: this.effortFor(t, attempt, role.effort),
+        adapter: adapter.adapterId, model_mode: adapter.selection.mode,
+      },
       supportsLiveInput: adapter.supportsLiveInput,
     });
   }
@@ -138,7 +150,10 @@ export class Scheduler extends EventEmitter {
     const attempt = this.attempts.get(t.id)!;
     const ov = this.overrides.get(t.id);
     const adapter = this.rc.adapterFor(t.role, ov?.agent ?? this.opts.agentOverride ?? t.agent_hint);
-    const run = new AgentRun(this.rc, t, attempt, this.effortFor(t, attempt, this.rc.cfg.roles[t.role].effort), adapter);
+    const p = this.opts.prior?.get(t.id);
+    const resume = p?.state === "waiting_quota" && p.attempt === attempt && p.sessionId ? { sessionId: p.sessionId, nextRetryAt: p.nextRetryAt ?? new Date().toISOString() } : undefined;
+    if (resume) this.opts.prior!.delete(t.id); // consumed: a later attempt starts fresh
+    const run = new AgentRun(this.rc, t, attempt, this.effortFor(t, attempt, this.rc.cfg.roles[t.role].effort), adapter, resume);
     this.active.set(t.id, run);
     this.last.set(t.id, run);
     this.emit("launch", run);
@@ -262,6 +277,17 @@ export class Scheduler extends EventEmitter {
     this.rc.store.setAttention([]);
     for (const r of this.active.values()) r.resume();
     this.tick();
+  }
+
+  /**
+   * The daemon is stopping (not a user abort): tasks waiting for a provider limit and tasks not yet started keep their
+   * persisted state so the next daemon continues them; anything actually executing is cancelled.
+   */
+  shutdown(): void {
+    this.aborted = true;
+    for (const r of this.active.values()) {
+      if (r.state === "waiting_quota") r.detach(); else r.cancel();
+    }
   }
 
   abort(): void {
