@@ -14,6 +14,7 @@ import { AmbientField } from "./ambient.js";
 import { Director } from "./director.js";
 import { computeLayout, type Region } from "./layout.js";
 import { renderNetwork, type NetNode } from "./network.js";
+import { renderMolecule } from "./molecule.js";
 import { renderStartup, startupProgress, STARTUP_MS } from "./startup.js";
 import { asciiFold, detectCaps, GROUPS, groupOfRole, STATE_LOOK, TOKENS, sgr, type Caps, type Group, type Token } from "./theme.js";
 import { cellAspect } from "./hex.js";
@@ -148,6 +149,7 @@ export class App {
   private histIdx = -1;
   private scroll = 0;
   private frames = 0;
+  private moleculeShown = false;
   private modalHidden: string | null = null;
   private changes: RunChanges | null = null;
   private changesAt = 0;
@@ -1042,6 +1044,7 @@ export class App {
 
   private render() {
     this.dirty = false;
+    this.moleculeShown = false;
     const W = Math.max(40, process.stdout.columns || 100);
     const H = Math.max(16, process.stdout.rows || 30);
     let cv = new Canvas(W, H);
@@ -1065,6 +1068,7 @@ export class App {
     out += "\x1b[?2026l";
     this.prev = lines;
     this.frames++;
+    if (this.moleculeShown && !this.startup) this.mgr.hold("molecule", 12); else this.mgr.release("molecule");
     process.stdout.write(out);
   }
 
@@ -1221,9 +1225,10 @@ export class App {
       if (!this.snap.has_context) lines.push(["Tip: /init lets an agent study this repo and write HEXAGON.md first.", this.tk("info")]);
     }
     lines.slice(0, r.h - 2).forEach(([t, s], i) => cv.text(r.x + 3, r.y + 2 + i, clip(t, r.w - 6), s));
-    // A resting molecule: static, so an idle screen costs nothing.
+    // A live 3D atom while the empty state is on screen (12 fps); a still frame when motion is off.
     if (r.h >= 12 && r.w >= 40) {
-      const sc = renderStartup(r.w - 2, r.h - 8, 1500, this.caps, cellAspect());
+      this.moleculeShown = true;
+      const sc = renderMolecule(r.w - 2, r.h - 8, this.caps.motion === "off" ? 0 : this.now, this.caps, cellAspect());
       cv.blit(sc, r.x + 1, r.y + 7, 0, 0, r.w - 2, r.h - 8);
     }
   }
@@ -1344,9 +1349,10 @@ export class App {
   // ── inspector ──
 
   private kv(cv: Canvas, x: number, y: number, w: number, k: string, v: string, style = this.tk("text")): number {
-    cv.text(x, y, k.padEnd(11), this.tk("muted"));
-    const lines = wrap(v, Math.max(6, w - 12));
-    lines.slice(0, 2).forEach((l, i) => cv.text(x + 11, y + i, clip(l, w - 11), style));
+    const kw = Math.max(11, k.length + 1);
+    cv.text(x, y, k.padEnd(kw), this.tk("muted"));
+    const lines = wrap(v, Math.max(6, w - kw));
+    lines.slice(0, 2).forEach((l, i) => cv.text(x + kw, y + i, clip(l, w - kw), style));
     return Math.min(2, lines.length);
   }
 

@@ -75,6 +75,79 @@ Short brand assembly; any key skips it; `ui.startup_animation = false` disables 
 
 ```
 
+### Empty state: the live 3D atom (t = 0 s, 1.5 s, 3 s)
+
+Shown in the graph pane while there is no agent network. A hexagonal nucleus, three tilted orbits and six electrons rotate in real time (12 fps, perspective and depth shading: filled ⬢ is near, hollow ⬡ is far). It stops with `/animate off` or `HEXAGON_ANIMATION=off`.
+
+```text
+
+
+                         •••        ·⬢•
+                        ·  •••    ···  ·
+                         ·    •  ·    ·
+                       •••••••••·••••••••
+                   •••••  ·   •••·   ·  •••••
+                •••       ··••    ·•··       •••
+                ·          ·•   ⬢  ··          •
+                ·          •··⬢··⬢···⬢         •
+                ⬢··      •• ⬢······⬢ ••     ···⬢
+                   ······•    ··⬢·    •······
+                        •··············•
+                       ••     ····     ••
+                       •    ··    ··    •
+                      ••  ··⬡      ···  ••
+                      •••··          ··•••
+
+
+
+```
+
+```text
+
+
+                           ····•••···•··
+                         ···            ⬢•
+                       ··⬢•·•·•·•·•·•••   ••
+                    ••••••            ·•••••••
+                 •••  ·           ·····    ••••
+                ••   ··        ····         ••••
+                •    ·       ···⬢          •• ••
+                •    ·    ···⬢···⬢·⬢      ••   •
+                ···  ·· ··· ⬢·····⬢     ••   ··•
+                  ·······       ⬢     ••  ···· •
+                     ··············•••····    ••
+                    ·· ··        ••          ••
+                   ··   ·⬡   ••••           ••
+                   ·•• ••••••             •••
+                     •••    ···        ••••
+                               ······•••
+
+
+```
+
+```text
+
+
+                           ······⬢···
+                       ····         ·····
+                    ··•••••••••••••••••••··
+                   ••••                  ••••
+                 ••                         ·••
+                ••   ···············⬡··      ·⬢·
+                •·····          ⬢     ······  ··
+                •·          ⬢······⬢       ·····
+               ••··         ⬢·····⬢          ···
+                • ···           ⬢          ····•
+                ···· ⬡····           ······  ·••
+                 ··•··•⬢  ············     ••••
+                  ··    ••••••••••••••••••••·
+                    ··                   ···
+                      ···             ···
+                         ·····⬢········
+
+
+```
+
 ### Idle
 
 Nothing is running: static, zero redraws.
@@ -150,7 +223,7 @@ Particles follow the real dependency edge T-1 → T-2 (the same path that is dra
                                │  Build the API         │
                                │  openai · codex 0.9    │
                            ╭──▸│  ● WORKING         10% ├─╮
-┌─ T-1 · implementer ────┐ ■   ├─ REVIEW ───────────────┤ │
+┌─ T-1 · implementer ────┐ ⬡   ├─ REVIEW ───────────────┤ │
 │  Parse the spec        │ │   │  ○ not reviewed yet    │ │    ┌────────────────────────┐
 │  anthropic · claude-co…│ │   └────────────────────────┘ │    │  INTEGRATION           │
 │  ✔ DONE           100% ├─┤                              ╰┬──▸│  ⇢ INTEGRATING         │
@@ -170,10 +243,10 @@ Particles climb the rejection rail (left gutter) from the review row to the work
 ```text
                                ┌─ T-2 · implementer ────┐
                                │▲ Build the API         │
-                               │■ openai · codex 0.9    │
-                           ╭──▸│╎ ◐ IN REVIEW       80% ├─╮
-┌─ T-1 · implementer ────┐ │   ├■ REVIEW ───────────────┤ │
-│  Parse the spec        │ │   │▪ ▲ REJECTED → developer│ │    ┌────────────────────────┐
+                               │⬢ openai · codex 0.9    │
+                           ╭──▸│⬡ ◐ IN REVIEW       80% ├─╮
+┌─ T-1 · implementer ────┐ │   ├⬢ REVIEW ───────────────┤ │
+│  Parse the spec        │ │   │⬡ ▲ REJECTED → developer│ │    ┌────────────────────────┐
 │  anthropic · claude-co…│ │   └────────────────────────┘ │    │  INTEGRATION           │
 │  ✔ DONE           100% ├─┤                              ╰┬──▸│  ⇢ INTEGRATING         │
 ├─ REVIEW ───────────────┤ ║   ┌┄ T-3 · implementer ┄┄┄┄┐  │   └────────────────────────┘
@@ -193,9 +266,9 @@ Particles leave the review row through the right border and follow the outgoing 
                                ┌─ T-2 · implementer ────┐
                                │  Build the API         │
                                │  openai · codex 0.9    │
-                           ╭──▸│  ⇢ INTEGRATING     95% ├─■
-┌─ T-1 · implementer ────┐ │   ├─ REVIEW ───────────────┤ │
-│  Parse the spec        │ │   │  ✔ APPROVED → integrat…▸■│    ┌────────────────────────┐
+                           ╭──▸│  ⇢ INTEGRATING     95% ├⬡⬢
+┌─ T-1 · implementer ────┐ │   ├─ REVIEW ───────────────┤·│
+│  Parse the spec        │ │   │  ✔ APPROVED → integrat…⬡⬢│    ┌────────────────────────┐
 │  anthropic · claude-co…│ │   └────────────────────────┘ │    │  INTEGRATION           │
 │  ✔ DONE           100% ├─┤                              ╰┬──▸│  ⇢ INTEGRATING         │
 ├─ REVIEW ───────────────┤ ║   ┌┄ T-3 · implementer ┄┄┄┄┐  │   └────────────────────────┘
@@ -243,9 +316,9 @@ On a real wait→running transition: a brand-coloured sweep and flash, and recov
 │  anthropic · claude-co…│ │   └────────────────────────┘ │    │  INTEGRATION           │
 │  ✔ DONE           100% ├─┤                              ╰┬──▸│  ⇢ INTEGRATING         │
 ├─ REVIEW ───────────────┤ │   ┌─ T-3 · implementer ────┐  │   └────────────────────────┘
-│  ✔ approved            ▸ │   │  Build the UI          │  │
-└────────────────────────┘ │   │  xai · grok 1.0        │  │
-                           ■──▸│  ● WORKING         30% ├──╯
+│  ✔ approved            ▸ ·   │  Build the UI          │  │
+└────────────────────────┘ ⬡   │  xai · grok 1.0        │  │
+                           ⬢──▸│  ● WORKING         30% ├──╯
                                ├─ REVIEW ───────────────┤
                                │  ○ not reviewed yet    │
                                └────────────────────────┘
@@ -285,11 +358,11 @@ No animation: a failure never pulses or flashes after the initial log entry.
 ┌─ T-1 · implementer ────┐ ║   ├─ REVIEW ───────────────┤ ║
 │  Parse the spec        │ ║   │  ✔ approved            ▸ ║    ┌┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┐
 │  anthropic · claude-co…│ ║   └────────────────────────┘ ║    ┆  INTEGRATION           ┆
-│  ✔ DONE           100% ├═╣                              ╚╦══▸┆  ○ QUEUED              ┆
-├─ REVIEW ───────────────┤ ║   ┌─ T-3 · implementer ────┐  │   └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
-│  ✔ approved            ▸ ║   │  Build the UI          │  │
-└────────────────────────┘ ║   │  xai · grok 1.0        │  │
-                           ╚══▸│  ✖ FAILED          30% ├──╯
+│  ✔ DONE           100% ├─┤                              ╚┬──▸┆  ○ QUEUED              ┆
+├─ REVIEW ───────────────┤ │   ┌─ T-3 · implementer ────┐  │   └┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘
+│  ✔ approved            ▸ │   │  Build the UI          │  │
+└────────────────────────┘ │   │  xai · grok 1.0        │  │
+                           ╰──▸│  ✖ FAILED          30% ├──╯
                                ├─ REVIEW ───────────────┤
                                │  ○ not reviewed yet    │
                                └────────────────────────┘

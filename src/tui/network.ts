@@ -110,7 +110,7 @@ export function renderNetwork(input: NetNode[], o: NetOptions): Geometry {
     const gapSum = gapW.reduce((a, b) => a + b, 0);
     return { cs, hubH, hOf, y, midOf, gapW, gapSum, height, width: nL * cs.w + gapSum };
   };
-  let plan = planFor(CARD_SIZES[2]!); // too small even for the smallest card: clipped, never malformed
+  let plan = planFor(CARD_SIZES[CARD_SIZES.length - 1]!); // too small even for the smallest card: clipped, never malformed
   for (const cs of CARD_SIZES) { const pl = planFor(cs); if (pl.width <= o.maxW && pl.height <= o.maxH) { plan = pl; break; } }
   const { gapW, gapSum, midOf: midY } = plan;
   const card = plan.cs;
