@@ -9,7 +9,7 @@ import { ensureRepo, isRepo } from "./core/git.js";
 import { argsFromFlags, commandDef, commandDocs, parseArgs } from "./core/commands.js";
 import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
-import type { SessionStatus } from "./core/solo.js";
+import { feedAfter, mergeSession, type SessionStatus } from "./core/solo.js";
 import { findSpecs, lintSpec, listProjectFiles, parseSpec } from "./core/spec.js";
 import type { ModelDiscoveryResult } from "./agents/contracts/model-selection.js";
 import type { AgentInfo, Draft, Push } from "./daemon/orchestrator.js";
@@ -468,6 +468,7 @@ async function newGoal(args: string[]): Promise<void> {
 /** Stream a solo session (init/planner) to the terminal; answer its questions inline. */
 async function followSession(client: HexClient, id: string): Promise<SessionStatus> {
   let printed = 0;
+  let cur: SessionStatus | undefined;
   let asked: string | null = null;
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
   rl.on("SIGINT", () => { void client.call("session.cancel", { id }).finally(() => process.exit(130)); });
@@ -476,12 +477,12 @@ async function followSession(client: HexClient, id: string): Promise<SessionStat
     client.on("push", (p: Push) => {
       if (p.event === "notice" && p.data.level === "error") console.log(c.orange(`✖ ${p.data.text}`));
       if (p.event !== "session" || p.data.id !== id) return;
-      const s = p.data;
-      for (const f of s.feed.slice(printed)) {
+      const s = (cur = mergeSession(cur, p.data).status);
+      for (const f of feedAfter(s, printed)) {
         const t = f.kind === "tool" ? c.blue(`  ▸ ${f.text}`) : f.kind === "status" ? c.cyan(`  · ${f.text}`) : f.kind === "error" ? c.orange(`  ✖ ${f.text}`) : f.kind === "user" ? c.bold(`  › ${f.text}`) : c.dim(`    ${f.text}`);
         console.log(t);
       }
-      printed = s.feed.length;
+      printed = s.feed_seq;
       if (s.question && asked !== s.question.question_id) {
         asked = s.question.question_id;
         const opts = s.question.options?.length ? `\n${s.question.options.map((o) => `   ${o.id}) ${o.label}`).join("\n")}` : "";

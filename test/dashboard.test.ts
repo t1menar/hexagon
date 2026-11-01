@@ -268,14 +268,14 @@ describe("dashboard (real App, fake daemon)", () => {
   it("a waiting approval opens a dialog with the exact command, who asks and why; a key answers it", async () => {
     const { app, client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     push(client, "permissions", [execReq()]);
-    await settle(120);
+    await vi.waitFor(() => expect(text()).toContain("APPROVAL NEEDED"));
     const t = text();
     for (const w of ["APPROVAL NEEDED", "go vet ./...", "verify the server", "T-2", "run it this once", "always allow `go vet`", "deny"]) expect(t, w).toContain(w);
     key(app, "a");
-    await settle(50);
+    await vi.waitFor(() => expect(client.calls.find((c) => c.m === "question.answer")).toBeTruthy());
     const answered = client.calls.find((c) => c.m === "question.answer");
     expect(answered?.p).toEqual({ question_id: "P-1", answer: "always" });
-    expect(text()).not.toContain("APPROVAL NEEDED");
+    await vi.waitFor(() => expect(text()).not.toContain("APPROVAL NEEDED"));
     exit();
   });
   it("the dialog swallows other keys (typing cannot answer by accident), Esc postpones it, F5 brings it back", async () => {
@@ -392,5 +392,37 @@ describe("dashboard (real App, fake daemon)", () => {
     a.onMouse({ kind: "press", button: 0, x: card.x + 2, y: (card as { y: number }).y + 1 });
     expect(a.selected).toBe("T-2");
     exit();
+  });
+
+  it("perf budget: a 40-task dashboard frame renders in a few ms and an unchanged frame writes almost nothing", async () => {
+    const tasks = Array.from({ length: 40 }, (_, i) => task(`T-${i + 1}`, `Task number ${i + 1} with a title`, i % 3 ? "developer" : "qa", i < 3 ? [] : [`T-${(i % 5) + 1}`, `T-${i - 1}`].filter((d, j, arr) => arr.indexOf(d) === j)));
+    const snap = makeSnapshot({});
+    const agents = tasks.map((t, i) => agent(t.id, i % 4 === 0 ? "working" : i % 4 === 1 ? "done" : "queued"));
+    const big = { ...snap, agents, plan: { ...snap.plan, tasks }, run: { ...snap.run, agents: agents.map((x) => ({ task_id: x.task_id, agent_run_id: x.agent_run_id, role: x.role, agent: x.agent.id, state: x.state, activity: null, needs_input: false, progress: null, cost_usd: 0, tokens: 0 })) } };
+    setTerm(160, 45);
+    const client = new FakeClient(big);
+    client.reply = { "run.changes": CHANGES };
+    const app = new App(client as never, tmp);
+    void app.start();
+    await vi.waitFor(() => expect(text()).toContain("HEXAGON"));
+    const a = app as never as { render(): void; prev: string[] };
+    const calls = (process.stdout.write as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const bytes = () => calls.reduce((n, c) => n + String(c[0]).length, 0);
+    a.render(); // settle the first frame
+    const n = 100;
+    let b0 = bytes();
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) a.render();
+    const unchangedMs = (performance.now() - t0) / n;
+    const unchangedBytes = (bytes() - b0) / n;
+    b0 = bytes();
+    const t1 = performance.now();
+    for (let i = 0; i < n; i++) { a.prev = []; a.render(); }
+    const fullMs = (performance.now() - t1) / n;
+    // Measured on a laptop: ~1.8 ms and ~140 bytes (unchanged), ~1.6 ms and ~18 KB (full redraw). Budgets leave room for a loaded CI box.
+    expect(unchangedMs).toBeLessThan(20);
+    expect(fullMs).toBeLessThan(20);
+    expect(unchangedBytes).toBeLessThan(1500);
+    client.emit("close");
   });
 });

@@ -21,9 +21,44 @@ export interface SessionStatus {
   summary: string | null;
   error: string | null;
   feed: { ts: string; text: string; kind: "tool" | "text" | "status" | "error" | "user" | "agent" | "usage"; tokens?: { input: number; cache_read: number; output: number } }[];
+  /** Lines ever appended to `feed` (it keeps only the last FEED_MAX): lets a reader tell what it has already seen. */
+  feed_seq: number;
+  /** In a push: `feed` holds only the lines added since the previous push, ending at `feed_seq`. */
+  feed_delta?: boolean;
   session_id: string;
   /** The agent identity's session: new or resumed, turn count and context size. */
   session?: SessionInfo;
+}
+
+export const FEED_MAX = 400;
+
+/**
+ * What to push for a session: the whole status the first time (or after a restart of the session), then the status
+ * with only the feed lines added since `sentSeq`. A status carries up to 400 lines; sending them with every tool call
+ * made each event ~40 KB.
+ */
+export function sessionPush(st: SessionStatus, sentSeq: number | undefined): SessionStatus {
+  if (sentSeq === undefined || st.feed_seq < sentSeq) return st;
+  const fresh = Math.min(st.feed.length, st.feed_seq - sentSeq);
+  return { ...st, feed: fresh ? st.feed.slice(-fresh) : [], feed_delta: true };
+}
+
+/** Apply a pushed status to what the reader holds. `gap` = lines were missed: fetch the full status again. */
+export function mergeSession(cur: SessionStatus | undefined, push: SessionStatus): { status: SessionStatus; gap: boolean } {
+  if (!push.feed_delta) return { status: push, gap: false };
+  if (!cur) return { status: { ...push, feed_delta: undefined }, gap: true };
+  if (push.feed_seq < cur.feed_seq) return { status: { ...push, feed_delta: undefined }, gap: true }; // the session was restarted
+  const first = push.feed_seq - push.feed.length; // seq just before the first line of the push
+  if (first > cur.feed_seq) return { status: { ...cur, ...push, feed: cur.feed, feed_seq: cur.feed_seq, feed_delta: undefined }, gap: true };
+  const skip = Math.max(0, cur.feed_seq - first);
+  const feed = [...cur.feed, ...push.feed.slice(skip)].slice(-FEED_MAX);
+  return { status: { ...push, feed, feed_delta: undefined }, gap: false };
+}
+
+/** Feed lines of `st` that come after sequence number `seq`. */
+export function feedAfter(st: SessionStatus, seq: number): SessionStatus["feed"] {
+  const n = Math.max(0, Math.min(st.feed.length, st.feed_seq - seq));
+  return n ? st.feed.slice(-n) : [];
 }
 
 /**
@@ -65,7 +100,7 @@ export class SoloSession extends EventEmitter {
     super();
     this.status = {
       id, role, agent: adapter.id, state: "running", activity: "starting", question: null, cost_usd: 0,
-      tokens: { input: 0, cache_read: 0, output: 0, steps: 0 }, result_status: null, summary: null, error: null, feed: [], session_id: randomUUID(),
+      tokens: { input: 0, cache_read: 0, output: 0, steps: 0 }, result_status: null, summary: null, error: null, feed: [], feed_seq: 0, session_id: randomUUID(),
     };
   }
 
@@ -75,7 +110,8 @@ export class SoloSession extends EventEmitter {
 
   private log(kind: SessionStatus["feed"][number]["kind"], text: string, tokens?: SessionStatus["feed"][number]["tokens"]) {
     this.status.feed.push({ ts: nowIso(), kind, text, ...(tokens ? { tokens } : {}) });
-    if (this.status.feed.length > 400) this.status.feed.splice(0, this.status.feed.length - 400);
+    this.status.feed_seq++;
+    if (this.status.feed.length > FEED_MAX) this.status.feed.splice(0, this.status.feed.length - FEED_MAX);
   }
 
   private onEvent(e: AgentEvent) {
