@@ -9,6 +9,9 @@ import type { SessionStatus } from "../core/solo.js";
 import type { Draft, PermissionRequest, Push, Snapshot } from "../daemon/orchestrator.js";
 import { hexagonCommand, openTerminal } from "../shell/open.js";
 import { Canvas, clip, padTo, S, st, wrap } from "./canvas.js";
+import type { AgentInfo } from "../daemon/orchestrator.js";
+import { formatAgent } from "../shell/agents.js";
+import { agentIdentity, modelLine, quotaLabel, recoveryLine } from "./identity.js";
 import { ACTIVE, bar, glyph, progressOf, renderDag, spinner, STATE_COLOR, type DagNode } from "./dag.js";
 import { takeoverInTerminal } from "./takeover.js";
 import { projectStack, taskStack, toolsUsed } from "./stack.js";
@@ -39,6 +42,8 @@ const COMMANDS: [string, string][] = [
   ["/clean", "remove worktrees of finished runs (and close the run)"],
   ["/close", "hide the finished run from the dashboard (without merging)"],
   ["/model [role] [model]", "show or set a model override per role (default = the CLI's own) · /agents lists agents, versions and discovered models"],
+  ["/animate [on|off]", "turn the molecule animations (orbiting electrons, flowing bonds) on or off"],
+  ["/agents", "agents, providers, CLI versions, auth and what each CLI reports about models"],
   ["/allow <cmd…> | all", "let agents run these commands (e.g. /allow brew curl), or everything"],
   ["/install <tool>", "install go, node, java or maven for agents (official release, no Homebrew)"],
   ["/stop", "stop the daemon and every agent, then quit"],
@@ -313,6 +318,9 @@ export class App {
     if (this.showingDraft()) return this.snap.draft!.plan;
     return this.snap.run ? this.snap.plan : null;
   }
+
+  /** Animations off (HEXAGON_ANIMATION=off, NO_MOTION, or /animate off): static glyphs, no particles. */
+  still = process.env.HEXAGON_ANIMATION === "off" || Boolean(process.env.NO_MOTION);
 
   private anyActive(): boolean {
     return this.runAgents().some((a) => ACTIVE.has(a.state)) || [...this.sessions.values()].some((s) => s.state === "running");
@@ -700,6 +708,17 @@ export class App {
           this.select(HEX);
           return;
         }
+        case "/animate":
+          this.still = args[0] ? args[0] === "off" : !this.still;
+          this.prev = [];
+          this.flash(`animations ${this.still ? "off" : "on"}`);
+          return;
+        case "/agents": {
+          const list = await c.call<AgentInfo[]>("agents.list");
+          this.log(list.map((a) => formatAgent(a, true)).join("\n\n"), S.white);
+          this.select(HEX);
+          return;
+        }
         case "/allow": {
           const r = await c.call<{ text: string }>("allow", { rules: args.length ? args : [] });
           this.flash(r.text);
@@ -809,7 +828,7 @@ export class App {
     const dagNodes = this.dagNodes(plan);
     let planH: number;
     if (dagNodes.length) {
-      const probe = renderDag(dagNodes, { maxW: W - 4, maxH: Math.floor(bodyH * 0.5) - 2, frame: this.frame, selected: this.selected });
+      const probe = renderDag(dagNodes, { maxW: W - 4, maxH: Math.floor(bodyH * 0.5) - 2, frame: this.frame, selected: this.selected, still: this.still });
       planH = Math.min(Math.floor(bodyH * 0.5), probe.h + 2 + (this.showingDraft() ? 1 : 0));
       this.planPanel(cv, 1, W, planH, probe);
     } else {
@@ -866,11 +885,16 @@ export class App {
   private dagNodes(plan: Plan | null): DagNode[] {
     if (!plan) return [];
     const brief = new Map(this.runAgents().map((a) => [a.task_id, a]));
-    return plan.tasks.map((t) => ({
+    return plan.tasks.map((t) => {
+      const a = this.full.get(t.id);
+      return {
+      provider: a?.agent.provider ?? null, cli: a ? `${a.agent.adapter ?? a.agent.id}${a.agent.cli_version ? ` ${a.agent.cli_version}` : ""}` : null,
+      runtimeModel: a?.agent.runtime_model ?? null, fixCycle: a?.fix_cycle ?? null,
+      quota: a?.state === "waiting_quota" ? quotaLabel(a).replace("resumes ", "") : null,
       id: t.id, title: t.title, role: t.role, deps: t.depends_on,
       state: (this.snap.run && !this.showingDraft() ? this.full.get(t.id)?.state ?? brief.get(t.id)?.state ?? "queued" : "queued") as AgentState,
       progress: this.snap.run && !this.showingDraft() ? this.progress(t.id) : null,
-    }));
+    }; });
   }
 
   /** Pipeline progress of a task's agent (never goes backwards while it runs). */
@@ -963,7 +987,7 @@ export class App {
       if (a?.inbox.pending) flags.push([` ✉${a.inbox.pending}`, S.cyan]);
       if (a?.controller === "user") flags.push([" you", S.magenta]);
       const ac = a?.progress && a.progress.total ? ` · ${a.progress.done}/${a.progress.total} AC` : "";
-      const model = a?.agent.model ? `${a.agent.id} ${a.agent.model}` : a?.agent.id ?? "";
+      const model = a ? agentIdentity(a) : "";
       const now = perm ? `⚠ approve: ${perm.command}`
         : state === "queued" || TERMINAL_STATES.has(state) ? `${state.replace("_", " ")}${a?.state_reason ? ` — ${a.state_reason}` : ""}`
         : a?.activity ?? b?.activity ?? state;
@@ -977,6 +1001,8 @@ export class App {
         lines: [
           [[`${id} · ${a?.role ?? b?.role ?? t?.role ?? ""} · ${tok(a ? spent(a.usage) : b?.tokens ?? 0)} tokens${ac}${model ? ` · ${model}` : ""}`, S.gray]],
           ...wrap(now, Math.max(10, w - 7)).slice(0, state === "failed" || state === "blocked" ? 3 : 1).map((l) => [[l, perm || state === "failed" || state === "blocked" ? S.orange : S.white]] as Seg[]),
+          ...(a ? [[[modelLine(a), S.gray] as Seg]] : []),
+          ...(a?.state === "waiting_quota" || a?.recovery ? [[[recoveryLine(a), a.state === "waiting_quota" ? S.orange : S.gray] as Seg]] : []),
           [[stack.join(" · "), S.cyan], [tools.length ? `${stack.length ? "  " : ""}⚒ ${tools.map((u) => `${u.name}${u.n > 1 ? `×${u.n}` : ""}`).join(" ")}` : "", S.gray]],
         ],
       });
