@@ -17,6 +17,15 @@ export function configWarnings(cfg: HexagonConfig): string[] {
   return out;
 }
 
+/** A reviewer that is the same agent and model as the developer shares its blind spots. Advice, not an error. */
+export function reviewerWarnings(cfg: HexagonConfig): string[] {
+  const dev = cfg.roles.developer, rev = cfg.roles.reviewer;
+  if (!dev || !rev || cfg.review.mode !== "agent") return [];
+  if (dev.agent !== rev.agent || (dev.model ?? null) !== (rev.model ?? null)) return [];
+  const other = Object.keys(cfg.agents).find((a) => a !== rev.agent);
+  return [`The reviewer and the developer are the same agent and model (${rev.agent}${rev.model ? `, ${rev.model}` : ""}); they tend to miss the same things. A different vendor reviews more independently: ${other ? `\`hexagon agents configure reviewer ${other}\`` : "`hexagon agents configure reviewer <agent>`"}.`];
+}
+
 export interface AgentSecurityRow { id: string; display_name: string; security?: { readOnlyEnforced: boolean; commandAllowList: boolean } | null }
 
 /** A plain statement of what is enforced, by whom, and what is not. Printed at startup and by `hexagon agents doctor`. */
@@ -40,5 +49,6 @@ export function securitySummary(cfg: HexagonConfig, agents: AgentSecurityRow[] =
     "  - Allowed build and test tools (npm, go, cargo, …) run project code, which can do anything the project can.",
   );
   for (const w of configWarnings(cfg)) lines.push(`  ! ${w}`);
+  for (const w of reviewerWarnings(cfg)) lines.push(`Advice: ${w}`);
   return lines;
 }

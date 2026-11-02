@@ -69,3 +69,16 @@ describe("secret files", () => {
     }
   });
 });
+
+describe("reviewer independence advice", () => {
+  it("warns when reviewer and developer are the same agent and model, and not when they differ", async () => {
+    const { reviewerWarnings } = await import("../src/core/security.js");
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.agents.other = { id: "other", adapter: "mock" };
+    expect(reviewerWarnings(cfg)[0]).toMatch(/same agent and model.*hexagon agents configure reviewer \w+/);
+    cfg.roles.reviewer = { ...cfg.roles.reviewer, agent: "other" };
+    expect(reviewerWarnings(cfg)).toEqual([]);
+    cfg.roles.reviewer = { ...cfg.roles.developer, model: "m2" };
+    expect(reviewerWarnings(cfg)).toEqual([]);
+  });
+});
