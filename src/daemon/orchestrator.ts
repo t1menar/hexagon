@@ -6,6 +6,7 @@ import { contextFile, identityHash, loadSkills, projectContext, repositoryOvervi
 import type { AgentAdapter, Reply } from "../agents/types.js";
 import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
+import { costReport } from "../core/cost.js";
 import { appendJsonl, atomicWriteJson, nowIso, readJson, readJsonl, readJsonlTail } from "../util/fsx.js";
 import { runShell } from "../util/shell.js";
 import { selfCommand } from "../util/resources.js";
@@ -1338,6 +1339,12 @@ export class Orchestrator extends EventEmitter {
     if (!ids.length) throw new Error(target ? `no session for "${target}" (agents: ${this.agentSessions.all().map((r) => r.agentId).join(", ") || "none yet"})` : "no sessions yet");
     for (const id of ids) this.agentSessions.requestCompact(id);
     return ids;
+  }
+
+  /** Cost of the current run per task, role and agent: what the CLIs reported, plus estimates from the user's own [prices]. */
+  cost() {
+    const statuses = this.current?.store.all() ?? [];
+    return costReport(statuses, this.cfg.prices);
   }
 
   /** Token ledger: this run by cause, and every agent identity over its whole life. */

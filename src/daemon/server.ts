@@ -84,6 +84,7 @@ export class DaemonServer {
       },
       "session.compact": (p) => ({ ok: true, agents: o.compactSessions(p.agent ? String(p.agent) : undefined) }),
       "stats.get": () => o.stats(),
+      "cost.get": () => o.cost(),
       "agent.takeover": async (p) => o.takeover(str(p.task, "task")),
       "agent.takeover_end": async (p) => {
         await o.takeoverEnd(str(p.task, "task"), (p.action as "handback" | "done" | "discard") ?? "handback");

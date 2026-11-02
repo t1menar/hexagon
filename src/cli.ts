@@ -10,6 +10,7 @@ import { argsFromFlags, commandDef, commandDocs, parseArgs } from "./core/comman
 import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
 import { loadConfig } from "./core/config.js";
+import type { CostReport, CostRow } from "./core/cost.js";
 import { parseEvidenceFlag } from "./core/evidence.js";
 import { securitySummary } from "./core/security.js";
 import { feedAfter, mergeSession, type SessionStatus } from "./core/solo.js";
@@ -339,6 +340,19 @@ async function main(argv: string[]): Promise<void> {
         break;
       }
       case "stats": {
+        if (bool(rest, "--cost")) {
+          const rep = await client.call<CostReport>("cost.get");
+          if (bool(rest, "--json")) { console.log(JSON.stringify(rep, null, 2)); break; }
+          const money = (r: CostRow) => (r.unknown_runs && !r.cost_usd ? "unknown" : `$${r.cost_usd.toFixed(2)}${r.estimated_usd ? " (est.)" : ""}${r.unknown_runs ? " +unknown" : ""}`);
+          const row = (r: CostRow) => `  ${r.key.padEnd(14)} ${String(r.attempts).padStart(3)} runs  ${String(r.tokens.input).padStart(9)} in  ${String(r.tokens.cache_read).padStart(9)} cached  ${String(r.tokens.output).padStart(8)} out  ${r.cache_hit === null ? "   –" : `${Math.round(r.cache_hit * 100)}%`.padStart(4)} hit  ${money(r)}`;
+          for (const [title, rows] of [["By task (all attempts and roles)", rep.by_task], ["By role", rep.by_role], ["By agent", rep.by_agent]] as const) {
+            console.log(c.bold(title));
+            for (const r of rows) console.log(row(r));
+          }
+          console.log(c.bold("Total") + "\n" + row(rep.total));
+          for (const w of rep.warnings) console.log(c.orange(`! ${w}`));
+          break;
+        }
         const st = await client.call<{ run: Record<string, { input: number; cache_read: number; output: number }> | null; agents: { agent: string; turns: number; ctx_tokens: number; ctx_pct: number; compactions: number; ledger: Record<string, { input: number; cache_read: number; output: number }> }[] }>("stats.get");
         if (bool(rest, "--json")) { console.log(JSON.stringify(st, null, 2)); break; }
         const line = (n: string, l: { input: number; cache_read: number; output: number }) => `  ${n.padEnd(12)} ${String(l.input).padStart(9)} in  ${String(l.cache_read).padStart(9)} cached  ${String(l.output).padStart(8)} out`;

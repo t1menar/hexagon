@@ -138,3 +138,10 @@ startup_animation = true
 inspector = true        # show the inspector panel when the terminal is wide enough
 mouse = true            # wheel scrolls the chat, click selects an agent; hold Shift to select text
 ambient = true          # faint hexagons drifting behind the network; fades when you are away, off with motion=off
+
+# Cost. Hexagon ships no prices. It shows the cost a CLI reports; for a CLI that reports none, fill in your own
+# prices (per million tokens, by agent id) and `hexagon stats --cost` marks those figures as estimates.
+# [prices.codex]
+# input_per_mtok = 0.0
+# cache_read_per_mtok = 0.0
+# output_per_mtok = 0.0
