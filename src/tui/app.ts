@@ -33,6 +33,7 @@ import { chatLines, itemsFromEvents, itemsFromSession, type ChatItem } from "./c
 
 interface FeedLine { ts: string; text: string; style: string }
 
+const TYPING_MS = 1500;
 const COMMANDS: [string, string][] = [
   ["/sdd [--mode dag|single-task] <goal>", "spec-driven development; by default one checked task, --mode dag for a parallel graph"],
   ["/run [-j N] [--agent X]", "approve the draft plan and start the agents"],
@@ -167,8 +168,9 @@ export class App {
   private changes: RunChanges | null = null;
   private changesAt = 0;
   private ambient = new AmbientField();
-  private ambientOn = true;
+  private ambientOn = false;
   private lastInput = Date.now();
+  private drainWait = false;
   private ambientLevelShown = -1;
   private netTopo = "";
   private netScreen = new Map<string, { x: number; y: number }>();
@@ -209,12 +211,12 @@ export class App {
 
   async start(): Promise<void> {
     this.snap = await this.client.call<Snapshot>("ui.snapshot");
-    let ui = { animation: "auto", startup_animation: true, inspector: true, ambient: true };
+    let ui = { animation: "auto", startup_animation: true, inspector: true, ambient: false };
     try { ui = { ...ui, ...loadConfig(path.join(this.root, ".hexagon", "config.toml")).ui }; } catch { /* defaults */ }
     this.caps = detectCaps(process.env, Boolean(process.stdout.isTTY), { animation: ui.animation, startup: ui.startup_animation });
     this.inspectorOn = ui.inspector;
     this.mouseOn = (ui as { mouse?: boolean }).mouse !== false && process.env.HEXAGON_MOUSE !== "off";
-    this.ambientOn = ui.ambient && process.env.HEXAGON_AMBIENT !== "off";
+    this.ambientOn = process.env.HEXAGON_AMBIENT === "on" || (ui.ambient && process.env.HEXAGON_AMBIENT !== "off");
     this.mgr = new AnimationManager({ motion: this.caps.motion, fps: this.caps.fps || undefined, onFrame: () => this.render() });
     this.director = new Director(this.mgr);
     for (const a of this.snap.agents) this.setFull(a);
@@ -491,8 +493,22 @@ export class App {
   get still(): boolean { return !this.mgr?.enabled; }
 
   /** Ambient hexagons: on in full motion only, dimmed after 60 s without input, gone after 5 min (nothing redraws then). */
+  /** Typing (text in the buffer, or a key within the last 1.5 s): nothing decorative may compete with the next keystroke's frame. */
+  private typing(): boolean { return this.input.length > 0 || Date.now() - this.lastKey < TYPING_MS; }
+  private lastKey = 0;
+  private typingTimer: NodeJS.Timeout | undefined;
+  /** Quiet the decoration while typing; bring it back (one resync) once the keyboard is idle. */
+  private syncTyping(): void {
+    const t = this.typing();
+    this.director?.setQuiet(t);
+    this.syncAmbient();
+    if (this.typingTimer) clearTimeout(this.typingTimer);
+    if (t) { this.typingTimer = setTimeout(() => { this.typingTimer = undefined; this.syncTyping(); this.invalidate(); }, TYPING_MS + 50); this.typingTimer.unref?.(); }
+  }
+
   private ambientLevel(): number {
     if (!this.ambientOn || this.caps.motion !== "full" || !this.mgr.enabled) return 0;
+    if (this.typing()) return 0;
     const idle = Date.now() - this.lastInput;
     return idle > 300_000 ? 0 : idle > 60_000 ? 0.35 : 1;
   }
@@ -622,7 +638,8 @@ export class App {
     this.invalidate();
     const name = k?.name;
     this.lastInput = Date.now();
-    this.syncAmbient();
+    this.lastKey = this.lastInput;
+    this.syncTyping();
     if (this.startup) { this.startup = null; this.mgr.cancel("startup-end"); this.mgr.release("startup"); }
     const modal = this.approvalModal();
     if (modal && !k?.ctrl) { if (this.approvalKey(modal, s, k)) return; }
@@ -1211,6 +1228,8 @@ export class App {
   }
 
   private render() {
+    // Backpressure: a slow terminal that has not drained the last frame gets no new one; the newest state is drawn on 'drain'.
+    if (this.drainWait) { this.dirty = true; return; }
     this.dirty = false;
     const W = Math.max(40, process.stdout.columns || 100);
     const H = Math.max(16, process.stdout.rows || 30);
@@ -1235,7 +1254,10 @@ export class App {
     out += "\x1b[?2026l";
     this.prev = lines;
     this.frames++;
-    process.stdout.write(out);
+    if (process.stdout.write(out) === false) {
+      this.drainWait = true;
+      process.stdout.once("drain", () => { this.drainWait = false; this.invalidate(); });
+    }
   }
 
   private dashboard(cv: Canvas, W: number, H: number) {
