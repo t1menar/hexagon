@@ -32,7 +32,9 @@ export const adapterNames = (): string[] => [...factories.keys()].sort();
 export function createAdapter(id: string, conf: AgentConfig, modelOverride?: string | null): AgentAdapter {
   const f = factories.get(conf.adapter);
   if (!f) throw new Error(`[agents.${id}] unknown adapter "${conf.adapter}" (available: ${adapterNames().join(", ")}). No fallback is used.`);
-  return f(id, conf, modelOverride);
+  const a = f(id, conf, modelOverride);
+  (a as { envPassthrough?: string[] }).envPassthrough = conf.env_passthrough ?? [];
+  return a;
 }
 
 /** Agent entries every project has without writing them: one per integration that declares one. */

@@ -28,6 +28,9 @@ const MAX_NUDGES = 2;
  * feeds it user messages on stdin and folds its event stream into the status contract.
  * The agent talks back by running `hexagon report|ask|note|done|review` (see protocol.ts).
  */
+/** Reading dotenv files is refused by default; the user lifts it by editing the adapter command args. */
+const SECRET_FILES = ["Read(**/.env)", "Read(**/.env.*)", "Bash(cat .env:*)", "Bash(cat ./.env:*)"];
+
 export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
   readonly adapterId = "claude-code";
   readonly provider = "anthropic";
@@ -42,6 +45,7 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
   });
 
   override readonly security = { readOnlyEnforced: true, commandAllowList: true };
+  protected override readonly authEnv = ["ANTHROPIC_*", "CLAUDE_*"];
 
   constructor(id: string, private conf: CliAgentConfig) {
     super(id, conf.command, conf.selection ?? selectionFrom(conf.model));
@@ -73,12 +77,12 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
     a.push(...this.conf.args);
     const hex = ["Bash(hexagon:*)", ...(ctx.env.HEXAGON_BIN ? [`Bash(${ctx.env.HEXAGON_BIN}:*)`] : [])];
     if (ctx.readOnly) {
-      a.push("--permission-mode", "default", "--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit");
+      a.push("--permission-mode", "default", "--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit", ...SECRET_FILES);
       a.push("--allowedTools", "Read", "Glob", "Grep", ...hex, ...ctx.allowCommands.filter((c) => c !== "*").map(bashRule));
     } else if (ctx.allowCommands.includes("*")) {
       a.push("--permission-mode", "bypassPermissions");
     } else {
-      a.push("--permission-mode", "acceptEdits");
+      a.push("--permission-mode", "acceptEdits", "--disallowedTools", ...SECRET_FILES);
       a.push("--allowedTools", "Read", "Glob", "Grep", "Edit", "Write", "MultiEdit", "TodoWrite", ...hex, ...ctx.allowCommands.map(bashRule));
     }
     return a;
@@ -90,7 +94,7 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
       let settled = false;
       const child = spawn(bin!, this.args(ctx), {
         cwd: ctx.cwd,
-        env: { ...process.env, ...ctx.env },
+        env: this.processEnv(ctx.env),
         stdio: ["pipe", "pipe", "pipe"],
         detached: true,
       });

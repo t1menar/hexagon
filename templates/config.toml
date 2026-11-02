@@ -118,7 +118,9 @@ max_blocking_questions = 2
 # Shell commands agents may run without asking (prefix match; passed to Claude Code as
 # --allowedTools "Bash(<prefix>:*)"). File edits inside the worktree are always allowed.
 # ["*"] = anything (--permission-mode bypassPermissions). `hexagon init` adds what your project needs.
-allow_commands = ["npm", "npx", "pnpm", "yarn", "node", "tsc", "vitest", "jest", "pytest", "python", "python3", "go", "cargo", "make", "mvn", "gradle", "./gradlew", "./mvnw", "java", "sh", "ls", "cat", "grep", "rg", "find", "mkdir", "test", "git status", "git diff", "git log"]
+# Interpreters and shells (sh, node, python, make, npx, find) are deliberately absent: they run anything, which makes an
+# approval meaningless. The commands your verify steps need are asked about once, before a task starts.
+allow_commands = ["npm", "pnpm", "yarn", "tsc", "vitest", "jest", "pytest", "go", "cargo", "mvn", "gradle", "./gradlew", "./mvnw", "ls", "cat", "grep", "rg", "mkdir", "test", "git status", "git diff", "git log"]
 command_timeout_s = 600
 
 [ui]

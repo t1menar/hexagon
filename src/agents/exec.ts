@@ -35,7 +35,7 @@ export class ExecAdapter extends AdapterBase implements AgentAdapter {
     const argv = hasSlot ? this.command.map((a) => a.replace("{prompt}", prompt)) : [...this.command, prompt];
     for (const m of inbox) ctx.host.received(m.id);
     return new Promise((resolve) => {
-      const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, env: { ...process.env, ...ctx.env }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+      const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, env: this.processEnv(ctx.env), stdio: ["ignore", "pipe", "pipe"], detached: true });
       let tail = "";
       const onLine = (d: Buffer) => {
         tail = (tail + d.toString()).slice(-4000);
