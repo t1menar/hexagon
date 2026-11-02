@@ -71,7 +71,7 @@ ${report}
 ${ask}
 ${note}
 ${bus}
-- \`hexagon done --summary "<what you did>" [--evidence "AC-1: <test name or command output>" ...]
+- \`hexagon done --summary "<what you did>" [--evidence "AC-1: test:<file>::<test name>" ...]
   [--status completed|blocked|failed|needs_spec_change] [--issue "<spec problem>" ...] [--assume "<assumption>" ...]\`
   exactly once, as your LAST action, after the task's verify commands pass. Be honest: an accurate \`failed\` or
   \`blocked\` is better than an optimistic \`completed\`.

@@ -206,7 +206,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
       const r = api.done({
         status: "completed",
         summary: `Mock implementation of ${task.title}${instructions.length ? ` (applied ${instructions.length} message(s))` : ""}.`,
-        acceptance_evidence: task.acceptance.map((ac) => ({ ac, evidence: "mock agent (no real verification)", verified: false })),
+        acceptance_evidence: /@no-evidence/.test(task.description ?? "") ? [] : task.acceptance.map((ac) => ({ ac, evidence: "mock agent (no real verification)", verified: false })),
       });
       if (!r.ok) return { kind: "error", error: { kind: "invalid_output", message: r.message, retryable: false } };
       return { kind: "finished" };
