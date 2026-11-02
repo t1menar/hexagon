@@ -57,6 +57,33 @@ describe("merged results are verified again", () => {
     expect(files.filter((f) => f === "src/a.txt" || f === "src/b.txt")).toHaveLength(1); // never both: the integration branch was never red
   }, 120000);
 
+  it("a later task that breaks an EARLIER task's check is not merged, and the failure names that task", async () => {
+    const { readJsonl } = await import("../src/util/fsx.js");
+    const root = project();
+    const c = await boot(root);
+    // T-2 is green on its own (its check only needs a.txt); once merged, T-1's own check (no b.txt) is red.
+    await c.call("run.start", { plan_path: writePlan(root, task("T-1", "src/a.txt", ["test ! -f src/b.txt"]), task("T-2", "src/b.txt", ["test -f src/a.txt"], { depends_on: ["T-1"] })) });
+    const [a, b] = await settled(c, ["T-1", "T-2"]);
+    expect(a!.state).toBe("done");
+    expect(b!.state).toBe("failed");
+    const integ = git(root, "branch", "--list", "hexagon/*/integration", "--format=%(refname:short)").split("\n")[0]!;
+    expect(git(root, "ls-tree", "-r", "--name-only", integ)).not.toContain("src/b.txt");
+    const runDir = path.join(root, ".hexagon/runs", fs.readdirSync(path.join(root, ".hexagon/runs")).filter((d) => d.startsWith("r-"))[0]!);
+    const evs = readJsonl<{ event: { type: string; message?: string } }>(path.join(runDir, "events.jsonl")).map((e) => e.event);
+    expect(evs.some((e) => e.type === "error" && /post-merge: .*check of T-1/.test(e.message ?? ""))).toBe(true);
+  }, 120000);
+
+  it("integration_verify = \"task\" keeps the old, narrower check (the same pair merges)", async () => {
+    const root = project();
+    const f = path.join(root, ".hexagon/config.toml");
+    fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace('integration_verify = "merged"', 'integration_verify = "task"'));
+    git(root, "add", "-A"); git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "policy");
+    const c = await boot(root);
+    await c.call("run.start", { plan_path: writePlan(root, task("T-1", "src/a.txt", ["test ! -f src/b.txt"]), task("T-2", "src/b.txt", ["test -f src/a.txt"], { depends_on: ["T-1"] })) });
+    const [a, b] = await settled(c, ["T-1", "T-2"]);
+    expect([a!.state, b!.state]).toEqual(["done", "done"]);
+  }, 120000);
+
   it("/merge is refused when the final check fails, and an override is recorded", async () => {
     const root = project('["test -f src/never-written.txt"]');
     const c = await boot(root);

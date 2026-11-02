@@ -470,16 +470,16 @@ export class AgentRun {
         return this.final("blocked", integ.short);
       }
       if (integ.kind === "broken") {
-        this.ev({ type: "error", kind: "verify_failed", message: `post-merge: \`${integ.v.cmd}\` exited ${integ.v.code} on the integration branch`, retryable: true });
+        this.ev({ type: "error", kind: "verify_failed", message: `post-merge: \`${integ.v.cmd}\` (${integ.owner === this.task.id ? "this task's check" : `check of ${integ.owner}`}) exited ${integ.v.code} on the integration branch`, retryable: true });
         const stuck = this.noProgress(failureSignature(`post-merge ${integ.v.cmd}`, integ.v.code, integ.v.output));
         if (stuck) return this.final("failed", stuck);
         if (this.mayFix(++fixLoops)) {
           this.fixing = true;
-          followUp = this.withNotice(`Your change passed its checks on its own, but after merging it into the integration branch (with what the other tasks delivered) this failed, so the merge was undone:\n\n$ ${integ.v.cmd}\n(exit ${integ.v.code})\n${this.excerpt(integ.v.output, FIX_EXCERPT, "verify output")}\n\nThe integration branch is now merged into your worktree. Make your change work together with it, re-run the command yourself, then run \`hexagon done\` again.`);
+          followUp = this.withNotice(`Your change passed its checks on its own, but after merging it into the integration branch (with what the other tasks delivered) ${integ.owner === this.task.id ? "your own check" : integ.owner === "final_verify" ? "the final check" : `the check of ${integ.owner}, which was already merged,`} failed, so the merge was undone:\n\n$ ${integ.v.cmd}\n(exit ${integ.v.code})\n${this.excerpt(integ.v.output, FIX_EXCERPT, "verify output")}\n\nThe integration branch is now merged into your worktree. Make your change work together with it, re-run the command yourself, then run \`hexagon done\` again.`);
           continue;
         }
         this.notify(this.escalation(`it passes alone but breaks the integration branch, after ${this.rc.cfg.run.max_fix_cycles} repair cycle(s)`, `\`${integ.v.cmd}\` exited ${integ.v.code}`));
-        return this.final("failed", `breaks the integration branch: ${integ.v.cmd}`);
+        return this.final("failed", `breaks the integration branch${integ.owner === this.task.id ? "" : ` (${integ.owner}'s check)`}: ${integ.v.cmd}`);
       }
       this.publishHandoff();
       return this.final("done");
@@ -561,7 +561,7 @@ export class AgentRun {
   private integrate(): Promise<
     | { kind: "merged" }
     | { kind: "blocked"; reason: string; short: string; detail: string }
-    | { kind: "broken"; v: { cmd: string; code: number; output: string } }
+    | { kind: "broken"; v: { cmd: string; code: number; output: string }; owner: string }
   > {
     return this.rc.integrationLock.run(async () => {
       const wt = this.rc.integration.worktree;
@@ -577,7 +577,29 @@ export class AgentRun {
         return { kind: "blocked" as const, short: m.conflict ? "merge conflict with integration branch" : "merge failed", detail: m.output,
           reason: m.conflict ? "merge conflict with the integration branch — resolve manually or /retry" : `merge failed: ${m.output}` };
       }
-      const v = await this.verify(wt);
+      // What must still hold on the integration branch. Each command is tagged with the task it belongs to so a failure
+      // can say whether this change broke its own check or an earlier task's.
+      const policy = this.rc.cfg.run.integration_verify;
+      const plan: { cmd: string; owner: string }[] = this.task.verify.map((cmd) => ({ cmd, owner: this.task.id }));
+      if (policy !== "task") {
+        for (const t of this.rc.tasks) {
+          if (t.id === this.task.id || this.rc.store.byTask(t.id)?.state !== "done") continue;
+          for (const cmd of t.verify) plan.push({ cmd, owner: t.id });
+        }
+      }
+      if (policy === "full") for (const cmd of this.rc.cfg.run.final_verify) plan.push({ cmd, owner: "final_verify" });
+      const seen = new Set<string>();
+      let v: { ok: boolean; cmd: string; code: number; output: string } = { ok: true, cmd: "", code: 0, output: "" };
+      let owner: string = this.task.id;
+      this.abort = new AbortController();
+      for (const step of plan) {
+        if (seen.has(step.cmd)) continue;
+        seen.add(step.cmd);
+        this.ev({ type: "progress", text: `verify on integration (${step.owner}): ${step.cmd}` });
+        const r = await runShell(step.cmd, wt, this.rc.cfg.sandbox.command_timeout_s, this.abort.signal);
+        this.verifyLog.push({ cmd: step.cmd, code: r.code, output: r.output });
+        if (r.code !== 0) { v = { ok: false, cmd: step.cmd, code: r.code, output: r.output }; owner = step.owner; break; }
+      }
       if (v.ok) return { kind: "merged" as const };
       await g.resetHard(wt, pre);
       const back = await g.merge(this.worktree, this.rc.integration.branch, `Merge integration into ${this.task.id} to reproduce a post-merge failure`);
@@ -586,7 +608,7 @@ export class AgentRun {
           reason: `${this.task.id} breaks the integration branch (\`${v.cmd}\`), and merging that branch into its worktree conflicts. Resolve it manually or /retry.` };
       }
       this.checkpoint = await g.revParse(this.worktree, "HEAD");
-      return { kind: "broken" as const, v };
+      return { kind: "broken" as const, v, owner };
     });
   }
 
