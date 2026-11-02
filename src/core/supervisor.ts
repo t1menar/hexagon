@@ -12,6 +12,7 @@ import type { AdapterOutcome, AgentAdapter, AgentApi, AgentHost, AgentRunContext
 import { classifyProviderError, recoveryFor } from "../agents/contracts/errors.js";
 import { planRetry, waitTooLong, type WaitStore } from "./recovery.js";
 import { atomicWriteJson, matchesAny, nowIso, truncateMiddle } from "../util/fsx.js";
+import { Mutex } from "../util/mutex.js";
 import { runShell } from "../util/shell.js";
 import { onPath } from "./toolchains.js";
 import { roleConfig, type HexagonConfig } from "./config.js";
@@ -38,6 +39,8 @@ export interface RunContext {
   skills: Skill[];
   context: string;
   integration: { branch: string; worktree: string };
+  /** Merges into the integration branch (and the checks that follow) happen one at a time. */
+  integrationLock: Mutex;
   adapterFor(role: Role, override?: string | null): AgentAdapter;
   /** Persistent retry schedule for provider-limit waits. */
   waits?: WaitStore;
@@ -441,21 +444,61 @@ export class AgentRun {
         }
       }
 
-      // 5. Merge into the run's integration branch
+      // 5. Merge into the run's integration branch, then prove the merged result still passes
       this.st("integrating");
-      const m = await g.merge(
-        this.rc.integration.worktree,
-        this.branch,
-        `Merge ${this.task.id}: ${this.task.title}\n\nHexagon-Task: ${this.task.id}\nRefs: ${refs(this.task)}`,
-      );
-      if (!m.ok) {
-        this.ev({ type: "error", kind: "internal", message: m.output, retryable: false });
-        this.notify(m.conflict ? "merge conflict with the integration branch — resolve manually or /retry" : `merge failed: ${m.output}`);
-        return this.final("blocked", m.conflict ? "merge conflict with integration branch" : "merge failed");
+      const integ = await this.integrate();
+      if (integ.kind === "blocked") {
+        this.ev({ type: "error", kind: "internal", message: integ.detail, retryable: false });
+        this.notify(integ.reason);
+        return this.final("blocked", integ.short);
+      }
+      if (integ.kind === "broken") {
+        this.ev({ type: "error", kind: "verify_failed", message: `post-merge: \`${integ.v.cmd}\` exited ${integ.v.code} on the integration branch`, retryable: true });
+        const stuck = this.noProgress(failureSignature(`post-merge ${integ.v.cmd}`, integ.v.code, integ.v.output));
+        if (stuck) return this.final("failed", stuck);
+        if (this.mayFix(++fixLoops)) {
+          this.fixing = true;
+          followUp = `Your change passed its checks on its own, but after merging it into the integration branch (with what the other tasks delivered) this failed, so the merge was undone:\n\n$ ${integ.v.cmd}\n(exit ${integ.v.code})\n${this.excerpt(integ.v.output, FIX_EXCERPT, "verify output")}\n\nThe integration branch is now merged into your worktree. Make your change work together with it, re-run the command yourself, then run \`hexagon done\` again.`;
+          continue;
+        }
+        this.notify(this.escalation(`it passes alone but breaks the integration branch, after ${this.rc.cfg.run.max_fix_cycles} repair cycle(s)`, `\`${integ.v.cmd}\` exited ${integ.v.code}`));
+        return this.final("failed", `breaks the integration branch: ${integ.v.cmd}`);
       }
       this.publishHandoff();
       return this.final("done");
     }
+  }
+
+  /**
+   * Merge this task into the integration branch and run its verify commands there. Two tasks that are green on their own
+   * can break each other; if the merged result fails, the merge is undone (the integration branch never holds a red
+   * state) and the failure goes back to this task, with the integration branch merged into its worktree to reproduce it.
+   */
+  private integrate(): Promise<
+    | { kind: "merged" }
+    | { kind: "blocked"; reason: string; short: string; detail: string }
+    | { kind: "broken"; v: { cmd: string; code: number; output: string } }
+  > {
+    return this.rc.integrationLock.run(async () => {
+      const wt = this.rc.integration.worktree;
+      const pre = await g.revParse(wt, "HEAD");
+      const message = `Merge ${this.task.id}: ${this.task.title}\n\nHexagon-Task: ${this.task.id}\nRefs: ${refs(this.task)}`;
+      const m = await g.merge(wt, this.branch, message);
+      if (!m.ok) {
+        return { kind: "blocked" as const, short: m.conflict ? "merge conflict with integration branch" : "merge failed", detail: m.output,
+          reason: m.conflict ? "merge conflict with the integration branch — resolve manually or /retry" : `merge failed: ${m.output}` };
+      }
+      const v = await this.verify(wt);
+      if (v.ok) return { kind: "merged" as const };
+      await g.resetHard(wt, pre);
+      const back = await g.merge(this.worktree, this.rc.integration.branch, `Merge integration into ${this.task.id} to reproduce a post-merge failure`);
+      if (!back.ok) {
+        return { kind: "blocked" as const, short: "breaks the integration branch and cannot be reproduced", detail: back.output,
+          reason: `${this.task.id} breaks the integration branch (\`${v.cmd}\`), and merging that branch into its worktree conflicts. Resolve it manually or /retry.` };
+      }
+      this.checkpoint = await g.revParse(this.worktree, "HEAD");
+      return { kind: "broken" as const, v };
+    });
   }
 
   /** Head+tail of a long output; the cut is stated in the text and recorded on the timeline. */
@@ -962,11 +1005,11 @@ export class AgentRun {
     if (this.result) this.result.files_changed = files;
   }
 
-  private async verify(): Promise<{ ok: boolean; cmd: string; code: number; output: string }> {
+  private async verify(cwd = this.worktree): Promise<{ ok: boolean; cmd: string; code: number; output: string }> {
     this.abort = new AbortController();
     for (const cmd of this.task.verify) {
       this.ev({ type: "progress", text: `verify: ${cmd}` });
-      const r = await runShell(cmd, this.worktree, this.rc.cfg.sandbox.command_timeout_s, this.abort.signal);
+      const r = await runShell(cmd, cwd, this.rc.cfg.sandbox.command_timeout_s, this.abort.signal);
       this.verifyLog.push({ cmd, code: r.code, output: r.output });
       if (r.code !== 0) return { ok: false, cmd, code: r.code, output: r.output };
     }

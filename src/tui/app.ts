@@ -1096,7 +1096,7 @@ export class App {
           this.select(HEX);
           return;
         }
-        case "/merge": { const r = await c.call<{ text: string }>("merge.base"); this.log(r.text, S.green); return; }
+        case "/merge": { const r = await c.call<{ text: string }>("merge.base", { override: args[0] === "--override" ? args.slice(1).join(" ").trim() || undefined : undefined }); this.log(r.text, S.green); return; }
         case "/abort": await c.call("run.abort"); this.log("run aborted", S.orange); return;
         case "/clean": { const r = await c.call<{ removed: string[] }>("worktrees.clean"); this.log(`removed ${r.removed.length} worktree(s)`, S.gray); return; }
         default: throw new Error(`unknown command ${cmd} — /help`);
