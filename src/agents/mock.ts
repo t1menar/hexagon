@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -184,6 +185,15 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         const abs = path.join(ctx.cwd, f);
         fs.mkdirSync(path.dirname(abs), { recursive: true });
         fs.writeFileSync(abs, render(task, f, instructions));
+      }
+
+      // `@commit-outside`: commit a file outside the write scope, as an agent that runs `git commit` itself would (test hook).
+      if (/@commit-outside/.test(task.description ?? "")) {
+        fs.mkdirSync(path.join(ctx.cwd, "outside"), { recursive: true });
+        fs.writeFileSync(path.join(ctx.cwd, "outside/leak.txt"), "out of scope\n");
+        const gitq = (...a: string[]) => execFileSync("git", ["-c", "user.name=agent", "-c", "user.email=agent@localhost", ...a], { cwd: ctx.cwd, stdio: "ignore" });
+        gitq("add", "-A");
+        gitq("commit", "-qm", "agent: sneak in a file");
       }
 
       api.report({ phase: "testing", activity: "Running checks", done: task.acceptance });

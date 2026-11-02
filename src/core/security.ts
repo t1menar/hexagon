@@ -24,6 +24,8 @@ export function securitySummary(cfg: HexagonConfig, agents: AgentSecurityRow[] =
   const lines = [
     "Enforced by Hexagon:",
     "  - Agents are identified by a per-agent token. They cannot approve a spec, answer a question, merge, change permissions or start runs.",
+    "  - Write scope is checked on everything an agent changed, including files it committed itself; out-of-scope paths are reverted and the task's history is folded into one Hexagon commit.",
+    "  - Secrets in events, transcripts and status are redacted when written (known key shapes only).",
     "  - Each task works in its own git worktree; agent processes get an allow-listed environment (PATH, HOME, locale, terminal, their own login variables, [agents.x].env_passthrough), not your shell's secrets.",
     "Enforced by the agent's own CLI (only where the integration says so):",
   ];
@@ -33,6 +35,7 @@ export function securitySummary(cfg: HexagonConfig, agents: AgentSecurityRow[] =
   }
   lines.push(
     "Not enforced:",
+    "  - Reading .env files is refused only by integrations that expose a deny rule (not verified against the real CLI); others can read them.",
     "  - There is no OS sandbox. A process running as you can read the Hexagon token file and your files; this protects against confused or prompt-injected agents, not a determined attacker.",
     "  - Allowed build and test tools (npm, go, cargo, …) run project code, which can do anything the project can.",
   );

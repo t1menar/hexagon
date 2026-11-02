@@ -106,6 +106,16 @@ export async function merge(cwd: string, branch: string, message: string): Promi
   return { ok: false, conflict, output: (r.stdout + "\n" + r.stderr).trim() };
 }
 
+/** True when `ancestor` is reachable from `ref`. */
+export async function isAncestor(cwd: string, ancestor: string, ref: string): Promise<boolean> {
+  return (await git(cwd, ["merge-base", "--is-ancestor", ancestor, ref])).ok;
+}
+
+/** Move HEAD to `ref` and unstage everything, keeping the working tree: commits made since `ref` become plain changes. */
+export async function uncommitTo(cwd: string, ref: string): Promise<void> {
+  await must(cwd, ["reset", "-q", "--mixed", ref]);
+}
+
 export async function resetHard(cwd: string, ref: string): Promise<void> {
   await must(cwd, ["reset", "--hard", ref]);
   await must(cwd, ["clean", "-fd"]);

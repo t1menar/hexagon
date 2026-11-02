@@ -114,6 +114,8 @@ export class AgentRun {
   private result: ResultEnvelope | undefined;
   private review: ReviewVerdict | undefined;
   private baseCommit = "";
+  /** HEAD after the last commit or merge Hexagon made itself. Anything past it was done by the agent. */
+  private checkpoint = "";
   private takeoverCommit = "";
   private cancelled = false;
   private userDone = false;
@@ -195,6 +197,7 @@ export class AgentRun {
     try {
       await g.addWorktree(this.rc.root, this.worktree, this.branch, this.rc.integration.branch);
       this.baseCommit = await g.revParse(this.worktree, "HEAD");
+      this.checkpoint = this.baseCommit;
       this.rc.store.patch(this.agentRunId, (s) => {
         s.workspace = { worktree: path.relative(this.rc.root, this.worktree), branch: this.branch };
         s.attach = { native_session_id: null, takeover_command: null, supports_live_input: this.adapter.supportsLiveInput };
@@ -277,6 +280,7 @@ export class AgentRun {
     const w = this.resumeWait!;
     await g.addWorktree(this.rc.root, this.worktree, this.branch, this.rc.integration.branch); // no-op when it exists
     this.baseCommit = await g.revParse(this.worktree, "HEAD").catch(() => "");
+    this.checkpoint = this.baseCommit;
     const unregister = this.rc.registry.register(this.agentRunId, this.api());
     try {
       const ec = this.rc.store.get(this.agentRunId)?.recovery;
@@ -866,13 +870,29 @@ export class AgentRun {
     }
     await this.commit();
     const m = await g.merge(this.worktree, this.rc.integration.branch, `Merge fix from ${w.task} into ${this.task.id}`);
+    if (m.ok) this.checkpoint = await g.revParse(this.worktree, "HEAD");
     this.ev({ type: "chat", from: "hexagon", text: `${w.task} fixed it${m.ok ? " and the fix is merged into this worktree" : ", but merging it here failed"}: ${r.summary}` });
     return m.ok
       ? `${w.task} fixed what you returned, and the fix is merged into your worktree. Their summary: ${r.summary}\n\nContinue your task: re-check it, then run \`hexagon done\`.`
       : `${w.task} fixed what you returned, but merging the fix into your worktree failed:\n${truncateMiddle(m.output, 2000)}\nResolve it if it is in your scope, otherwise report blocked.`;
   }
 
+  /**
+   * Commits the agent made itself (git commit, amend, reset, rebase) are history Hexagon did not write and the scope
+   * check would never see. Turn them back into plain changes, so scope is checked on everything the agent did and
+   * the branch gets one Hexagon commit.
+   */
+  private async normaliseHistory(): Promise<void> {
+    if (!this.checkpoint) return;
+    const head = await g.revParse(this.worktree, "HEAD").catch(() => "");
+    if (!head || head === this.checkpoint) return;
+    const rewritten = !(await g.isAncestor(this.worktree, this.checkpoint, head));
+    await g.uncommitTo(this.worktree, this.checkpoint);
+    this.ev({ type: "error", kind: "scope_violation", message: rewritten ? "the agent rewrote git history; its changes were kept as plain edits and checked against the scope" : "the agent made its own git commits; they were folded into one Hexagon commit and checked against the scope", retryable: false });
+  }
+
   private async commit(): Promise<void> {
+    if (!this.userDone) await this.normaliseHistory();
     const changed = await g.uncommittedFiles(this.worktree);
     if (!this.userDone) {
       const outside = changed.filter((f) => !matchesAny(f, this.task.files.write));
@@ -887,6 +907,7 @@ export class AgentRun {
     }
     const message = `${this.task.id}: ${this.task.title}\n\n${this.result?.summary ?? ""}\n\nHexagon-Task: ${this.task.id}\nHexagon-Attempt: ${this.attempt}\nRefs: ${refs(this.task)}`;
     await g.commitAll(this.worktree, message);
+    this.checkpoint = await g.revParse(this.worktree, "HEAD");
     const files = await g.changedFiles(this.worktree, this.baseCommit);
     if (files.length) this.ev({ type: "files", files });
     if (this.result) this.result.files_changed = files;
@@ -1175,6 +1196,7 @@ export class AgentRun {
       throw new Error(`${this.task.id} is ${this.state}; nothing to take over`);
     }
     this.takeoverCommit = await g.revParse(this.worktree, "HEAD");
+    this.checkpoint = this.takeoverCommit;
     this.ev({ type: "controller", controller: "user" });
     const native = this.started ? this.adapter.takeoverCommand(this.sessionId) : null;
     return { worktree: this.worktree, branch: this.branch, command: native ?? [process.env.SHELL ?? "/bin/zsh"] };
@@ -1182,6 +1204,7 @@ export class AgentRun {
 
   async endTakeover(action: "handback" | "done" | "discard"): Promise<void> {
     if (action === "discard" && this.takeoverCommit) await g.resetHard(this.worktree, this.takeoverCommit);
+    this.checkpoint = await g.revParse(this.worktree, "HEAD").catch(() => this.checkpoint); // what the user committed is theirs
     if (action === "done") {
       this.userDone = true;
       this.gate?.resolve();
