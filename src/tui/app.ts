@@ -46,7 +46,7 @@ const COMMANDS: [string, string][] = [
   ["/resume [T-n]", "resume"],
   ["/cancel [T-n]", "cancel an agent"],
   ["/retry [T-n] [--agent X] [--effort E]", "start a new attempt"],
-  ["/add <role> <title> [after T-1,T-2]", "add a task to the draft or the running graph"],
+  ["/add <role> <title> in <globs> verify <cmd> [after T-1]", "add a task (scope and check required) to the draft or running graph"],
   ["/rm <T-n>", "remove a task that has not started (asks for your yes)"],
   ["/link <T-a> <T-b>", "make T-b wait for T-a"],
   ["/unlink <T-a> <T-b>", "remove that ordering (asks for your yes)"],
@@ -1012,10 +1012,20 @@ export class App {
         }
         case "/cancel": { const t = this.target(args); await c.call("agent.cancel", { task: t }); this.flash(`${t} cancelled`); return; }
         case "/add": {
-          const m = /^(\S+)\s+(.+?)(?:\s+after\s+([\w,\s-]+))?$/i.exec(args.join(" "));
-          if (!m) throw new Error("usage: /add <role> <title> [after T-1,T-2]");
-          const deps = m[3] ? m[3].split(/[,\s]+/).filter(Boolean).map(normTask) : undefined;
-          return await this.graphEdit("graph.addNode", { role: m[1]!.toLowerCase(), title: m[2]!, ...(deps ? { depends_on: deps } : {}) });
+          // /add <role> <title> in <glob,glob> (verify <command> | exempt <reason>) [after T-1,T-2]
+          const usage = "usage: /add <role> <title> in <glob,glob> verify <command> [after T-1,T-2]   (or `exempt <reason>` instead of verify)";
+          let rest = args.join(" ");
+          const after = /\s+after\s+([\w,\s-]+)$/i.exec(rest);
+          if (after) rest = rest.slice(0, after.index);
+          const ver = /\s+(verify|exempt)\s+(.+)$/i.exec(rest);
+          if (ver) rest = rest.slice(0, ver.index);
+          const m = /^(\S+)\s+(.+?)\s+in\s+(\S+)$/i.exec(rest);
+          if (!m || !ver) throw new Error(usage);
+          const deps = after ? after[1]!.split(/[,\s]+/).filter(Boolean).map(normTask) : undefined;
+          return await this.graphEdit("graph.addNode", {
+            role: m[1]!.toLowerCase(), title: m[2]!, write: m[3]!.split(","),
+            ...(ver[1]!.toLowerCase() === "verify" ? { verify: [ver[2]!] } : { verify_exempt: ver[2]! }), ...(deps ? { depends_on: deps } : {}),
+          });
         }
         case "/rm": {
           if (!args[0]) throw new Error("usage: /rm <T-n>");
