@@ -1,3 +1,4 @@
+import { evaluateEvidence, missingEvidence } from "./evidence.js";
 import fs from "node:fs";
 import path from "node:path";
 import type {
@@ -398,6 +399,12 @@ export class AgentRun {
           continue;
         }
         return this.final("failed", `verification failed: ${v.cmd}`);
+      }
+
+      // What the agent claimed is checked here: only Hexagon marks evidence as verified.
+      if (r.acceptance_evidence.length) {
+        const out = this.verifyLog.slice(-Math.max(1, this.task.verify.length)).map((x) => x.output).join("\n");
+        r.acceptance_evidence = evaluateEvidence(this.worktree, r.acceptance_evidence, out);
       }
 
       // 4. Review
@@ -1077,6 +1084,10 @@ export class AgentRun {
         };
         const v = validateResult(r);
         if (!v.ok) return { ok: false, message: `Result rejected: ${v.errors.join("; ")}. Fix it and run \`hexagon done\` again.` };
+        if (r.status === "completed" && this.task.acceptance.length) {
+          const missing = missingEvidence(this.task.acceptance, r.acceptance_evidence);
+          if (missing.length) return { ok: false, message: `No evidence for ${missing.join(", ")}. Add one per criterion: hexagon done --evidence "${missing[0]}: test:<file>::<test name>" (a test that proves it; any other text is recorded as a claim) and run \`hexagon done\` again.` };
+        }
         if (!r.summary.trim()) return { ok: false, message: "Add --summary \"<what you did>\" and run `hexagon done` again." };
         this.result = r;
         this.finished = true;

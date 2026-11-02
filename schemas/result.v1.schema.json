@@ -16,7 +16,7 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["ac", "evidence", "verified"],
-        "properties": { "ac": { "type": "string" }, "evidence": { "type": "string" }, "verified": { "type": "boolean" } }
+        "properties": { "ac": { "type": "string" }, "evidence": { "type": "string" }, "verified": { "type": "boolean" }, "basis": { "type": "string" } }
       }
     },
     "commands_run": {

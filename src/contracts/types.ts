@@ -196,7 +196,7 @@ export interface ResultEnvelope {
   status: "completed" | "blocked" | "failed" | "needs_spec_change";
   summary: string;
   files_changed: string[];
-  acceptance_evidence: { ac: string; evidence: string; verified: boolean }[];
+  acceptance_evidence: { ac: string; evidence: string; /** set by Hexagon only */ verified: boolean; /** why it is verified or only claimed */ basis?: string }[];
   commands_run: { cmd: string; exit_code: number }[];
   blockers: string[];
   spec_issues: string[];

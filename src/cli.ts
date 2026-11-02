@@ -10,6 +10,7 @@ import { argsFromFlags, commandDef, commandDocs, parseArgs } from "./core/comman
 import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
 import { loadConfig } from "./core/config.js";
+import { parseEvidenceFlag } from "./core/evidence.js";
 import { securitySummary } from "./core/security.js";
 import { feedAfter, mergeSession, type SessionStatus } from "./core/solo.js";
 import { findSpecs, lintSpec, listProjectFiles, parseSpec } from "./core/spec.js";
@@ -605,8 +606,8 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
       params = {
         summary, status,
         acceptance_evidence: multi(a, "--evidence").map((e) => {
-          const m = /^\s*(AC-\d+)\s*[:=-]\s*([\s\S]*)$/i.exec(e);
-          return { ac: m ? m[1]!.toUpperCase() : "AC-?", evidence: m ? m[2]! : e, verified: true };
+          const p = parseEvidenceFlag(e);
+          return { ac: p.ac, evidence: p.evidence, verified: false }; // Hexagon decides what is verified
         }),
         spec_issues: multi(a, "--issue"),
         blockers: status === "blocked" ? multi(a, "--blocker").concat(multi(a, "--issue")) : multi(a, "--blocker"),
