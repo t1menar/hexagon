@@ -16,7 +16,7 @@ export async function git(cwd: string, args: string[]): Promise<GitResult> {
   }
 }
 
-async function must(cwd: string, args: string[]): Promise<string> {
+export async function must(cwd: string, args: string[]): Promise<string> {
   const r = await git(cwd, args);
   if (!r.ok) throw new Error(`git ${args.join(" ")} failed: ${r.stderr || r.stdout}`);
   return r.stdout;

@@ -57,7 +57,7 @@ export interface RoleConfig {
 }
 
 export interface HexagonConfig {
-  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** tokens one task may use (input + cache reads + output) before it stops and asks; 0 = no cap */ task_budget_tokens: number; /** commands that must pass on the integration branch before /merge; empty = every task's verify commands */ final_verify: string[]; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null; /** run the task's verify commands once before work starts, to know what was already red */ baseline: boolean; /** files that count as tests for the test-integrity check; empty = per-language defaults */ test_globs: string[] };
+  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** tokens one task may use (input + cache reads + output) before it stops and asks; 0 = no cap */ task_budget_tokens: number; /** commands that must pass on the integration branch before /merge; empty = every task's verify commands */ final_verify: string[]; /** a merge conflict goes to the release engineer once before the task blocks */ release_on_conflict: boolean; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null; /** run the task's verify commands once before work starts, to know what was already red */ baseline: boolean; /** files that count as tests for the test-integrity check; empty = per-language defaults */ test_globs: string[] };
   roles: Record<Role, RoleConfig>;
   agents: Record<string, AgentConfig>;
   recovery: RecoveryConfig;
@@ -70,7 +70,7 @@ export interface HexagonConfig {
 }
 
 export const DEFAULT_CONFIG: HexagonConfig = {
-  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 3, task_budget_tokens: 3_000_000, final_verify: [], max_identical_failures: 3, budget_tokens: null, base_branch: null, baseline: true, test_globs: [] },
+  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 3, task_budget_tokens: 3_000_000, final_verify: [], release_on_conflict: true, max_identical_failures: 3, budget_tokens: null, base_branch: null, baseline: true, test_globs: [] },
   roles: Object.fromEntries(BUILTIN_ROLES.map((r) => [r.id, { agent: primaryAgentId(), effort: r.effort }])),
   agents: defaultAgents(),
   recovery: DEFAULT_RECOVERY,

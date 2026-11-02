@@ -9,7 +9,7 @@ import type { Push } from "../daemon/orchestrator.js";
 import { selfCommand } from "../util/resources.js";
 import { readUserToken } from "../util/token.js";
 
-export const PROTOCOL = 2;
+export const PROTOCOL = 3;
 
 /** Client for the per-project daemon. Emits "push" for subscribed events and "close". */
 export class HexClient extends EventEmitter {

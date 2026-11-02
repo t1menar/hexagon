@@ -109,6 +109,19 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         api.done({ summary: "Wrote HEXAGON.md (mock)" });
         return { kind: "finished" };
       }
+      if (ctx.role === "release") {
+        // Keep both sides of every conflict (test double for the release engineer).
+        const list = /<conflicts[^>]*>\n([\s\S]*?)\n<\/conflicts>/.exec(ctx.prompt)?.[1]?.split("\n").filter(Boolean) ?? [];
+        for (const f of list) {
+          await step(`Resolving ${f}`);
+          const abs = path.join(ctx.cwd, f);
+          fs.writeFileSync(abs, fs.readFileSync(abs, "utf8").split("\n").filter((l) => !/^(<<<<<<<|=======|>>>>>>>)/.test(l)).join("\n"));
+        }
+        if (/@release-fails/.test(ctx.task?.description ?? "")) { api.done({ status: "blocked", summary: "needs a decision", blockers: ["which behavior wins"] }); return { kind: "finished" }; }
+        api.done({ status: "completed", summary: `Resolved ${list.join(", ")}`, acceptance_evidence: [] });
+        return { kind: "finished" };
+      }
+
       if (ctx.role === "reviewer") {
         api.report({ phase: "reading", activity: "Reading the diff" });
         await step("Checking acceptance evidence");
@@ -195,6 +208,10 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         gitq("add", "-A");
         gitq("commit", "-qm", "agent: sneak in a file");
       }
+
+      // `@delete-test: <file>`: delete a test file, as an agent that "fixes" a failing test by removing it would (test hook).
+      const dt = /@delete-test:\s*(\S+)/.exec(task.description ?? "");
+      if (dt) fs.rmSync(path.join(ctx.cwd, dt[1]!), { force: true });
 
       api.report({ phase: "testing", activity: "Running checks", done: task.acceptance });
       for (const cmd of task.verify) {

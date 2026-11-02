@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -95,4 +95,25 @@ describe("RPC callers are authenticated and scoped", () => {
     expect(fs.statSync(server.orch.paths.socket).mode & 0o007).toBe(0);
     expect(f.startsWith(root)).toBe(false);
   });
+});
+
+describe("the agent-side CLI authenticates with its token", () => {
+  it("`hexagon report` run with an agent's environment is accepted by the daemon (not 'not authenticated')", async () => {
+    const root = fs.mkdtempSync(path.join("/tmp", "hs2-"));
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+    fs.writeFileSync(path.join(root, "README.md"), "# demo\n");
+    execFileSync("git", ["add", "-A"], { cwd: root }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], { cwd: root });
+    scaffold(root);
+    const s = new DaemonServer(root);
+    await s.listen();
+    try {
+      const env = { ...s.orch.agentEnv("T-1"), HOME: process.env.HOME ?? "", HEXAGON_NO_REAL_CLI: "1" };
+      const bin = env.HEXAGON_BIN!;
+      const out = await new Promise<{ code: number | null; text: string }>((resolve) => {
+        const c = execFile(bin, ["report", "--activity", "hello"], { cwd: root, env }, (e, so, se) => resolve({ code: e ? (e as { code?: number }).code ?? 1 : 0, text: so + se }));
+        void c;
+      });
+      expect(out.text.slice(0, 400)).not.toMatch(/not authenticated/);
+    } finally { s.orch.shutdown(); }
+  }, 30000);
 });

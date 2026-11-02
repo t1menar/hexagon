@@ -90,6 +90,10 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
 
   run(ctx: AgentRunContext): Promise<AdapterOutcome> {
     const [bin] = this.conf.command;
+    // Tests set this so that a role nobody pointed at the mock agent fails loudly instead of spending real tokens.
+    if (process.env.HEXAGON_NO_REAL_CLI === "1" && bin === "claude") {
+      return Promise.resolve({ kind: "error", error: { kind: "internal", message: "the real CLI is disabled (HEXAGON_NO_REAL_CLI=1)", retryable: false } });
+    }
     return new Promise((resolve) => {
       let settled = false;
       const child = spawn(bin!, this.args(ctx), {
