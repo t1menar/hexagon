@@ -252,13 +252,16 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     ctx.api.report({ phase: "planning", activity: `Stage: ${stage}` });
     if (stage === "analyze") {
       await step("Reading the codebase");
-      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", "none", "", "## Mode", /@single-task/.test(goal) ? "single-task: mock goal asked for it" : "dag: mock goal splits into parallel parts", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
+      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", /@spike/.test(goal) ? "(mock) the root cause is unknown" : "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", "none", "", ...(/@spike/.test(goal) ? ["## Spike", "- S-1: find out why it fails", ""] : []), "## Mode", /@single-task/.test(goal) ? "single-task: mock goal asked for it" : "dag: mock goal splits into parallel parts", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
     } else if (stage === "specify") {
       await step("Writing the spec");
       fs.writeFileSync(path.join(out, "spec.md"), [
         "---", "spec: goal", "---", `# ${goal}`, "",
         ...reqs.flatMap((r) => [`## ${r.id}: ${r.title}`, `${r.title}.`, "", "**Acceptance**", `- AC-1: ${r.file} exists`, "", `**Touches**: \`${r.file}\``, ""]),
       ].join("\n"));
+    } else if (stage === "spike") {
+      await step("Investigating");
+      fs.writeFileSync(path.join(out, "spike.md"), ["# Spike", "", "## Findings", "S-1: the failure comes from src/core/a.ts:12 (mock).", "", "## Decision", "Assume the retry limit lives in a.ts.", "", "## Open risks", "none", ""].join("\n"));
     } else if (stage === "replan") {
       await step("Preparing a replan");
       const tail = /Tasks you may change \(not started\): ([^.\n]+)\./.exec(text)?.[1]?.split(/,\s*/) ?? [];
