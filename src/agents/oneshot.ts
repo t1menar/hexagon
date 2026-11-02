@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { AdapterBase } from "./contracts/base.js";
+import { realCliBlocked } from "./adapter-registry.js";
 import type { AdapterOutcome, AgentRunContext } from "./types.js";
 import { formatInjected } from "./types.js";
 
@@ -52,6 +53,7 @@ export abstract class OneShotAdapter extends AdapterBase {
 
   run(ctx: AgentRunContext): Promise<AdapterOutcome> {
     const spec = this.build(ctx, this.promptFor(ctx));
+    if (realCliBlocked(spec.argv[0]!)) { spec.cleanup?.(); return Promise.resolve({ kind: "error", error: { kind: "internal", message: "the real CLI is disabled (HEXAGON_NO_REAL_CLI=1)", retryable: false } }); }
     return new Promise((resolve) => {
       let child;
       try {

@@ -18,7 +18,7 @@ function project(config: string, extra: Record<string, string> = {}): { root: st
   fs.mkdirSync(path.join(root, ".hexagon"), { recursive: true });
   fs.mkdirSync(path.join(root, "adapters"), { recursive: true });
   fs.copyFileSync(EXAMPLE, path.join(root, "adapters/example.toml"));
-  const cli = path.join(root, "examplecli");
+  const cli = path.join(root, "fake-example-cli");
   fs.writeFileSync(cli, `#!/usr/bin/env node
 if (process.argv[2] === "--version") { console.log("examplecli 1.4.2"); process.exit(0); }
 if (process.argv[2] === "auth") process.exit(0);
@@ -181,5 +181,14 @@ describe("exec is a manifest: the prompt goes to stdin unless the command opts i
     const m = /file=(\S+) body=You are a tes/.exec(out);
     expect(m).toBeTruthy();
     expect(fs.existsSync(m![1]!)).toBe(false);
+  });
+});
+
+describe("HEXAGON_NO_REAL_CLI is enforced for every integration that declares a CLI", () => {
+  it("a manifest adapter refuses to start its declared executable under the test guard", async () => {
+    const { root } = project(`[plugins]\nadapters = ["./adapters/example.toml"]\n\n[agents.ex]\nadapter = "example"\n`);
+    const a = createAdapter("ex", loadConfig(cfgFile(root)).agents.ex!);
+    const out = await a.run(ctx());
+    expect(out).toMatchObject({ kind: "error", error: { retryable: false, message: expect.stringMatching(/HEXAGON_NO_REAL_CLI/) } });
   });
 });
