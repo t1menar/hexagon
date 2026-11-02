@@ -9,6 +9,10 @@ export interface AdapterMeta {
   defaultAgent?: Omit<AgentConfig, "id">;
   /** The agent id roles use when config.toml says nothing: exactly one integration sets this. */
   primary?: boolean;
+  /** The executable this integration drives, used to detect which agent CLIs are installed. */
+  cli?: string;
+  /** Set only after the conformance suite ran against the real CLI: version, date, what was covered. */
+  realRun?: { version: string; date: string; covered: string };
   /** Old adapter names that still load, mapped onto this integration. */
   aliases?: string[];
   /** Adjust an entry written for an old alias (drop settings that no longer apply). */
@@ -59,4 +63,14 @@ export function migrateAgentEntry(entry: AgentConfig): void {
       return;
     }
   }
+}
+
+/** The executable each integration drives, by adapter name (mock and exec have none). */
+export function adapterClis(): Array<{ adapter: string; cli: string }> {
+  return [...metas].filter(([, m]) => m.cli).map(([adapter, m]) => ({ adapter, cli: m.cli! }));
+}
+
+/** The recorded real-CLI run of an adapter, if there is one. */
+export function realRunOf(adapter: string): { version: string; date: string; covered: string } | undefined {
+  return metas.get(adapter)?.realRun;
 }
