@@ -32,7 +32,7 @@ Commands: `status.get`, `graph.show`, `graph.addNode`, `graph.removeNode`*, `gra
 * A task can be removed, or given or relieved of a prerequisite, only while it has not started. A started or finished task is history: cancel it (`agent.cancel`) or `/retry` it instead. Removing a task that a started task depends on is refused.
 * Every edit is validated first (unknown task, unknown role, cycle) and shows a diff. The edited graph is written to the run's `plan.json` and pushed to every UI.
 * **Removing** a task or an edge is destructive: it waits for your yes whoever asked. From the TUI, `/rm T-3` or `/unlink T-1 T-3` shows the diff as a proposal; `/apply` confirms. `hexagon do graph.removeNode --id T-3` asks `Apply? [y/N]` (`--yes` skips the question; the assistant's `--yes` is ignored).
-* TUI shortcuts: `/add <role> <title> [after T-1,T-2]`, `/rm`, `/link <T-a> <T-b>` (T-b waits for T-a), `/unlink`.
+* TUI shortcuts: `/add <role> <title> in <globs> verify <cmd> [after T-1,T-2]` (the write scope and a check are required; `exempt <reason>` replaces `verify`), `/rm`, `/link <T-a> <T-b>` (T-b waits for T-a), `/unlink`.
 * A removed task stays in the run's status as `cancelled — removed from the graph`, so the history is complete.
 
 ## Limits

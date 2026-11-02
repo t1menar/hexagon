@@ -1,3 +1,4 @@
+import { checkPlan } from "../src/core/plan.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -24,16 +25,22 @@ describe("typed commands", () => {
 
   it("flags map to typed arguments", () => {
     const d = commandDef("graph.addNode")!;
-    expect(argsFromFlags(d, ["--title", "x", "--role", "qa", "--depends_on", "T-1,T-2"])).toEqual({ title: "x", role: "qa", depends_on: ["T-1", "T-2"] });
+    expect(argsFromFlags(d, ["--title", "x", "--role", "qa", "--depends_on", "T-1,T-2", "--write", "a/**"])).toEqual({ title: "x", role: "qa", depends_on: ["T-1", "T-2"], write: ["a/**"] });
     expect(() => argsFromFlags(d, ["--nope", "1"])).toThrow(/unknown parameter/);
   });
 
   it("graph operations work on a copy, refuse cycles and unknown tasks, and describe the diff", () => {
     const p = plan();
-    const added = applyGraph(p, "graph.addNode", { title: "docs", role: "developer", depends_on: ["T-3"] });
+    const added = applyGraph(p, "graph.addNode", { write: ["docs/new.txt"], verify_exempt: "test fixture", title: "docs", role: "developer", depends_on: ["T-3"] });
     expect(p.tasks).toHaveLength(3);
     expect(graphDiff(p, added)).toEqual(["+ task T-4 [developer] docs", "+ edge T-3->T-4"]);
     expect(() => applyGraph(p, "graph.addEdge", { from: "T-3", to: "T-1" })).toThrow(/cycle/);
+    // A node the plan check would refuse is refused on the way in: no scope, no verify, or a verify that proves nothing.
+    expect(() => applyGraph(p, "graph.addNode", { title: "x", role: "developer", verify: ["npm test"] })).toThrow(/needs `write`/);
+    expect(() => applyGraph(p, "graph.addNode", { title: "x", role: "developer", write: ["src/**"] })).toThrow(/needs `verify`/);
+    const exempt = applyGraph(p, "graph.addNode", { title: "docs", role: "developer", write: ["docs/**"], verify_exempt: "prose only" });
+    expect(exempt.tasks.at(-1)!.verify_exempt).toBe("prose only");
+    expect(checkPlan(added).errors).toEqual(checkPlan(p).errors);
     expect(() => applyGraph(p, "graph.addEdge", { from: "T-9", to: "T-1" })).toThrow(/no task T-9/);
     const removed = applyGraph(p, "graph.removeNode", { id: "T-2" });
     expect(graphDiff(p, removed)).toEqual(["- task T-2 [developer] T-2", "- edge T-1->T-2", "- edge T-2->T-3"]);
@@ -87,7 +94,7 @@ describe("control service through the daemon", () => {
     const n = d.plan.tasks.length;
     const agent = (name: string, args: Record<string, unknown>) => client.call<{ ok: boolean; message: string }>("agent.api", { agent: "control", op: "command", args: { name, args } });
 
-    const r = await agent("graph.addNode", { title: "docs", role: "developer" });
+    const r = await agent("graph.addNode", { write: ["docs/new.txt"], verify_exempt: "test fixture", title: "docs", role: "developer" });
     expect(r.ok).toBe(true);
     expect(r.message).toMatch(/Proposed P-1/);
     expect(JSON.parse(fs.readFileSync(d.plan_path, "utf8")).tasks).toHaveLength(n); // nothing changed yet
@@ -116,7 +123,7 @@ describe("control service through the daemon", () => {
   it("the user's own call executes at once", async () => {
     const d = server.orch.draft!;
     const before = d.plan.tasks.length;
-    const res = await client.call<{ status: string }>("command.exec", { name: "graph.addNode", args: { title: "x", role: "qa" } });
+    const res = await client.call<{ status: string }>("command.exec", { name: "graph.addNode", args: { write: ["docs/new.txt"], verify_exempt: "test fixture", title: "x", role: "qa" } });
     expect(res.status).toBe("done");
     expect(server.orch.draft!.plan.tasks).toHaveLength(before + 1);
   });
