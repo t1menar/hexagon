@@ -14,7 +14,7 @@ function rig() {
   fs.writeFileSync(spec, SPEC("prints hello"));
   return { root, spec, ap: new Approvals(path.join(root, "approvals.json"), root) };
 }
-const task = (id: string, requirements: string[]) => ({ id, requirements });
+const task = (id: string, requirements: string[]) => ({ id, requirements, title: id, description: "", files: { write: ["a.txt"], read: [] as string[] }, acceptance: [] as string[], verify: [] as string[] });
 
 describe("spec approval gate", () => {
   it("blocks a task that cites a requirement of an unapproved spec", () => {
@@ -26,7 +26,13 @@ describe("spec approval gate", () => {
 
   it("lets ungated tasks and approved tasks through", () => {
     const { ap, spec } = rig();
-    expect(ap.check(task("T-0", []), [spec]).ok).toBe(true);
+    // No silent bypass: a task that cites no requirement needs the user's recorded approval.
+    const t0 = task("T-0", []);
+    expect(ap.check(t0, [spec]).problems[0]).toMatch(/cites no requirement/);
+    expect(ap.check(t0, []).ok).toBe(true); // not spec-driven: nothing to cover
+    ap.approveTask(t0, "user");
+    expect(ap.check(t0, [spec]).ok).toBe(true);
+    expect(ap.check({ ...t0, title: "something else" }, [spec]).ok).toBe(false); // changing it voids the approval
     ap.approve(spec);
     expect(ap.check(task("T-1", ["REQ-A-001"]), [spec]).ok).toBe(true);
   });

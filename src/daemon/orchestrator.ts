@@ -27,7 +27,7 @@ import { AgentBus, type BusActivity, type Envelope } from "../core/bus.js";
 import { commandDocs } from "../core/commands.js";
 import { AgentTokens } from "./auth.js";
 import { ControlService, type Proposal } from "./control.js";
-import { Approvals, ARTIFACT, checkStage, specHash, type Stage } from "../core/pipeline.js";
+import { Approvals, ARTIFACT, checkStage, isUntraced, specHash, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
 import { Scheduler, type PriorTask } from "../core/scheduler.js";
@@ -777,6 +777,7 @@ export class Orchestrator extends EventEmitter {
     let specs: Spec[] = [];
     try { specs = plan.specs.map((s) => parseSpec(path.resolve(this.root, s))); } catch { specs = []; }
     const check = checkPlan(plan, specs);
+    this.approveUntraced(plan, "at run start");
     const gated = plan.tasks.flatMap((t) => this.approvals.check(t, plan.specs).problems.map((p) => `${t.id}: ${p}`));
     if (gated.length) {
       throw new Error(`spec gate: ${[...new Set(gated)].slice(0, 5).join("; ")}. Approve the spec first (Enter on the spec review, or hexagon approve-spec <file>).`);
@@ -1071,6 +1072,19 @@ export class Orchestrator extends EventEmitter {
       timer.unref?.();
       this.pendingDecisions.set(req.id, (d) => { clearTimeout(timer); resolve(d); });
     });
+  }
+
+  /**
+   * Tasks that cite no requirement run outside what the approved spec covers. They only run with the user's recorded
+   * approval; this is called where the user acts (starting a run, applying a graph edit) and says so out loud.
+   */
+  approveUntraced(plan: Plan, when: string): string[] {
+    const fresh = plan.tasks.filter((t) => isUntraced(t, plan.specs) && this.approvals.check(t, plan.specs).problems.length).map((t) => {
+      this.approvals.approveTask(t, "user");
+      return t.id;
+    });
+    if (fresh.length) this.notice("info", `${fresh.join(", ")} cite${fresh.length === 1 ? "s" : ""} no requirement, so the spec does not cover ${fresh.length === 1 ? "it" : "them"}. Approved to run ${when}.`);
+    return fresh;
   }
 
   /** Commands a task will run are asked about before it starts (once per command line); returns the denied ones. */
