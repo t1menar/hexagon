@@ -1557,7 +1557,7 @@ export class App {
     if (a.session) {
       const ss = a.session;
       row("Session", `${ss.agent} · ${ss.mode === "new" ? `new${ss.reason ? ` (${ss.reason})` : ""}` : `resumed, turn ${ss.turns}`}`);
-      row("Context", `${ss.turns ? `ctx ${Math.round(ss.ctx_pct * 100)}% (~${tok(ss.ctx_tokens)} of ${tok(ss.window_tokens)}${ss.window_assumed ? ", assumed" : ""})` : "empty"}${ss.compactions ? ` ▸ compacted ×${ss.compactions}` : ""}`, ss.ctx_pct >= 0.7 ? this.tk("warning") : undefined);
+      row("Context", `${ss.turns ? `ctx ${Math.round(ss.ctx_pct * 100)}% (~${tok(ss.ctx_tokens)} of ${tok(ss.window_tokens)}${ss.window_assumed ? ", assumed" : ""})` : "empty"}${ss.compactions ? ` ▸ compacted ×${ss.compactions}` : ""}${ss.cli_compactions ? ` ▸ CLI compacted itself ×${ss.cli_compactions}` : ""}`, ss.ctx_pct >= 0.7 ? this.tk("warning") : undefined);
     }
     row("Attempt", `${a.attempt}${a.fix_cycle ? ` · fix cycle ${a.fix_cycle}` : ""}`);
     row("Tokens", a.usage.turns ? `${tok(spent(a.usage))} (${tok(a.usage.output_tokens)} out) · ${a.usage.turns} steps` : "unavailable");

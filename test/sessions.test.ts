@@ -55,6 +55,19 @@ describe("session registry (pure)", () => {
   });
   const reg = () => new SessionRegistry(fs.mkdtempSync(path.join("/tmp", "hsr-")));
 
+  it("notices when the CLI compacts a session on its own, and does not mistake Hexagon\'s own compaction for it", () => {
+    const r = reg();
+    r.resolve(spec()); r.confirm("developer-1");
+    const step = (tokens: number) => r.recordUsage("developer-1", { input: tokens, cache_read: 0, output: 0, cause: "prompt", step: true });
+    step(60_000); step(70_000);
+    expect(r.info("developer-1", "resumed", null, 200_000).cli_compactions).toBe(0);
+    step(15_000); // fell from 70k to 15k with no compaction by Hexagon
+    expect(r.info("developer-1", "resumed", null, 200_000).cli_compactions).toBe(1);
+    expect(r.events().some((e) => e.kind === "cli_compacted")).toBe(true);
+    step(16_000); // growing again: nothing
+    expect(r.info("developer-1", "resumed", null, 200_000).cli_compactions).toBe(1);
+  });
+
   it("creates once, then resumes the same native session", () => {
     const r = reg();
     const a = r.resolve(spec());

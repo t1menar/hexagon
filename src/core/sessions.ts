@@ -25,6 +25,8 @@ export interface SessionRecord {
   /** Size of the conversation after the latest model call (input + cached), in tokens. */
   contextTokens: number;
   compactions: number;
+  /** Times the CLI itself compacted this session (seen as a sharp fall in context size). Hexagon did not choose when. */
+  cliCompactions?: number;
   /** `turns` value at the last compaction. */
   lastCompactionTurn: number;
   /** What this session has already been told, so later tasks only get the difference. */
@@ -62,11 +64,17 @@ export type SessionEvent =
   | { ts: string; agent: string; kind: "created"; reason: string; session: string }
   | { ts: string; agent: string; kind: "resumed"; session: string; turns: number }
   | { ts: string; agent: string; kind: "compacted"; session: string; previous: string; compactions: number }
-  | { ts: string; agent: string; kind: "reset"; reason: string; session: string };
+  | { ts: string; agent: string; kind: "reset"; reason: string; session: string }
+  /** The CLI shrank the conversation on its own (auto-compaction): the context size fell sharply without Hexagon compacting. */
+  | { ts: string; agent: string; kind: "cli_compacted"; session: string; before: number; after: number };
 
 const emptySeen = (): SessionRecord["seen"] => ({ skills: [], others: "", notes: null, state: "" });
 
 /** agent id -> session, one JSON file each under .hexagon/sessions/. */
+/** A step that leaves less than this share of a large context was a compaction the CLI did on its own. */
+export const CLI_COMPACTION_DROP = 0.6;
+export const CLI_COMPACTION_MIN = 20_000;
+
 export class SessionRegistry {
   private records = new Map<string, SessionRecord>();
 
@@ -168,7 +176,13 @@ export class SessionRegistry {
     l.input += u.input; l.cache_read += u.cache_read; l.output += u.output;
     if (u.step) {
       r.turns += 1;
-      r.contextTokens = u.input + u.cache_read + u.output;
+      const now = u.input + u.cache_read + u.output;
+      // Hexagon's own compaction and resets zero contextTokens first, so a fall from a large size is the CLI's doing.
+      if (r.contextTokens >= CLI_COMPACTION_MIN && now < r.contextTokens * CLI_COMPACTION_DROP) {
+        r.cliCompactions = (r.cliCompactions ?? 0) + 1;
+        this.log({ ts: nowIso(), agent: agentId, kind: "cli_compacted", session: r.nativeSessionId, before: r.contextTokens, after: now });
+      }
+      r.contextTokens = now;
     }
     r.lastUsedAt = nowIso();
     this.save(r);
@@ -231,7 +245,7 @@ export class SessionRegistry {
     const r = this.records.get(agentId);
     return {
       agent: agentId, mode, reason, turns: r?.turns ?? 0, ctx_tokens: r?.contextTokens ?? 0,
-      ctx_pct: r ? Math.min(1, r.contextTokens / (r.windowTokens ?? windowTokens)) : 0, window_tokens: r?.windowTokens ?? windowTokens, window_assumed: !r?.windowTokens, compactions: r?.compactions ?? 0,
+      ctx_pct: r ? Math.min(1, r.contextTokens / (r.windowTokens ?? windowTokens)) : 0, window_tokens: r?.windowTokens ?? windowTokens, window_assumed: !r?.windowTokens, compactions: r?.compactions ?? 0, cli_compactions: r?.cliCompactions ?? 0,
     };
   }
 }
