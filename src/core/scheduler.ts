@@ -165,6 +165,7 @@ export class Scheduler extends EventEmitter {
       }
       if (!deps.ready) { this.reason(id, `waiting for ${deps.waitingOn}`); continue; }
       if (this.paused) { this.reason(id, "run paused"); continue; }
+      if (this.checkpoint) { this.reason(id, "waiting for your check after the first merge (/resume)"); continue; }
       const gate = this.rc.gate?.(t);
       if (gate && !gate.ok) {
         const why = `spec gate: ${gate.problems[0]}`;
@@ -225,12 +226,34 @@ export class Scheduler extends EventEmitter {
       this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `${t.id}: retrying (attempt ${attempt + 1}) with more effort` });
     } else {
       this.outcome.set(t.id, state);
+      this.maybeCheckpoint(t, state);
       if (waiting?.length) {
         this.waiters.delete(t.id);
         for (const w of waiting) w({ state, summary: run.outcomeSummary });
       }
     }
     this.tick();
+  }
+
+  /** New starts are held after the first merge of a graph, until the human continues. Running tasks are not touched. */
+  private checkpoint = false;
+  private checkpointSeen = false;
+
+  /**
+   * The first task of a graph is merged: stop starting the rest until a human has asked "are we still building the right
+   * thing?". Cheap to answer, expensive to skip: every later task builds on this one.
+   */
+  private maybeCheckpoint(t: Task, state: AgentState): void {
+    if (state !== "done" || this.checkpointSeen) return;
+    this.checkpointSeen = true;
+    const resumed = [...(this.opts.prior?.values() ?? [])].some((p) => p.state === "done");
+    const rest = this.tasks.filter((x) => x.id !== t.id && !this.outcome.has(x.id) && !this.active.has(x.id));
+    // HEXAGON_NO_CHECKPOINT=1: for unattended runs and the test suite (nobody is there to say continue).
+    if (!this.rc.cfg.run.checkpoint_after_first || process.env.HEXAGON_NO_CHECKPOINT === "1" || resumed || this.tasks.length < 2 || !rest.length) return;
+    this.checkpoint = true;
+    const text = `${t.id} is merged. Before the other ${rest.length} task(s) start: are we still building the right thing? Look at /changes (or hexagon diff ${t.id}). Continue with /resume; change course with /respec, /add, /rm or /link.`;
+    this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: text });
+    this.rc.store.setAttention([{ kind: "checkpoint", task_id: t.id, text }]);
   }
 
   /** User-initiated retry with optional overrides. */
@@ -403,6 +426,7 @@ export class Scheduler extends EventEmitter {
 
   resumeAll(): void {
     this.paused = false;
+    this.checkpoint = false;
     this.rc.store.runState = "running";
     this.rc.store.setAttention([]);
     for (const r of this.active.values()) r.resume();

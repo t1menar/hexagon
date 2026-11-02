@@ -84,6 +84,25 @@ describe("merged results are verified again", () => {
     expect([a!.state, b!.state]).toEqual(["done", "done"]);
   }, 120000);
 
+  it("a graph holds the rest back after the first merge until the human continues", async () => {
+    const saved = process.env.HEXAGON_NO_CHECKPOINT;
+    delete process.env.HEXAGON_NO_CHECKPOINT; // the suite runs unattended; this test is the attended case
+    try {
+      const root = project();
+      const c = await boot(root);
+      await c.call("run.start", { plan_path: writePlan(root, task("T-1", "src/a.txt", ["test -f src/a.txt"]), task("T-2", "src/b.txt", ["test -f src/b.txt"], { depends_on: ["T-1"] })) });
+      const [first] = await settled(c, ["T-1"]);
+      expect(first!.state).toBe("done");
+      const att = await until(async () => (await c.call<{ run: { attention: { kind: string; text: string }[] } }>("ui.snapshot")).run.attention.find((a) => a.kind === "checkpoint"));
+      expect(att.text).toMatch(/still building the right thing/);
+      await sleep(800);
+      expect((await c.call<AgentStatus>("agent.status", { task: "T-2" })).state).toBe("queued"); // not started
+      await c.call("run.resume");
+      const [, second] = await settled(c, ["T-1", "T-2"]);
+      expect(second!.state).toBe("done");
+    } finally { if (saved !== undefined) process.env.HEXAGON_NO_CHECKPOINT = saved; }
+  }, 120000);
+
   it("/merge is refused when the final check fails, and an override is recorded", async () => {
     const root = project('["test -f src/never-written.txt"]');
     const c = await boot(root);

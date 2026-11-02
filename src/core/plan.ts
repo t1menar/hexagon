@@ -60,6 +60,15 @@ export function contractSmells(plan: Plan): string[] {
   return out;
 }
 
+/**
+ * Does this verify command point at something concrete: a test file or path, or a selector for one test? A bare
+ * `npm test` or `go test ./...` runs everything and says nothing about the criterion it is supposed to prove.
+ */
+export function isSpecificVerify(cmd: string): boolean {
+  if (/(?:^|\s)(?:-k|-t|-run|--run|--grep|--filter|--testPathPattern|--test|-Dtest=\S*|-only)\b/.test(cmd) || /::\w/.test(cmd)) return true;
+  return cmd.split(/\s+/).slice(1).some((w) => !w.startsWith("-") && (/\.\w{1,5}$/.test(w) || (w.includes("/") && !/^\.{0,2}\/?\.\.\.$/.test(w) && !/\/\.\.\.$/.test(w))));
+}
+
 export interface PlanCheck { errors: string[]; warnings: string[]; order: string[] }
 
 /** Schema + semantic checks: unique ids, known deps, acyclic, AC coverage. */
@@ -97,6 +106,13 @@ export function checkPlan(plan: unknown, specs: Spec[] = []): PlanCheck {
       for (const r of s.requirements) {
         knownReqs.add(r.id);
         for (const ac of r.acceptance) if (!covered.has(`${r.id}/${ac.id}`)) errors.push(`${r.id}/${ac.id} is not covered by any task (a task must list it under "acceptance" and cite ${r.id})`);
+      }
+    }
+    // An AC id on a task is a claim. It counts only if some verify command of the task points at a concrete test.
+    for (const t of p.tasks) {
+      const wholeRepo = t.files.write[0] === "**"; // single-task: the one task proves everything, a suite-wide run is the honest check
+      if (t.acceptance.length && t.verify.length && !wholeRepo && !t.verify.some(isSpecificVerify)) {
+        errors.push(`${t.id} lists acceptance criteria but its verify (${t.verify.map((v) => `\`${v}\``).join(", ")}) names no test file or test id, so nothing ties ${t.acceptance.slice(0, 3).join(", ")} to a check. Use a command that targets the test (e.g. \`npx vitest run test/a.test.ts\`, \`pytest tests/test_a.py -k name\`, \`go test ./pkg -run TestName\`).`);
       }
     }
     for (const t of p.tasks) for (const r of t.requirements) if (!knownReqs.has(r)) errors.push(`${t.id} references unknown requirement ${r}`);
