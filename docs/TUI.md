@@ -130,7 +130,7 @@ Agents ask for commands through `hexagon exec | install | sudo`; the daemon bloc
 
 ```toml
 [ui]
-animation = "auto"        # auto | full | reduced | off
+animation = "auto"        # auto (= full; reduced over SSH) | full | reduced | off
 startup_animation = true
 inspector = true
 ```
