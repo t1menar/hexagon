@@ -5,7 +5,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { HexClient } from "../src/client/client.js";
 import type { AgentStatus } from "../src/contracts/types.js";
-import { parseMode, recommendMode } from "../src/core/pipeline.js";
+import { checkStage, parseMode, parseSpikes, recommendMode, spikeTriggers } from "../src/core/pipeline.js";
+import os from "node:os";
 import { scaffold } from "../src/core/project.js";
 import { DaemonServer } from "../src/daemon/server.js";
 import type { Draft } from "../src/daemon/orchestrator.js";
@@ -31,6 +32,41 @@ describe("mode: how much machinery a request gets", () => {
     expect(recommendMode(analysis("", "src/api/a.ts, src/web/b.ts, src/db/c.ts")).mode).toBe("single-task");
     // several modules and independent slices → graph
     expect(recommendMode(analysis("", "src/api/a.ts (independent of the rest), src/web/b.ts, src/db/c.ts; these run in parallel")).mode).toBe("dag");
+  });
+});
+
+describe("uncertain analysis must plan a spike before a spec", () => {
+  const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), "hx-spike-"));
+  const write = (d: string, text: string) => fs.writeFileSync(path.join(d, "analysis.md"), text);
+  const unsure = analysis("single-task: one agent", "src/a.ts", "Requests fail intermittently; the root cause is unknown.");
+
+  it("names why: unknown cause, cross-cutting change, unclear boundaries", () => {
+    expect(spikeTriggers(unsure)).toEqual(["the cause is unknown"]);
+    expect(spikeTriggers(analysis("dag: x", "src/a.ts", "Cause: off-by-one in a.ts:12.")).length).toBe(0);
+    expect(spikeTriggers(analysis("dag: x", "a public API and a schema change in db/")).join()).toMatch(/cross-cutting/);
+    expect(spikeTriggers(analysis("dag: x", "src/", "The module boundary between api and core is unclear.")).join()).toMatch(/boundaries are unclear/);
+  });
+
+  it("is refused without a Spike section, accepted with one, and the flag can turn it off", () => {
+    const d = dir();
+    write(d, unsure);
+    expect(checkStage("analyze", d).errors.join()).toMatch(/no "Spike" section/);
+    expect(checkStage("analyze", d, undefined, { requireSpike: false }).errors).toEqual([]);
+    write(d, unsure.replace("## Mode", "## Spike\n- S-1: find where the request is dropped\n\n## Mode"));
+    expect(parseSpikes(fs.readFileSync(path.join(d, "analysis.md"), "utf8"))).toEqual([{ id: "S-1", question: "find where the request is dropped" }]);
+    expect(checkStage("analyze", d).errors).toEqual([]);
+    // Certain analysis needs no spike.
+    write(d, analysis("single-task: one agent", "src/a.ts", "Cause: off-by-one in a.ts:12."));
+    expect(checkStage("analyze", d).errors).toEqual([]);
+  });
+
+  it("spike.md must answer every spike with evidence and end in a decision", () => {
+    const d = dir();
+    write(d, unsure.replace("## Mode", "## Spike\n- S-1: where is it dropped\n- S-2: who retries\n\n## Mode"));
+    fs.writeFileSync(path.join(d, "spike.md"), "## Findings\nS-1: dropped at src/net.ts:40\n\n## Decision\nFix the queue.\n");
+    expect(checkStage("spike", d).errors).toEqual(["spike.md does not answer S-2: who retries"]);
+    fs.writeFileSync(path.join(d, "spike.md"), "## Findings\nS-1: dropped\nS-2: nobody\n\n## Decision\nFix the queue.\n");
+    expect(checkStage("spike", d).errors.join()).toMatch(/cites no evidence/);
   });
 });
 
@@ -73,6 +109,27 @@ describe("single-task mode runs end to end", () => {
     const st = await until(async () => { const x = await c.call<AgentStatus>("agent.status", { task: "T-1" }); return x.state === "done" || x.state === "failed" ? x : null; });
     expect(st.state).toBe("done");
   }, 120000);
+
+  it("an uncertain goal runs a spike before the spec, and the spec step is told to use its decision", async () => {
+    const { MockAdapter } = await import("../src/agents/mock.js");
+    MockAdapter.turns.length = 0;
+    const root = fs.mkdtempSync(path.join("/tmp", "hst-"));
+    git(root, "init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(root, "README.md"), "# demo\n");
+    git(root, "add", "-A"); git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+    scaffold(root);
+    const f = path.join(root, ".hexagon/config.toml");
+    fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/agent = "claude"/g, 'agent = "mock"').replace("step_ms = 600", "step_ms = 30"));
+    git(root, "add", "-A"); git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hexagon init");
+    const s = new DaemonServer(root); await s.listen();
+    const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });
+    await c.subscribe();
+    const reviewed = new Promise<{ out_dir: string }>((resolve) => c.on("push", (p) => { if (p.event === "spec_review" && p.data) resolve(p.data); }));
+    await c.call("goal.new", { goal: "Find why requests drop @spike" });
+    const review = await reviewed;
+    expect(fs.existsSync(path.join(review.out_dir, "spike.md"))).toBe(true);
+    expect(MockAdapter.turns.some((t) => /<stage>specify<\/stage>[\s\S]*spike\.md are accepted/.test(t.text))).toBe(true);
+  }, 60000);
 
   it("an unknown --mode is refused", async () => {
     const root = fs.mkdtempSync(path.join("/tmp", "hst-"));

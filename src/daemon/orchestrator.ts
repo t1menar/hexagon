@@ -31,7 +31,7 @@ import { Mutex } from "../util/mutex.js";
 import { reviewerWarnings } from "../core/security.js";
 import { AgentTokens } from "./auth.js";
 import { ControlService, type Proposal } from "./control.js";
-import { Approvals, ARTIFACT, checkStage, isUntraced, MODES, parseMode, recommendMode, specHash, type Mode, type Stage } from "../core/pipeline.js";
+import { Approvals, ARTIFACT, checkStage, isUntraced, MODES, parseMode, parseSpikes, recommendMode, specHash, type Mode, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
 import { formatCard, planCard, specCard, type Card } from "../core/card.js";
@@ -589,7 +589,7 @@ export class Orchestrator extends EventEmitter {
       `Output directory: ${out}`,
       existingSpecs.length ? `Existing specs (for context; don't modify them): ${existingSpecs.map((f) => `specs/${f}`).join(", ")}` : "",
       "",
-      "Stage 1 of 3: analyze. Read the codebase and the request, then write analysis.md with the sections Current state, Constraints, Risks, Open questions, Mode, Impacted areas. Mode: first word solo | single-task | dag, then the reason (solo = one small, understood edit; single-task = one agent with full checks; dag = several truly independent slices). Ask the user only about decisions that change the outcome. Run `hexagon plan-check`, then `hexagon done`.",
+      "Stage 1 of 3: analyze. Read the codebase and the request, then write analysis.md with the sections Current state, Constraints, Risks, Open questions, Mode, Impacted areas. Mode: first word solo | single-task | dag, then the reason (solo = one small, understood edit; single-task = one agent with full checks; dag = several truly independent slices). If the cause is unknown, the change is cross-cutting (API, schema, migration) or module boundaries are unclear, add a Spike section with one read-only investigation per unknown as `- S-1: <question>`; do not guess in the spec. Ask the user only about decisions that change the outcome. Run `hexagon plan-check`, then `hexagon done`.",
     ].filter((l) => l !== "").join("\n");
     void this.runPipeline(s, id, goal.trim(), out, "analyze", prompt);
     return { id };
@@ -624,7 +624,7 @@ export class Orchestrator extends EventEmitter {
   private stageCheck(out: string): Reply {
     if (this.stage === "plan") return draftCheck(this.root, out).reply;
     if (this.stage === "replan") return this.replanCheck(out).reply;
-    const { errors, warnings } = checkStage(this.stage, out, listProjectFiles(this.root, 5000));
+    const { errors, warnings } = checkStage(this.stage, out, listProjectFiles(this.root, 5000), { requireSpike: this.cfg.run.require_spike });
     const lines = [
       errors.length ? `✖ ${errors.length} error(s) in ${ARTIFACT[this.stage]}:\n${errors.map((e) => `  - ${e}`).join("\n")}` : `✔ ${ARTIFACT[this.stage]} is valid`,
       warnings.length ? `! ${warnings.length} warning(s):\n${warnings.map((w) => `  - ${w}`).join("\n")}` : "",
@@ -687,10 +687,26 @@ export class Orchestrator extends EventEmitter {
       if (from === "analyze") {
         if (!(await this.runStage(s, prompt, followUp))) return;
         this.decideMode(out);
+        const spikes = parseSpikes(fs.existsSync(path.join(out, "analysis.md")) ? fs.readFileSync(path.join(out, "analysis.md"), "utf8") : "");
+        if (spikes.length) {
+          // Explore before specifying: read-only investigations whose answers become inputs to the spec.
+          this.stage = "spike";
+          from = "spike";
+          prompt = "";
+          followUp = `<stage>spike</stage>\nanalysis.md is accepted, and it lists spikes. Write spike.md in ${out}: a "Findings" section answering each spike by id (S-1, …) with file:line evidence, a "Decision" section (what the spec should assume, and what stays open), and "Open risks". This is read-only investigation: change no product file. Run \`hexagon plan-check\`, then \`hexagon done\`.\nSpikes:\n${spikes.map((q) => `- ${q.id}: ${q.question}`).join("\n")}`;
+        } else {
+          this.stage = "specify";
+          from = "specify";
+          prompt = "";
+          followUp = `<stage>specify</stage>\nanalysis.md is accepted. Stage 2 of 3: specify. Write spec.md in ${out} (frontmatter, one \`## REQ-…: title\` per requirement with observable \`- AC-n:\` criteria, non-goals, **Touches**). If the change needs a design, also write design.md with the sections Interfaces, Data flow, Trade-offs. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
+        }
+      }
+      if (from === "spike") {
+        if (!(await this.runStage(s, prompt, followUp))) return;
         this.stage = "specify";
         from = "specify";
         prompt = "";
-        followUp = `<stage>specify</stage>\nanalysis.md is accepted. Stage 2 of 3: specify. Write spec.md in ${out} (frontmatter, one \`## REQ-…: title\` per requirement with observable \`- AC-n:\` criteria, non-goals, **Touches**). If the change needs a design, also write design.md with the sections Interfaces, Data flow, Trade-offs. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
+        followUp = `<stage>specify</stage>\nanalysis.md and spike.md are accepted; write the spec from the spike's Decision, not from guesses. Stage 2 of 3: specify. Write spec.md in ${out} (frontmatter, one \`## REQ-…: title\` per requirement with observable \`- AC-n:\` criteria, non-goals, **Touches**). If the change needs a design, also write design.md with the sections Interfaces, Data flow, Trade-offs. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
       }
       if (from === "specify") {
         if (!(await this.runStage(s, prompt, followUp))) return;
