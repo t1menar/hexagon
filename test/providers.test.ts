@@ -31,7 +31,7 @@ process.stdin.on("data", (d) => stdin += d);
 process.stdin.on("end", () => {
   if (log) fs.appendFileSync(log, JSON.stringify({ argv: a, stdin }) + "\\n");
   if (process.env.FAKE_FAIL) { console.error(process.env.FAKE_FAIL); process.exit(1); }
-  const out = [JSON.stringify({ type: "thread.started", thread_id: process.env.FAKE_THREAD || "th-1" }), "not json {{", JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } })].join("\\n") + "\\n";
+  const out = [JSON.stringify({ type: "thread.started", thread_id: process.env.FAKE_THREAD || "th-1" }), "not json {{", JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }), JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 50 } })].join("\\n") + "\\n";
   // split mid-line to prove chunk-boundary handling
   process.stdout.write(out.slice(0, 20));
   setTimeout(() => { process.stdout.write(out.slice(20)); }, 30);
@@ -246,6 +246,7 @@ describe("one-shot adapters against a fake CLI", () => {
     expect(c1.argv).not.toContain("-m");
     expect(c1.stdin).toContain("do the thing $(rm -rf /) `x`"); // verbatim via stdin, never interpolated
     expect(c1.argv.join(" ")).not.toContain("rm -rf");
+    expect(events.find((e) => e.type === "usage")).toMatchObject({ input: 200, cache_read: 800, output: 50, cost_usd: 0 }); // documented shape; unverified on a real codex
     expect(events.some((e) => e.type === "chat" && e.text === "hello")).toBe(true); // survived a mid-line chunk split and a junk line
     // second run resumes the thread
     await a.run(ctx({ env, resume: true, followUp: "more" }, events));

@@ -33,6 +33,12 @@ describe("cost report", () => {
     expect(priced.total.unknown_runs).toBe(0);
   });
 
+  it("a run that happened but reported no usage at all is unknown, and one that never started is not counted", () => {
+    const r = costReport([st("T-1", "developer", "grok", { wall_ms: 5000 }), st("T-2", "developer", "grok", {})]);
+    expect(r.total.unknown_runs).toBe(1);
+    expect(r.by_task.find((x) => x.key === "T-2")!.unknown_runs).toBe(0);
+  });
+
   it("warns when an agent's cache hit rate is low, not when the volume is tiny", () => {
     const low = costReport([st("T-1", "developer", "a", { input_tokens: 90_000, cache_read_tokens: 10_000, cost_usd: 1 })]);
     expect(low.warnings.join(" ")).toMatch(/10% of its input came from cache/);

@@ -30,8 +30,11 @@ function add(rows: Map<string, CostRow>, key: string, s: AgentStatus, price: Pri
   const u = s.usage;
   r.attempts += 1;
   r.tokens.input += u.input_tokens; r.tokens.cache_read += u.cache_read_tokens; r.tokens.output += u.output_tokens;
+  const tokens = u.input_tokens + u.output_tokens + u.cache_read_tokens;
+  const ran = u.wall_ms > 0 || u.turns > 0 || tokens > 0;
   if (u.cost_usd > 0) r.cost_usd += u.cost_usd;
-  else if (u.input_tokens + u.output_tokens + u.cache_read_tokens > 0) {
+  else if (ran && tokens === 0) r.unknown_runs += 1; // it ran and the CLI told us nothing: unknown, not free
+  else if (tokens > 0) {
     if (price && (price.input_per_mtok !== undefined || price.output_per_mtok !== undefined)) {
       const est = (u.input_tokens * (price.input_per_mtok ?? 0) + u.cache_read_tokens * (price.cache_read_per_mtok ?? 0) + u.output_tokens * (price.output_per_mtok ?? 0)) / 1e6;
       r.cost_usd += est; r.estimated_usd += est;
