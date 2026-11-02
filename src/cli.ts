@@ -108,6 +108,24 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
   if (cmd === "commands") return void console.log(commandDocs());
+  if (cmd === "bench") {
+    // Real agents, real tokens: needs --real, and stops at [bench] max_cost_usd.
+    const { runBench, benchTable, benchCap, POLICIES } = await import("./bench.js");
+    const r = root();
+    if (!bool(rest, "--real")) {
+      console.error(`hexagon bench runs real agents on a small fixture and spends tokens. Add --real to run it; it stops when the cost the CLI reports reaches [bench] max_cost_usd (now ${benchCap(r)}).\nOptions: --policies a,b,c  --agent <id>  --idle <seconds> (a long gap before task 4, longer than the cache lifetime; default 3700, 0 = none)  --with-review  --out <file>\n${Object.entries(POLICIES).map(([k, v]) => `  ${k}: ${v.name}`).join("\n")}`);
+      process.exit(2);
+    }
+    const policies = (one(rest, "--policies") ?? "a,b,c").split(",").map((x) => x.trim()) as ("a" | "b" | "c")[];
+    for (const p of policies) if (!POLICIES[p]) throw new Error(`unknown policy ${p} (a, b, c)`);
+    const rows = await runBench({
+      real: true, agent: one(rest, "--agent") ?? "default", policies, gapsLong: Number(one(rest, "--idle") ?? 3700), withReview: bool(rest, "--with-review"),
+      maxCost: benchCap(r), out: one(rest, "--out") ?? path.join(r, ".hexagon", "bench.json"), log: (l) => console.log(l),
+    });
+    console.log(`\n${benchTable(rows)}\n\n(cost is what the CLI reports; fresh input excludes cache reads)`);
+    return;
+  }
+
   if (cmd === "do") {
     const name = rest[0];
     const def = name ? commandDef(name) : undefined;

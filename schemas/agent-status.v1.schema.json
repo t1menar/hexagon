@@ -158,6 +158,8 @@
         "turns": { "type": "integer", "minimum": 0 },
         "ctx_tokens": { "type": "integer", "minimum": 0 },
         "ctx_pct": { "type": "number", "minimum": 0, "maximum": 1 },
+        "window_tokens": { "type": "number" },
+        "window_assumed": { "type": "boolean" },
         "compactions": { "type": "integer", "minimum": 0 }
       }
     },

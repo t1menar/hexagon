@@ -136,6 +136,7 @@ export class SoloSession extends EventEmitter {
       case "status_report": if (e.activity) { this.status.activity = e.activity; this.log("status", e.activity); } break;
       case "usage": {
         this.status.cost_usd = Math.round((this.status.cost_usd + e.cost_usd) * 1e6) / 1e6;
+        if (e.window) this.opts.sessions?.setWindow(this.id, e.window);
         if (!e.step) break;
         const t = this.status.tokens;
         t.input += e.input; t.cache_read += e.cache_read; t.output += e.output; t.steps += 1;

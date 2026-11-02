@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { createAdapter } from "../agents/registry.js";
-import { contextFile, identityHash, loadSkills, projectContext, systemPrompt } from "../agents/prompts.js";
+import { contextFile, identityHash, loadSkills, projectContext, repositoryOverview, systemPrompt } from "../agents/prompts.js";
 import type { AgentAdapter, Reply } from "../agents/types.js";
 import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
@@ -823,7 +823,7 @@ export class Orchestrator extends EventEmitter {
     store.runExtra = () => ({ bus: bus.summary() });
     const rc: RunContext = {
       root: this.root, paths: this.paths, run, runId, cfg: this.cfg, store, router, registry: this.registry, specs,
-      skills: loadSkills(this.paths), context: projectContext(this.root), integration, integrationLock: new Mutex(),
+      skills: loadSkills(this.paths), context: projectContext(this.root), overview: repositoryOverview(this.root), integration, integrationLock: new Mutex(),
       adapterFor: (role, override) => this.adapterFor(role, override),
       gate: (task) => this.approvals.check(task, plan.specs),
       waits,

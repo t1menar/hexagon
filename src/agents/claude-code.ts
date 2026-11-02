@@ -217,7 +217,10 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
             flushStep();
             const total = Number(e.total_cost_usd ?? 0);
             // Tokens were counted per step; keep the CLI's cost estimate for local records only.
-            host.emit({ type: "usage", input: 0, output: 0, cache_read: 0, cache_write: 0, cost_usd: Math.max(0, total - lastCost) });
+            // The CLI reports the real context window of the model it used: prefer it to any assumed size.
+            const mu = Object.values((e.modelUsage ?? {}) as Record<string, { contextWindow?: number }>);
+            const window = Math.max(0, ...mu.map((m) => Number(m.contextWindow ?? 0)));
+            host.emit({ type: "usage", input: 0, output: 0, cache_read: 0, cache_write: 0, cost_usd: Math.max(0, total - lastCost), ...(window > 0 ? { window } : {}) });
             lastCost = Math.max(lastCost, total);
             if (e.is_error) {
               const msg = String(e.result ?? e.subtype ?? "error");

@@ -7,6 +7,8 @@ import { appendJsonl, atomicWriteJson, ensureDir, nowIso, readJson } from "../ut
 /** One logical agent session, kept per agent identity for the whole project. Persisted so a daemon restart resumes it. */
 export interface SessionRecord {
   agentId: string;
+  /** Context window the CLI reported for this agent's model. Absent: [context] assumed_window_tokens applies. */
+  windowTokens?: number;
   role: string;
   adapterId: string;
   model: string | null;
@@ -151,6 +153,14 @@ export class SessionRegistry {
   }
 
   /** One model call finished: remember how big the conversation is now. */
+  /** The CLI told us the model's real context window. */
+  setWindow(agentId: string, tokens: number): void {
+    const r = this.records.get(agentId);
+    if (!r || r.windowTokens === tokens) return;
+    r.windowTokens = tokens;
+    this.save(r);
+  }
+
   recordUsage(agentId: string, u: { input: number; cache_read: number; output: number; cause: TokenCause; step: boolean }): void {
     const r = this.records.get(agentId);
     if (!r) return;
@@ -221,7 +231,7 @@ export class SessionRegistry {
     const r = this.records.get(agentId);
     return {
       agent: agentId, mode, reason, turns: r?.turns ?? 0, ctx_tokens: r?.contextTokens ?? 0,
-      ctx_pct: r ? Math.min(1, r.contextTokens / windowTokens) : 0, compactions: r?.compactions ?? 0,
+      ctx_pct: r ? Math.min(1, r.contextTokens / (r.windowTokens ?? windowTokens)) : 0, window_tokens: r?.windowTokens ?? windowTokens, window_assumed: !r?.windowTokens, compactions: r?.compactions ?? 0,
     };
   }
 }

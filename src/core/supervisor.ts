@@ -39,6 +39,8 @@ export interface RunContext {
   specs: Spec[];
   skills: Skill[];
   context: string;
+  /** Repository file counts: sent with the first message of a new session, not in the system prompt. */
+  overview: string;
   integration: { branch: string; worktree: string };
   /** Merges into the integration branch (and the checks that follow) happen one at a time. */
   integrationLock: Mutex;
@@ -154,6 +156,7 @@ export class AgentRun {
     if (e.type === "usage") {
       const sink = this.sink ?? (this.identity ? { identity: this.identity, cause: this.cause } : null);
       const stamped = { ...e, cause: e.cause ?? sink?.cause ?? this.cause };
+      if (sink && e.window) this.rc.sessions.setWindow(sink.identity, e.window);
       if (sink && (e.input || e.output || e.cache_read || e.step)) {
         this.rc.sessions.recordUsage(sink.identity, { input: e.input, cache_read: e.cache_read, output: e.output, cause: stamped.cause, step: Boolean(e.step) });
         if (e.step && sink.identity === this.identity) this.refreshSession();
@@ -585,13 +588,17 @@ export class AgentRun {
   private async prepareSession(): Promise<Resolution> {
     const lease = this.ensureLease();
     const cap = this.adapter.capabilities;
+    const cx = this.rc.cfg.context;
+    // A task starts: with task scope its agent gets a new session (the previous task reaches it as a handoff).
+    if (!this.started && cx.session_scope === "task") this.rc.sessions.reset(lease.agentId, "session_scope = task: a new session for every task");
     let res = this.rc.sessions.resolve({
       agentId: lease.agentId, role: this.task.role, adapterId: this.adapter.adapterId, model: this.adapter.model,
       promptHash: identityHash(this.rc.paths, this.task.role, this.rc.skills, this.rc.cfg.roles[this.task.role]), cwd: this.worktree,
       resumeAcrossCwd: cap.resumeAcrossCwd, supportsResume: cap.supportsSessionResume,
     });
     if (res.resume) {
-      const d = shouldCompact(this.rc.cfg.context, res.record, Boolean(res.record.compactRequested));
+      const boundary = !this.started && cx.task_boundary === "compact" && cx.mode !== "off" && res.record.turns > 0;
+      const d = boundary ? { compact: true, why: "task boundary (task_boundary = compact)" } : shouldCompact(cx, res.record, Boolean(res.record.compactRequested));
       if (d.compact) {
         const c = await this.compact(res, d.why);
         if (c) res = c;
@@ -683,11 +690,13 @@ export class AgentRun {
     if (!this.started) {
       // First turn of this task. In a resumed session the card goes as the next message.
       const carried = fresh && this.compactSummary ? `Summary of your earlier work in this project (written by you before the session was compacted):\n${this.compactSummary}` : "";
-      const text = [card, this.baselineNote, carried, fu].filter(Boolean).join("\n\n");
+      // A resumed session remembers other directories and file contents: say where it is now, and that those are stale.
+      const moved = res.resume ? `You are now working on a different task, in ${this.worktree}. Paths and file contents from earlier tasks in this conversation are stale: that work is finished and merged, other worktrees are not yours to edit, and files must be read again here before you rely on them.` : "";
+      const text = [moved, res.resume ? "" : this.rc.overview, card, this.baselineNote, carried, fu].filter(Boolean).join("\n\n");
       return { prompt: text, followUp: res.resume ? text : undefined, freshTask: true };
     }
     // Fresh session in the middle of a task (compaction, reset, overflow): card + pinned context.
-    const text = [card, this.pinnedContext(), fu].filter(Boolean).join("\n\n");
+    const text = [this.rc.overview, card, this.pinnedContext(), fu].filter(Boolean).join("\n\n");
     return { prompt: text, freshTask: true };
   }
 

@@ -27,3 +27,21 @@ describe("shipped prompts", () => {
     });
   }
 });
+
+describe("the system prefix is byte-stable", () => {
+  it("adding files to the repository does not change the system prompt (file counts live in the first user message)", async () => {
+    const { projectContext, repositoryOverview } = await import("../src/agents/prompts.js");
+    const fsm = await import("node:fs");
+    const os = await import("node:os");
+    const pth = await import("node:path");
+    const root = fsm.mkdtempSync(pth.join(os.tmpdir(), "hx-ctx-"));
+    fsm.writeFileSync(pth.join(root, "HEXAGON.md"), "# Notes\nsmall modules\n");
+    fsm.mkdirSync(pth.join(root, "src"));
+    fsm.writeFileSync(pth.join(root, "src/a.ts"), "x");
+    const before = projectContext(root), overviewBefore = repositoryOverview(root);
+    fsm.writeFileSync(pth.join(root, "src/b.ts"), "y");
+    expect(projectContext(root)).toBe(before);
+    expect(repositoryOverview(root)).not.toBe(overviewBefore);
+    expect(repositoryOverview(root)).toMatch(/3 files/);
+  });
+});
