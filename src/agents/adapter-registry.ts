@@ -70,6 +70,16 @@ export function adapterClis(): Array<{ adapter: string; cli: string }> {
   return [...metas].filter(([, m]) => m.cli).map(([adapter, m]) => ({ adapter, cli: m.cli! }));
 }
 
+/**
+ * Tests set HEXAGON_NO_REAL_CLI=1 so they can never start a vendor's real CLI (it would spend tokens). Every runner asks this
+ * before it spawns: true when the executable is the CLI an integration declares (`meta.cli`), by basename.
+ */
+export function realCliBlocked(bin: string): boolean {
+  if (process.env.HEXAGON_NO_REAL_CLI !== "1") return false;
+  const base = bin.split("/").at(-1);
+  return [...metas.values()].some((m) => m.cli && m.cli === base);
+}
+
 /** The recorded real-CLI run of an adapter, if there is one. */
 export function realRunOf(adapter: string): { version: string; date: string; covered: string } | undefined {
   return metas.get(adapter)?.realRun;

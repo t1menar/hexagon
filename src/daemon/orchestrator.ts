@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { createAdapter } from "../agents/registry.js";
+import { enforcedFor, SECRET_DENY_GLOBS } from "../agents/contracts/policy.js";
 import { contextFile, identityHash, loadSkills, projectContext, repositoryOverview, systemPrompt } from "../agents/prompts.js";
 import type { AgentAdapter, Reply } from "../agents/types.js";
 import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent, Task } from "../contracts/types.js";
@@ -279,6 +280,12 @@ export class Orchestrator extends EventEmitter {
   private discovery = new DiscoveryCache();
 
   /** Every configured agent with live diagnostics (executable, version, auth) and declared capabilities. */
+  /** What this agent enforces under the current config: its projection of a read-only policy and of the configured allow-list. */
+  private securityOf(a: AgentAdapter, _conf: unknown): AgentInfo["security"] {
+    const base = { allowCommands: this.cfg.sandbox.allow_commands, hexagonBin: null, secretDeny: SECRET_DENY_GLOBS, effort: "medium" as const };
+    return { readOnlyEnforced: enforcedFor(a, { ...base, readOnly: true }).readOnlyEnforced, commandAllowList: enforcedFor(a, { ...base, readOnly: false }).commandAllowList };
+  }
+
   async agentsInfo(): Promise<AgentInfo[]> {
     const roles = Object.entries(this.cfg.roles);
     return Promise.all(Object.entries(this.cfg.agents).map(async ([id, conf]): Promise<AgentInfo> => {
@@ -287,7 +294,7 @@ export class Orchestrator extends EventEmitter {
         const a = this.adapter(id);
         const diag = await a.detect();
         return {
-          ...base, provider: a.provider, adapter: a.adapterId, display_name: a.displayName, capabilities: a.capabilities, security: a.security,
+          ...base, provider: a.provider, adapter: a.adapterId, display_name: a.displayName, capabilities: a.capabilities, security: this.securityOf(a, conf),
           selection: a.selection, diagnostics: diag, error: null,
         };
       } catch (e) {

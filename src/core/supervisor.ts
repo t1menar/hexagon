@@ -11,6 +11,7 @@ import type {
 import { validateResult } from "../contracts/validate.js";
 import { identityHash, skillsBlock, systemPrompt, taskCard, type Skill } from "../agents/prompts.js";
 import type { AdapterOutcome, AgentAdapter, AgentApi, AgentHost, AgentRunContext, Injected, Reply } from "../agents/types.js";
+import { enforcedFor, SECRET_DENY_GLOBS, type RunPolicy } from "../agents/contracts/policy.js";
 import { classifyProviderError, recoveryFor } from "../agents/contracts/errors.js";
 import { planRetry, waitTooLong, type WaitStore } from "./recovery.js";
 import { atomicWriteJson, matchesAny, nowIso, truncateMiddle } from "../util/fsx.js";
@@ -1052,6 +1053,7 @@ export class AgentRun {
       env: this.rc.agentEnv(o.agentId),
       allowCommands: this.rc.cfg.sandbox.allow_commands,
       readOnly: o.readOnly,
+      policy: { readOnly: o.readOnly, allowCommands: this.rc.cfg.sandbox.allow_commands, hexagonBin: this.rc.agentEnv(o.agentId).HEXAGON_BIN ?? null, secretDeny: SECRET_DENY_GLOBS, effort: o.role === "reviewer" ? roleConfig(this.rc.cfg, "reviewer").effort : this.effort },
       host: o.host,
       api: o.api,
       signal: this.abort.signal,
@@ -1188,7 +1190,9 @@ export class AgentRun {
 
   private async runReview(): Promise<ReviewVerdict | undefined> {
     const reviewer = this.rc.adapterFor("reviewer");
-    if (!reviewer.security.readOnlyEnforced && reviewer.adapterId !== "mock" && !this.rc.cfg.agents[reviewer.id]?.allow_weaker_isolation) {
+    // What the reviewer enforces for THIS read-only run (its projection), not only what it claims in general.
+    const reviewPolicy: RunPolicy = { readOnly: true, allowCommands: this.rc.cfg.sandbox.allow_commands, hexagonBin: this.rc.agentEnv(`${this.agentRunId}.review`).HEXAGON_BIN ?? null, secretDeny: SECRET_DENY_GLOBS, effort: roleConfig(this.rc.cfg, "reviewer").effort };
+    if (!enforcedFor(reviewer, reviewPolicy).readOnlyEnforced && reviewer.adapterId !== "mock" && !this.rc.cfg.agents[reviewer.id]?.allow_weaker_isolation) {
       const m = `the reviewer agent "${reviewer.id}" (${reviewer.displayName}) cannot enforce read-only execution; reviews run read-only. Use another agent for the reviewer role, or set allow_weaker_isolation = true under [agents.${reviewer.id}] to accept weaker isolation.`;
       this.ev({ type: "error", kind: "internal", message: m, retryable: false });
       this.notify(`review blocked: ${m}`);

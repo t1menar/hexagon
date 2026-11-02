@@ -64,6 +64,8 @@ export interface AgentRunContext {
   /** Shell commands the agent may run (prefixes). "*" = anything. */
   allowCommands: string[];
   readOnly: boolean;
+  /** The same limits as one object, built by the core; an adapter projects it onto its CLI (see contracts/policy.ts). */
+  policy?: import("./contracts/policy.js").RunPolicy;
   /** Chat session: never nudged to finish; stays open for the next message. */
   conversational?: boolean;
   host: AgentHost;
