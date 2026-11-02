@@ -22,7 +22,8 @@ export class CodexAdapter extends OneShotAdapter implements AgentAdapter {
   });
   // `-s read-only` is Codex's own sandbox; it has no per-command allow-list.
   override readonly security = { readOnlyEnforced: true, commandAllowList: false };
-  private threadId: string | null = null;
+  /** Thread ids by Hexagon session id. Only a cache: the stored copy (ctx.handle) wins after a restart. */
+  private threads = new Map<string, string>();
 
   constructor(id: string, command: string[], selection: ModelSelection | string | null, private extra: string[] = []) {
     super(id, command, typeof selection === "object" && selection ? selection : selectionFrom(selection));
@@ -36,17 +37,27 @@ export class CodexAdapter extends OneShotAdapter implements AgentAdapter {
       : { auth: "unauthenticated" as const, authDetail: "Codex reports it is not logged in — run `codex login`" };
   }
 
+  private thread(ctx: AgentRunContext): string | null {
+    return ctx.handle ?? this.threads.get(ctx.sessionId) ?? null;
+  }
+
+  protected override continues(ctx: AgentRunContext): boolean { return ctx.resume && this.thread(ctx) !== null; }
+
   protected build(ctx: AgentRunContext, prompt: string): OneShotSpec {
     const sandbox = ctx.readOnly ? "read-only" : "workspace-write";
     const head = [...this.command, "exec", "--json", "-C", ctx.cwd, "-s", sandbox, ...this.modelArgs("-m"), ...this.extra];
-    const argv = ctx.resume && this.threadId ? [...head, "resume", this.threadId, "-"] : [...head, "-"];
+    const thread = this.continues(ctx) ? this.thread(ctx) : null;
+    const argv = thread ? [...head, "resume", thread, "-"] : [...head, "-"];
     return { argv, stdin: prompt }; // "-" = read the prompt from stdin
   }
 
   protected onLine(line: string, ctx: AgentRunContext): void {
     const e = safeJson(line);
     if (!e) return;
-    if (e.type === "thread.started" && typeof e.thread_id === "string") this.threadId = e.thread_id;
+    if (e.type === "thread.started" && typeof e.thread_id === "string") {
+      this.threads.set(ctx.sessionId, e.thread_id);
+      ctx.host.emit({ type: "session_handle", handle: e.thread_id });
+    }
     const item = e.item as Record<string, any> | undefined;
     if (e.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") ctx.host.emit({ type: "chat", from: "agent", text: item.text.slice(0, 8000) });
     else if (e.type === "item.started" && item?.type === "command_execution") ctx.host.emit({ type: "tool_call", name: "shell", summary: `$ ${String(item.command ?? "").split("\n")[0]!.slice(0, 140)}` });

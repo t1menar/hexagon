@@ -15,6 +15,8 @@ export interface SessionRecord {
   /** Hash of everything that defines the agent (role prompt, protocol, skills). A change starts a new session. */
   promptHash: string;
   nativeSessionId: string;
+  /** The CLI's own id for the conversation, where it assigns one (Codex thread id). Dropped whenever nativeSessionId changes. */
+  nativeHandle?: string;
   /** The CLI confirmed it created the session. Until then the id is reused for a fresh create, never resumed. */
   confirmed: boolean;
   /** Directory the session was created in (matters only for adapters that cannot resume across directories). */
@@ -154,6 +156,14 @@ export class SessionRegistry {
     return { sessionId: cur.nativeSessionId, resume: true, mode: "resumed", reason: null, record: cur };
   }
 
+  /** The CLI told us its own id for this conversation: kept with the session, so a restart can resume it. */
+  setHandle(agentId: string, handle: string): void {
+    const r = this.records.get(agentId);
+    if (!r || r.nativeHandle === handle) return;
+    r.nativeHandle = handle;
+    this.save(r);
+  }
+
   /** The CLI confirmed the session exists. */
   confirm(agentId: string): void {
     const r = this.records.get(agentId);
@@ -204,6 +214,7 @@ export class SessionRegistry {
     r.nativeSessionId = randomUUID();
     r.confirmed = false;
     r.startReason = "compacted";
+    delete r.nativeHandle;
     r.compactRequested = false;
     r.compactions += 1;
     r.lastCompactionTurn = r.turns;

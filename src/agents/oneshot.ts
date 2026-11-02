@@ -36,11 +36,16 @@ export abstract class OneShotAdapter extends AdapterBase {
   protected abstract onLine(line: string, ctx: AgentRunContext): void;
   takeoverCommand(_sessionId?: string): string[] | null { return null; }
 
+  /** Does this run continue a conversation the CLI already holds? Adapters that can lose the handle override it. */
+  protected continues(ctx: AgentRunContext): boolean { return ctx.resume; }
+
+  /** A continued conversation already has the system text and the card: only the new message is sent. */
   protected promptFor(ctx: AgentRunContext): string {
     const inbox = ctx.host.drainInbox();
     for (const m of inbox) ctx.host.received(m.id);
-    const body = [ctx.resume && ctx.followUp ? ctx.followUp : ctx.prompt, inbox.length ? formatInjected(inbox) : ""].filter(Boolean).join("\n\n");
-    return `${ctx.system}\n\n---\n\n${body}`;
+    const cont = this.continues(ctx);
+    const body = [cont && ctx.followUp ? ctx.followUp : ctx.prompt, inbox.length ? formatInjected(inbox) : ""].filter(Boolean).join("\n\n");
+    return cont ? body : `${ctx.system}\n\n---\n\n${body}`;
   }
 
   run(ctx: AgentRunContext): Promise<AdapterOutcome> {
