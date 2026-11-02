@@ -175,6 +175,8 @@ export interface Task {
   skills: string[];
   definition_of_done: string[];
   verify: string[]; // shell commands the orchestrator re-runs
+  /** Why this task has no verify command (docs, config). Shown to the user at approval. */
+  verify_exempt?: string;
   estimate?: { size?: string; risk?: string };
   agent_hint?: string | null;
   description?: string;

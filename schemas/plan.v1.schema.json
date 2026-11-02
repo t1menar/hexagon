@@ -30,6 +30,7 @@
         "skills": { "type": "array", "items": { "type": "string" } },
         "definition_of_done": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "verify": { "type": "array", "items": { "type": "string" }, "description": "Shell commands the orchestrator re-runs in the worktree." },
+        "verify_exempt": { "type": "string", "minLength": 3, "description": "Why this task has no verify command (docs, config). Shown to the user at approval." },
         "estimate": {
           "type": "object",
           "additionalProperties": false,

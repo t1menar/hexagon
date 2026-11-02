@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/tui/app.js";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-const task = (id: string, title: string, role: string, deps: string[] = []) => ({ id, title, role, requirements: [], acceptance: [], depends_on: deps, files: { write: [], read: [] }, skills: [], definition_of_done: [], verify: [] });
+const task = (id: string, title: string, role: string, deps: string[] = []) => ({ id, title, role, requirements: [], acceptance: [], depends_on: deps, files: { write: [], read: [] }, skills: [], definition_of_done: [], verify: [], verify_exempt: "test fixture" });
 const agent = (id: string, state: string, extra: Record<string, unknown> = {}) => ({
   schema: "hexagon.agent-status/v1", seq: 1, updated_at: "", heartbeat_at: "", run_id: "R1", agent_run_id: `${id}-1`, task_id: id, attempt: 1, role: id === "T-1" ? "tester" : id === "T-3" ? "reviewer" : "implementer",
   agent: { id: id === "T-2" ? "codex" : "claude", provider: id === "T-2" ? "openai" : "anthropic", adapter: id === "T-2" ? "codex" : "claude-code", cli_version: "1.2.3", model: null, model_mode: "cli-default", runtime_model: null },

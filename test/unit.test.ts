@@ -25,7 +25,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "hex-test-"));
 
 const task = (over: Partial<Task> = {}): Task => ({
   id: "T-1", title: "Do it", role: "developer", requirements: ["REQ-A-001"], acceptance: ["AC-1", "AC-2"],
-  depends_on: [], files: { write: ["src/a.ts"], read: [] }, skills: [], definition_of_done: ["done"], verify: [], ...over,
+  depends_on: [], files: { write: ["src/a.ts"], read: [] }, skills: [], definition_of_done: ["done"], verify: [], verify_exempt: "test fixture", ...over,
 });
 
 describe("globs", () => {
@@ -260,7 +260,7 @@ describe("stack", () => {
   it("names a task's technologies from its files, commands and text", () => {
     const t = { id: "T-1", title: "Hello endpoint with MockMvc test", role: "developer", files: { write: ["pom.xml", "src/main/java/app/Hello.java"], read: [] }, verify: ["mvn -q test"], description: "Spring Boot controller" } as unknown as Task;
     expect(taskStack(t)).toEqual(["Maven", "Java", "Spring Boot", "MockMvc", "HTTP API"]);
-    const g = { ...t, title: "x", description: "", files: { write: ["src/**"], read: [] }, verify: [] } as unknown as Task;
+    const g = { ...t, title: "x", description: "", files: { write: ["src/**"], read: [] }, verify: [], verify_exempt: "test fixture" } as unknown as Task;
     expect(taskStack(g, ["Go"])).toEqual(["Go"]);
   });
 });

@@ -40,7 +40,7 @@ function chain(root: string, n: number): string {
     schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [],
     tasks: Array.from({ length: n }, (_, i) => ({
       id: `T-${i + 1}`, title: `Write file ${i + 1}`, role: "developer" as const, requirements: [], acceptance: ["AC-1"],
-      depends_on: i ? [`T-${i}`] : [], files: { write: [`src/f${i + 1}.txt`], read: [] }, skills: [], definition_of_done: ["done"], verify: [],
+      depends_on: i ? [`T-${i}`] : [], files: { write: [`src/f${i + 1}.txt`], read: [] }, skills: [], definition_of_done: ["done"], verify: [], verify_exempt: "test fixture",
     })),
   };
   const file = path.join(root, "plan.json");

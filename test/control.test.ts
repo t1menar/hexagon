@@ -10,7 +10,7 @@ import { scaffold } from "../src/core/project.js";
 import type { Draft } from "../src/daemon/orchestrator.js";
 import { DaemonServer } from "../src/daemon/server.js";
 
-const task = (id: string, deps: string[] = []) => ({ id, title: id, role: "developer", requirements: [], acceptance: [], depends_on: deps, files: { write: [], read: [] }, skills: [], definition_of_done: [], verify: [] });
+const task = (id: string, deps: string[] = []) => ({ id, title: id, role: "developer", requirements: [], acceptance: [], depends_on: deps, files: { write: [], read: [] }, skills: [], definition_of_done: [], verify: [], verify_exempt: "test fixture" });
 const plan = (): Plan => ({ schema: "hexagon.plan/v1", id: "p", created_at: "", specs: [], spec_issues: [], tasks: [task("T-1"), task("T-2", ["T-1"]), task("T-3", ["T-2"])] });
 
 describe("typed commands", () => {

@@ -89,7 +89,7 @@ describe("acceptance: an unapproved spec blocks implementation", () => {
     fs.writeFileSync(path.join(root, "specs/s.spec.md"), "# S\n\n## REQ-A-001: Greets\nSays hello.\n- AC-1: prints hello\n");
     const plan = {
       schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: ["specs/s.spec.md"], spec_issues: [],
-      tasks: [{ id: "T-1", title: "Greet", role: "developer", requirements: ["REQ-A-001"], acceptance: ["AC-1"], depends_on: [], files: { write: ["src/a.txt"], read: [] }, skills: [], definition_of_done: ["done"], verify: [] }],
+      tasks: [{ id: "T-1", title: "Greet", role: "developer", requirements: ["REQ-A-001"], acceptance: ["AC-1"], depends_on: [], files: { write: ["src/a.txt"], read: [] }, skills: [], definition_of_done: ["done"], verify: [], verify_exempt: "test fixture" }],
     };
     fs.writeFileSync(path.join(root, "plan.json"), JSON.stringify(plan));
     const server = new DaemonServer(root);
