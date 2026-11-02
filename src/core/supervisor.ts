@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { classifyBlock } from "./replan.js";
 import { confirmByMutation, evaluateEvidence, missingEvidence, type MutationHost } from "./evidence.js";
 import { failureSignature, reviewSignature } from "./signature.js";
 import { DEFAULT_TEST_GLOBS, describeFlags, testIntegrity, type IntegrityFlag } from "./integrity.js";
@@ -61,6 +62,8 @@ export interface RunContext {
   agentEnv(agentId: string): Record<string, string>;
   /** Ask the user, before the work starts, to allow commands the task will need. Resolves with the ones they denied. */
   preapprove?(taskId: string, commands: string[], reason: string): Promise<string[]>;
+  /** A task stopped because the plan does not fit; ask for graph edits to the not-yet-started tail. */
+  replan?(task: Task, why: string, changed: string[]): void;
 }
 
 /** What was settled before the agent started: kept next to the status so a later question ("why did it start red?") has an answer. */
@@ -391,6 +394,11 @@ export class AgentRun {
         this.notify(`${r.status.replace(/_/g, " ")}: ${[...r.blockers, ...r.spec_issues].join("; ") || r.summary}`);
         if (r.status === "needs_spec_change") this.ev({ type: "error", kind: "needs_spec_change", message: r.summary, retryable: false });
         await this.commit("final");
+        const why = [...r.blockers, ...r.spec_issues].join("; ") || r.summary;
+        const kind = classifyBlock(r.status, why);
+        this.ev({ type: "progress", text: `blocked (${kind}): ${why.slice(0, 200)}` });
+        if (kind === "plan") this.rc.replan?.(this.task, why, await g.changedFiles(this.worktree, this.baseCommit).catch(() => []));
+        else this.notify(`${this.task.id} is blocked by a ${kind === "tool" ? "missing tool or permission (hexagon exec/install)" : "scope problem (hexagon scope request)"}, not by the plan: ${why.slice(0, 200)}`);
         return this.final("blocked", r.status === "blocked" ? r.blockers.join("; ") || r.summary : `needs spec change: ${r.spec_issues.join("; ")}`);
       }
       if (r.status === "failed") {
