@@ -14,6 +14,8 @@ export function configWarnings(cfg: HexagonConfig): string[] {
         : `[sandbox] allow_commands contains "${rule}", which can run any code (e.g. \`${head} -c …\`), so commands you were never asked about can run. Remove it and approve what your verify steps need instead.`);
     }
   }
+  if (cfg.run.max_fix_cycles === 0) out.push("[run] max_fix_cycles = 0: a task may loop between verify and review without limit. 3 is the default; the loop still stops when the same failure repeats.");
+  if (cfg.run.task_budget_tokens === 0) out.push("[run] task_budget_tokens = 0: one task can use any number of tokens.");
   return out;
 }
 

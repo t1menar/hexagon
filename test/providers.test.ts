@@ -192,11 +192,11 @@ describe("registry and config", () => {
     const prov = (r: keyof typeof cfg.roles) => createAdapter(cfg.roles[r].agent, cfg.agents[cfg.roles[r].agent]!).provider;
     expect([prov("analyst"), prov("developer"), prov("reviewer"), prov("qa")]).toEqual(["openai", "anthropic", "xai", "openai"]);
   });
-  it("legacy fix_loops still bounds repair cycles; absent, cycles are unlimited", () => {
+  it("legacy fix_loops still bounds repair cycles; absent, the default is 3", () => {
     const f = path.join(tmp(), "c.toml");
     fs.writeFileSync(f, "[run]\nfix_loops = 4\n");
     expect(loadConfig(f).run.max_fix_cycles).toBe(4);
-    expect(loadConfig(path.join(tmp(), "none")).run.max_fix_cycles).toBe(0);
+    expect(loadConfig(path.join(tmp(), "none")).run.max_fix_cycles).toBe(3);
   });
 });
 

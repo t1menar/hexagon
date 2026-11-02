@@ -1,4 +1,5 @@
 import { evaluateEvidence, missingEvidence } from "./evidence.js";
+import { failureSignature, reviewSignature } from "./signature.js";
 import { DEFAULT_TEST_GLOBS, describeFlags, testIntegrity, type IntegrityFlag } from "./integrity.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -154,6 +155,7 @@ export class AgentRun {
         if (e.step && sink.identity === this.identity) this.refreshSession();
       }
       this.rc.store.apply(this.agentRunId, stamped);
+      if (e.step) this.enforceLimits();
       return;
     }
     this.rc.store.apply(this.agentRunId, e);
@@ -320,6 +322,7 @@ export class AgentRun {
   async continueWith(text: string, from: "user" | "hexagon" = "user"): Promise<AgentState> {
     this.cancelled = false;
     this.userDone = false;
+    if (this.limit) { this.limit = null; this.blockedReason = null; this.capFrom = this.tokensUsed(); }
     this.ev({ type: "chat", from, text });
     const unregister = this.rc.registry.register(this.agentRunId, this.api());
     try {
@@ -396,13 +399,14 @@ export class AgentRun {
       if (this.cancelled) return this.final("cancelled", "cancelled by user");
       if (!v.ok) {
         this.ev({ type: "error", kind: "verify_failed", message: `\`${v.cmd}\` exited ${v.code}`, retryable: true });
-        const stuck = this.noProgress(`verify:${v.cmd}:${v.code}:${v.output.slice(-600)}`);
+        const stuck = this.noProgress(failureSignature(v.cmd, v.code, v.output));
         if (stuck) return this.final("failed", stuck);
         if (this.mayFix(++fixLoops) && !this.userDone) {
           this.fixing = true;
           followUp = `Hexagon re-ran verification and it failed.\n\n$ ${v.cmd}\n(exit ${v.code})\n${this.excerpt(v.output, FIX_EXCERPT, "verify output")}\n\nFix the problem, re-run the command yourself, then run \`hexagon done\` again.`;
           continue;
         }
+        this.notify(this.escalation(`verification still fails after ${this.rc.cfg.run.max_fix_cycles} repair cycle(s)`, `\`${v.cmd}\` exited ${v.code}`));
         return this.final("failed", `verification failed: ${v.cmd}`);
       }
 
@@ -425,13 +429,14 @@ export class AgentRun {
             fields: { high: String(rv.findings.filter((f) => f.severity === "high").length), medium: String(rv.findings.filter((f) => f.severity === "medium").length) },
             body: rv.findings.map((f) => `[${f.severity}] ${f.file ?? ""}${f.line ? `:${f.line}` : ""} ${f.issue}`).join("\n"), record_only: true,
           });
-          const stuck = this.noProgress(`review:${rv.summary}:${rv.findings.map((f) => f.issue).join("|")}`);
+          const stuck = this.noProgress(reviewSignature(rv));
           if (stuck) return this.final("failed", stuck);
           if (this.mayFix(++fixLoops)) {
             this.fixing = true;
             followUp = `The reviewer requested changes:\n${rv.summary}\n${rv.findings.map((f) => `- [${f.severity}] ${f.file ?? ""}${f.line ? `:${f.line}` : ""} ${f.issue}${f.suggestion ? ` → ${f.suggestion}` : ""}`).join("\n")}\n\nAddress the high and medium findings, then run \`hexagon done\` again.`;
             continue;
           }
+          this.notify(this.escalation(`the reviewer still requests changes after ${this.rc.cfg.run.max_fix_cycles} repair cycle(s)`, rv.summary));
           return this.final("failed", `review rejected: ${rv.summary}`);
         }
       }
@@ -611,6 +616,7 @@ export class AgentRun {
         return next.outcome ?? out;
       }
       if (this.cancelled || this.userDone) return out;
+      if (this.limit) { this.blockedReason = this.limit; return { kind: "error", error: { kind: "internal", message: this.limit, retryable: false } }; }
       if (out.kind === "interrupted" && (this.gate || this.restarting)) {
         this.restarting = false;
         await this.gate?.promise;
@@ -719,6 +725,33 @@ export class AgentRun {
     return true;
   }
 
+  /** Set when a hard limit stopped the agent mid-segment: the reason, shown to the user with the ways forward. */
+  private limit: string | null = null;
+  /** Tokens already used when the user last allowed more (/continue): the cap counts from there. */
+  private capFrom = 0;
+
+  private tokensUsed(): number {
+    const u = this.rc.store.get(this.agentRunId)?.usage;
+    return u ? u.input_tokens + u.cache_read_tokens + u.output_tokens : 0;
+  }
+
+  /** At every model call: a task over its token cap is stopped at this step boundary, not after it finishes. */
+  private enforceLimits(): void {
+    const cap = this.rc.cfg.run.task_budget_tokens;
+    if (!cap || this.limit || this.cancelled) return;
+    const used = this.tokensUsed() - this.capFrom;
+    if (used < cap) return;
+    this.limit = this.escalation(`it used ${used.toLocaleString("en-US")} tokens, over the per-task cap of ${cap.toLocaleString("en-US")}`);
+    this.ev({ type: "error", kind: "internal", message: this.limit, retryable: false });
+    this.abort.abort();
+  }
+
+  /** One paragraph for the user when a loop or budget limit stops a task: what happened, and what they can do. */
+  private escalation(why: string, last?: string): string {
+    const id = this.task.id;
+    return `${id} stopped: ${why}.${last ? ` Last problem: ${last}` : ""} You can: /continue ${id} <guidance> to let it go on with your input (a token cap restarts from here), /retry ${id} for a fresh attempt, change the task or its spec, or raise [run] max_fix_cycles / task_budget_tokens (now ${this.rc.cfg.run.max_fix_cycles} / ${this.rc.cfg.run.task_budget_tokens}).`;
+  }
+
   private failSigs: string[] = [];
   /** Unlimited cycles still stop when the same failure repeats: returns the reason to escalate, else null. */
   private noProgress(sig: string): string | null {
@@ -726,7 +759,7 @@ export class AgentRun {
     const n = this.rc.cfg.run.max_identical_failures;
     if (n > 0 && this.failSigs.length >= n && this.failSigs.slice(-n).every((x) => x === sig)) {
       this.ev({ type: "error", kind: "stuck", message: `the same failure repeated ${n} times with no change`, retryable: false });
-      this.notify(`stuck: the same failure repeated ${n} times — needs your attention (/continue ${this.task.id} <message> or /retry)`);
+      this.notify(this.escalation(`the same failure repeated ${n} times with no change`));
       return `no progress: identical failure ${n} times`;
     }
     return null;

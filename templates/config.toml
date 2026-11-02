@@ -4,7 +4,8 @@
 max_parallel = 4        # agents running at once
 max_attempts = 2        # attempts per task (a retry escalates effort one level)
 fix_loops = 2           # how many times an agent may hand work back to another task
-max_fix_cycles = 0      # verify/review repair cycles per task; 0 = unlimited (stops early on identical repeated failures)
+max_fix_cycles = 3      # verify/review repair cycles per task; 0 = unlimited (stops early on identical repeated failures)
+task_budget_tokens = 3000000   # one task stops and asks after this many tokens (input + cache reads + output); 0 = no cap
 max_identical_failures = 3  # same failure this many times in a row = no progress, escalate to you
 budget_tokens = 0       # pause the run after this many tokens (input + cached + output; 0 = no limit)
 # base_branch = "main"  # default: the branch checked out when the run starts

@@ -23,7 +23,7 @@ function project(maxCycles = 0): string {
   git(root, "add", "-A"); git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
   scaffold(root);
   const f = path.join(root, ".hexagon/config.toml");
-  fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/agent = "claude"/g, 'agent = "mock"').replace("step_ms = 600", "step_ms = 30").replace("max_fix_cycles = 0", `max_fix_cycles = ${maxCycles}`));
+  fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/agent = "claude"/g, 'agent = "mock"').replace("step_ms = 600", "step_ms = 30").replace("max_fix_cycles = 3", `max_fix_cycles = ${maxCycles}`));
   git(root, "add", "-A"); git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hexagon init");
   return root;
 }
