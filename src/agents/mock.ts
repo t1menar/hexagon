@@ -223,7 +223,8 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
       const r = api.done({
         status: "completed",
         summary: `Mock implementation of ${task.title}${instructions.length ? ` (applied ${instructions.length} message(s))` : ""}.`,
-        acceptance_evidence: /@no-evidence/.test(task.description ?? "") ? [] : task.acceptance.map((ac) => ({ ac, evidence: "mock agent (no real verification)", verified: false })),
+        // `@evidence: <file>::<test name>` claims that test for every criterion (test hook for the mutation check).
+        acceptance_evidence: /@no-evidence/.test(task.description ?? "") ? [] : task.acceptance.map((ac) => ({ ac, evidence: /@evidence:\s*(\S+::[^\n]+)/.exec(task.description ?? "")?.[1] ? `test:${/@evidence:\s*(\S+::[^\n]+)/.exec(task.description ?? "")![1]!.trim()}` : "mock agent (no real verification)", verified: false })),
       });
       if (!r.ok) return { kind: "error", error: { kind: "invalid_output", message: r.message, retryable: false } };
       return { kind: "finished" };

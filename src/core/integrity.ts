@@ -10,7 +10,7 @@ export const DEFAULT_TEST_GLOBS = [
 export interface IntegrityFlag { kind: "deleted_test" | "skip_added" | "assertions_removed"; file: string; detail: string }
 
 const SKIP = /\b(?:it|test|describe|context)\.(?:skip|todo|only)\b|\b(?:xit|xdescribe|xtest|fit|fdescribe)\s*\(|@pytest\.mark\.(?:skip|xfail)|@unittest\.skip|\bt\.Skip(?:Now)?\(|@Disabled\b|@Ignore\b|\bpending\s*\(|\.only\s*\(/;
-const ASSERT = /\bexpect\s*\(|\bassert[A-Za-z_]*\s*[(.]|\bassert\s|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail)\b|\brequire\.\w+\(|\bshould\b|\bXCTAssert/;
+export const ASSERT = /\bexpect\s*\(|\bassert[A-Za-z_]*\s*[(.]|\bassert\s|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail)\b|\brequire\.\w+\(|\bshould\b|\bXCTAssert/;
 
 /**
  * Tests that were deleted, skipped or weakened between `base` and HEAD. These are not failures (a test can be removed for a

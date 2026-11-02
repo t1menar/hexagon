@@ -95,7 +95,7 @@ export async function runBench(o: BenchOptions): Promise<BenchRow[]> {
     const key = `${s.p}/${s.gap}`;
     if (spent() >= o.maxCost) { o.log(`cost cap $${o.maxCost} reached ($${spent().toFixed(2)} spent): policy ${s.p}${s.gap ? ` (idle ${s.gap}s)` : ""} not run`); return null; }
     // The mock agent writes placeholder files, so its tasks cannot satisfy the fixture's real tests: only the harness is exercised.
-    const tasks = benchTasks(s.gap).map((t) => (o.agent === "mock" ? { ...t, verify: ["true"] } : t));
+    const tasks = benchTasks(s.gap).map((t) => (o.agent === "mock" ? { ...t, verify: [], verify_exempt: "mock agent: nothing real to run" } : t));
     const { root, plan } = fixtureRepo(s.p, o.agent, o.withReview, tasks);
     o.log(`policy ${s.p}${s.gap ? `, idle ${s.gap}s before task 4` : ""}: ${POLICIES[s.p].name} → ${root}`);
     const server = new DaemonServer(root);
