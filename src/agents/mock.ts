@@ -252,7 +252,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     ctx.api.report({ phase: "planning", activity: `Stage: ${stage}` });
     if (stage === "analyze") {
       await step("Reading the codebase");
-      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", "none", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
+      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", "none", "", "## Mode", /@single-task/.test(goal) ? "single-task: mock goal asked for it" : "dag: mock goal splits into parallel parts", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
     } else if (stage === "specify") {
       await step("Writing the spec");
       fs.writeFileSync(path.join(out, "spec.md"), [
@@ -262,7 +262,13 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     } else {
       await step("Drafting tasks");
       const spec = parseSpec(path.join(out, "spec.md"));
-      const plan = {
+      const single = fs.existsSync(path.join(out, "mode.txt")) && /^single-task/.test(fs.readFileSync(path.join(out, "mode.txt"), "utf8"));
+      const plan = single ? {
+        tasks: [{
+          id: "T-1", title: goal.slice(0, 60), role: "developer", requirements: spec.requirements.map((r) => r.id), acceptance: spec.requirements.map((r) => `${r.id}/AC-1`),
+          depends_on: [], files: { write: spec.requirements.flatMap((r) => r.touches) }, verify: ["test -f hexagon-mock/t-1.md"], // with a whole-repository scope the mock writes its default file
+        }],
+      } : {
         tasks: spec.requirements.map((r, i) => ({
           id: `T-${i + 1}`, title: r.title, role: "developer", requirements: [r.id], acceptance: ["AC-1"],
           depends_on: i > 0 ? [`T-${i}`] : [], files: { write: r.touches }, verify: [`test -f ${r.touches[0]}`],

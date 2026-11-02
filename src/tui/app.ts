@@ -33,7 +33,7 @@ import { chatLines, itemsFromEvents, itemsFromSession, type ChatItem } from "./c
 interface FeedLine { ts: string; text: string; style: string }
 
 const COMMANDS: [string, string][] = [
-  ["/sdd <goal>", "spec-driven development: spec + task graph → parallel agents (optional)"],
+  ["/sdd [--mode dag|single-task] <goal>", "spec-driven development; by default one checked task, --mode dag for a parallel graph"],
   ["/run [-j N] [--agent X]", "approve the draft plan and start the agents"],
   ["/discard", "throw away the draft plan"],
   ["/spec", "open the spec in $EDITOR"],
@@ -875,8 +875,10 @@ export class App {
     await this.client.call("chat.send", { text });
   }
 
-  private async newGoal(goal: string) {
-    await this.client.call("goal.new", { goal });
+  private async newGoal(text: string) {
+    const mm = /^--mode[= ](\S+)\s+/.exec(text);
+    const goal = mm ? text.slice(mm[0].length) : text;
+    await this.client.call("goal.new", { goal, ...(mm ? { mode: mm[1] } : {}) });
     this.log(`› goal: ${goal}`, st(S.white, S.bold));
     this.sessions.set("planner", blankSession("planner", "analyst"));
     this.select("planner");

@@ -31,7 +31,7 @@ import { Mutex } from "../util/mutex.js";
 import { reviewerWarnings } from "../core/security.js";
 import { AgentTokens } from "./auth.js";
 import { ControlService, type Proposal } from "./control.js";
-import { Approvals, ARTIFACT, checkStage, isUntraced, specHash, type Stage } from "../core/pipeline.js";
+import { Approvals, ARTIFACT, checkStage, isUntraced, MODES, parseMode, recommendMode, specHash, type Mode, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
 import { replanRequest } from "../core/replan.js";
@@ -562,13 +562,15 @@ export class Orchestrator extends EventEmitter {
    * Goal → analyst, in gated stages: analyze (analysis.md) → specify (spec.md [+ design.md]) → the user approves the
    * spec → plan (plan.json). Each stage must validate before the next one starts.
    */
-  newGoal(goal: string): { id: string } {
+  newGoal(goal: string, mode?: string): { id: string } {
     if (!goal.trim()) throw new Error("describe what you want built");
+    if (mode && !MODES.includes(mode as Mode)) throw new Error(`unknown mode "${mode}" (${MODES.join(", ")})`);
     this.reloadConfig();
     const id = `p-${stamp()}`;
     const out = path.join(this.paths.hex, "drafts", id);
     fs.mkdirSync(out, { recursive: true });
     fs.writeFileSync(path.join(out, "goal.txt"), goal.trim());
+    if (mode) fs.writeFileSync(path.join(out, "mode.override"), mode);
     const s = this.analystSession(out);
     const existingSpecs = fs.existsSync(path.join(this.root, "specs")) ? fs.readdirSync(path.join(this.root, "specs")).filter((f) => f.endsWith(".md")) : [];
     this.draft = null;
@@ -583,10 +585,26 @@ export class Orchestrator extends EventEmitter {
       `Output directory: ${out}`,
       existingSpecs.length ? `Existing specs (for context; don't modify them): ${existingSpecs.map((f) => `specs/${f}`).join(", ")}` : "",
       "",
-      "Stage 1 of 3: analyze. Read the codebase and the request, then write analysis.md with the sections Current state, Constraints, Risks, Open questions, Impacted areas. Ask the user only about decisions that change the outcome. Run `hexagon plan-check`, then `hexagon done`.",
+      "Stage 1 of 3: analyze. Read the codebase and the request, then write analysis.md with the sections Current state, Constraints, Risks, Open questions, Mode, Impacted areas. Mode: first word solo | single-task | dag, then the reason (solo = one small, understood edit; single-task = one agent with full checks; dag = several truly independent slices). Ask the user only about decisions that change the outcome. Run `hexagon plan-check`, then `hexagon done`.",
     ].filter((l) => l !== "").join("\n");
     void this.runPipeline(s, id, goal.trim(), out, "analyze", prompt);
     return { id };
+  }
+
+  /**
+   * Choose how much machinery this request gets: the user's --mode, else the analyst's `## Mode`, else the heuristic.
+   * "solo" is advice only (the assistant can do it in chat); the pipeline still runs it as one checked task.
+   */
+  private decideMode(out: string): void {
+    const file = path.join(out, "analysis.md");
+    const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    const forced = fs.existsSync(path.join(out, "mode.override")) ? (fs.readFileSync(path.join(out, "mode.override"), "utf8").trim() as Mode) : null;
+    const picked = forced ? { mode: forced, reason: "chosen by you" } : parseMode(text) ?? recommendMode(text);
+    const effective: Mode = picked.mode === "solo" ? "single-task" : picked.mode;
+    fs.writeFileSync(path.join(out, "mode.txt"), `${effective}\n${picked.reason}\n`);
+    this.notice("info", picked.mode === "solo"
+      ? `Mode: this looks small enough to ask the Assistant directly (${picked.reason}). Continuing as one checked task; start with \`/sdd --mode dag\` for a graph.`
+      : `Mode: ${effective} (${picked.reason}).${effective === "single-task" ? " One agent, no file masks, full checks. `/sdd --mode dag` forces a graph." : ""}`);
   }
 
   private analystSession(out: string): SoloSession {
@@ -663,6 +681,7 @@ export class Orchestrator extends EventEmitter {
     try {
       if (from === "analyze") {
         if (!(await this.runStage(s, prompt, followUp))) return;
+        this.decideMode(out);
         this.stage = "specify";
         from = "specify";
         prompt = "";
@@ -728,7 +747,7 @@ export class Orchestrator extends EventEmitter {
     this.push({ event: "spec_review", data: null });
     this.stage = "plan";
     this.registry.register("planner", s.api());
-    const followUp = `<stage>plan</stage>\nThe user approved spec.md (${Object.keys(a.requirements).join(", ")}). Stage 3 of 3: plan. Write plan.json in ${sr.out_dir}: tasks that each cite requirement and acceptance ids, depends_on, non-overlapping files.write, verify commands. Do not change spec.md. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
+    const followUp = `<stage>plan</stage>\nThe user approved spec.md (${Object.keys(a.requirements).join(", ")}). Stage 3 of 3: plan. Write plan.json in ${sr.out_dir}: ${readMode(sr.out_dir) === "single-task" ? "EXACTLY ONE task that cites every requirement (acceptance as REQ-X/AC-n), with the verify commands that prove them; Hexagon gives it the whole repository as scope" : "tasks that each cite requirement and acceptance ids, depends_on, non-overlapping files.write, verify commands"}. Do not change spec.md. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
     void this.runPipeline(s, sr.id, sr.goal, sr.out_dir, "plan", "", followUp);
     return { approved: rel, requirements: Object.keys(a.requirements).length, planning: true };
   }
@@ -743,7 +762,7 @@ export class Orchestrator extends EventEmitter {
     if (!ap || ap.hash !== specHash(fs.readFileSync(path.join(out, "spec.md"), "utf8"))) {
       throw new Error("spec.md was changed after you approved it; the plan was not accepted. Ask for the change with /respec so it is reviewed again.");
     }
-    const plan = normalizePlan(readJson(path.join(out, "plan.json")), { id, specs: [path.relative(this.root, specPath)] });
+    const plan = applyMode(normalizePlan(readJson(path.join(out, "plan.json")), { id, specs: [path.relative(this.root, specPath)] }), readMode(out));
     const planPath = path.join(this.paths.plans, `${id}.json`);
     atomicWriteJson(planPath, plan);
     return { id, goal, out_dir: out, spec_path: specPath, plan_path: planPath, plan, check: this.withAdvice(checkPlan(plan, [parseSpec(specPath)])), summary };
@@ -759,7 +778,7 @@ export class Orchestrator extends EventEmitter {
   reloadDraft(): Draft {
     const d = this.draft;
     if (!d) throw new Error("no draft");
-    const plan = normalizePlan(readJson(d.plan_path), { id: d.id, specs: [path.relative(this.root, d.spec_path)] });
+    const plan = applyMode(normalizePlan(readJson(d.plan_path), { id: d.id, specs: [path.relative(this.root, d.spec_path)] }), readMode(d.out_dir));
     this.draft = { ...d, plan, check: this.withAdvice(checkPlan(plan, [parseSpec(d.spec_path)])) };
     this.saveDraft();
     this.push({ event: "draft", data: this.draft });
@@ -1545,6 +1564,20 @@ export class Orchestrator extends EventEmitter {
 }
 
 /** Validate a planner output directory (spec.md + plan.json). */
+/** The mode chosen for a draft (mode.txt in its directory); drafts from before modes existed are graphs. */
+export function readMode(out: string): Mode {
+  try {
+    const m = fs.readFileSync(path.join(out, "mode.txt"), "utf8").split("\n")[0]!.trim();
+    return m === "single-task" ? "single-task" : "dag";
+  } catch { return "dag"; }
+}
+
+/** single-task: the one task owns the whole repository (there is nothing to be disjoint from). */
+export function applyMode(plan: Plan, mode: Mode): Plan {
+  if (mode === "single-task" && plan.tasks.length === 1) plan.tasks[0]!.files.write = ["**"];
+  return plan;
+}
+
 export function draftCheck(root: string, out: string): { reply: Reply; spec?: Spec; plan?: Plan } {
   const specFile = path.join(out, "spec.md");
   const planFile = path.join(out, "plan.json");
@@ -1563,8 +1596,9 @@ export function draftCheck(root: string, out: string): { reply: Reply; spec?: Sp
     let raw: unknown;
     try { raw = JSON.parse(fs.readFileSync(planFile, "utf8")); } catch (e) { errors.push(`plan.json is not valid JSON: ${(e as Error).message}`); }
     if (raw) {
-      plan = normalizePlan(raw, { id: "draft", specs: ["spec.md"] });
+      plan = applyMode(normalizePlan(raw, { id: "draft", specs: ["spec.md"] }), readMode(out));
       if (!plan.tasks.length) errors.push("plan.json has no tasks");
+      if (readMode(out) === "single-task" && plan.tasks.length > 1) errors.push(`this request runs as ONE task (mode single-task): merge the ${plan.tasks.length} tasks into one that cites every requirement. (To run a graph instead, the user starts again with \`/sdd --mode dag\`.)`);
       const c = checkPlan(plan, spec ? [spec] : []);
       errors.push(...c.errors);
       warnings.push(...c.warnings);

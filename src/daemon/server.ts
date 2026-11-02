@@ -48,7 +48,7 @@ export class DaemonServer {
       // The caller's identity is its token's: an agent cannot speak as another agent.
       "agent.api": (p, _c, caller) => o.agentApi(caller ?? ((p.agent as string) || null), (p.cwd as string) || null, str(p.op, "op") as ApiOp, (p.args as Record<string, unknown>) ?? {}),
       "init.start": (p) => o.startInit((p.description as string) || null),
-      "goal.new": (p) => o.newGoal(str(p.goal, "goal")),
+      "goal.new": (p) => o.newGoal(str(p.goal, "goal"), typeof p.mode === "string" ? p.mode : undefined),
       "chat.send": (p) => { o.chat(str(p.text, "text")); return { ok: true }; },
       "draft.revise": (p) => { o.revise(str(p.feedback, "feedback")); return { ok: true }; },
       "spec.approve": (p) => o.approveSpec(p.spec ? String(p.spec) : undefined),
