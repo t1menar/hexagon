@@ -196,11 +196,16 @@ describe("dashboard (real App, fake daemon)", () => {
     const { app, client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     push(client, "run", { ...makeSnapshot({}).run, state: "done" });
     const key = (name: string) => (app as never as { onKey(s: undefined, k: { name: string }): void }).onKey(undefined, { name });
-    key("f2"); await settle(80);
-    expect(text()).not.toContain("INSPECTOR");
-    key("f2"); await settle(80);
-    expect(text()).toContain("INSPECTOR");
-    key("f3"); await settle(500);
+    key("f2");
+    await vi.waitFor(() => expect(text()).not.toContain("INSPECTOR"));
+    key("f2");
+    await vi.waitFor(() => expect(text()).toContain("INSPECTOR"));
+    key("f3");
+    await vi.waitFor(() => expect(text()).toContain("motion: off"));
+    // Wait on a condition, not on elapsed time: the frame in flight when motion went off may still be written; after that
+    // the write count must stop moving for a full quiet window.
+    let last = -1;
+    await vi.waitFor(() => { const now = writes; const quiet = now === last; last = now; expect(quiet).toBe(true); }, { timeout: 5000, interval: 250 });
     const before = writes;
     await settle(400);
     expect(writes).toBe(before);
