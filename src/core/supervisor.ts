@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { evaluateEvidence, missingEvidence } from "./evidence.js";
+import { confirmByMutation, evaluateEvidence, missingEvidence, type MutationHost } from "./evidence.js";
 import { failureSignature, reviewSignature } from "./signature.js";
 import { DEFAULT_TEST_GLOBS, describeFlags, testIntegrity, type IntegrityFlag } from "./integrity.js";
 import fs from "node:fs";
@@ -434,6 +434,11 @@ export class AgentRun {
       if (r.acceptance_evidence.length) {
         const out = this.verifyLog.slice(-Math.max(1, this.task.verify.length)).map((x) => x.output).join("\n");
         r.acceptance_evidence = evaluateEvidence(this.worktree, r.acceptance_evidence, out);
+        // A string match proves little: a claimed test is verified only if it fails once the task's change is taken away.
+        if (r.acceptance_evidence.some((e) => e.verified)) {
+          this.st("verifying", "checking that claimed tests fail without the change");
+          r.acceptance_evidence = await confirmByMutation(r.acceptance_evidence, await this.mutationHost());
+        }
       }
 
       // 4. Review
@@ -1252,6 +1257,46 @@ export class AgentRun {
       unregister();
     }
     return verdict;
+  }
+
+  /**
+   * The mutation check's access to the worktree. The task's product files (changed, not tests) go back to the base
+   * commit, the test runs, and the worktree is reset to exactly where it was, even if the run throws.
+   */
+  private async mutationHost(): Promise<MutationHost> {
+    const tg = this.rc.cfg.run.test_globs;
+    const globs = tg.length ? tg : DEFAULT_TEST_GLOBS;
+    const changed = await g.changedFiles(this.worktree, this.baseCommit);
+    const product = changed.filter((f) => !matchesAny(f, globs));
+    const tmpl = this.rc.cfg.run.test_command.trim();
+    const q = (x: string) => `'${x.replace(/'/g, `'\\''`)}'`;
+    const cmds = (file: string, name: string): string[] => (tmpl ? [tmpl.replace(/\{file\}/g, q(file)).replace(/\{name\}/g, q(name))] : this.task.verify);
+    return {
+      productFiles: product,
+      how: tmpl ? "test_command" : "the task's verify commands, no [run].test_command set",
+      withoutChange: async (run) => {
+        const head = await g.revParse(this.worktree, "HEAD");
+        try {
+          for (const f of product) {
+            const atBase = (await g.git(this.worktree, ["cat-file", "-e", `${this.baseCommit}:${f}`])).ok;
+            if (atBase) await g.git(this.worktree, ["checkout", this.baseCommit, "--", f]);
+            else fs.rmSync(path.join(this.worktree, f), { force: true, recursive: true });
+          }
+          return await run();
+        } finally {
+          await g.resetHard(this.worktree, head);
+        }
+      },
+      runTest: async (file, name) => {
+        this.abort = new AbortController();
+        for (const cmd of cmds(file, name)) {
+          this.ev({ type: "progress", text: `mutation check: ${cmd}` });
+          const r = await runShell(cmd, this.worktree, this.rc.cfg.sandbox.command_timeout_s, this.abort.signal);
+          if (r.code !== 0) return r.code;
+        }
+        return 0;
+      },
+    };
   }
 
   /** What Hexagon ran and saw, as opposed to what the developer says. */

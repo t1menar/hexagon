@@ -182,7 +182,7 @@ describe("claude code adapter", () => {
 
 describe("plan normalization", () => {
   it("fills optional fields so agents can write short plans", () => {
-    const p = normalizePlan({ tasks: [{ id: "T-1", title: "x", acceptance: ["AC-1"], files: { write: ["a"] }, verify: ["true"] }] }, { id: "p-1", specs: ["specs/x.md"] });
+    const p = normalizePlan({ tasks: [{ id: "T-1", title: "x", acceptance: ["AC-1"], files: { write: ["a"] }, verify: ["npm test"] }] }, { id: "p-1", specs: ["specs/x.md"] });
     expect(checkPlan(p).errors).toEqual([]);
     expect(p.tasks[0]!.definition_of_done).toEqual(["AC-1 holds"]);
   });
