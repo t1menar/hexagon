@@ -9,6 +9,7 @@ import { ensureRepo, isRepo } from "./core/git.js";
 import { argsFromFlags, commandDef, commandDocs, parseArgs } from "./core/commands.js";
 import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
+import { whichExecutable } from "./agents/contracts/adapter.js";
 import { loadConfig } from "./core/config.js";
 import type { CostReport, CostRow } from "./core/cost.js";
 import { parseEvidenceFlag } from "./core/evidence.js";
@@ -450,6 +451,22 @@ async function main(argv: string[]): Promise<void> {
 
 // ───────────── init / new: run an agent session in this terminal ─────────────
 
+/** Say which agent CLIs are installed, and warn when the configured default is not one of them. Never edits the config. */
+async function reportCliDetection(dir: string): Promise<void> {
+  const known = [["claude", "claude-code"], ["codex", "codex"], ["grok", "grok"]] as const;
+  const found: string[] = [];
+  for (const [bin] of known) if (await whichExecutable(bin)) found.push(bin);
+  console.log(found.length ? `${c.blue("✔")} agent CLIs found: ${found.join(", ")}` : c.orange("! no agent CLI found on PATH (claude, codex, grok): install one before running agents"));
+  try {
+    const cfg = loadConfig(path.join(dir, ".hexagon", "config.toml"));
+    const wanted = cfg.roles.developer?.agent ? cfg.agents[cfg.roles.developer.agent] : undefined;
+    const bin = wanted?.command?.[0] ?? (wanted?.adapter === "claude-code" ? "claude" : wanted?.adapter);
+    if (bin && wanted?.adapter !== "mock" && !(await whichExecutable(bin))) {
+      console.log(c.orange(`! the developer role uses "${cfg.roles.developer!.agent}" (${bin}), which is not installed${found.length ? `; installed instead: ${found.join(", ")}. Switch with \`hexagon agents configure\`` : ""}`));
+    }
+  } catch { /* config problems are reported elsewhere */ }
+}
+
 async function init(args: string[]): Promise<void> {
   const bare = bool(args, "--bare", "--no-agent");
   const agent = one(args, "--agent");
@@ -474,6 +491,7 @@ async function init(args: string[]): Promise<void> {
   const setup = await ensureRepo(dir);
   if (setup) console.log(`${c.blue("✔")} ${setup} (agents work in git worktrees)`);
   if (bare) return;
+  await reportCliDetection(dir);
   if (agent) {
     const cfgFile = path.join(dir, ".hexagon", "config.toml");
     fs.writeFileSync(cfgFile, fs.readFileSync(cfgFile, "utf8").replace(/(\[roles\.bootstrap\]\nagent = )"[^"]*"/, `$1"${agent}"`));
