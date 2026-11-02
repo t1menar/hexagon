@@ -72,4 +72,4 @@ export class CodexAdapter extends OneShotAdapter implements AgentAdapter {
   }
 }
 
-registerAdapter("codex", (id, c, o) => new CodexAdapter(id, c.command?.length ? c.command : ["codex"], selectionFrom(o || c.model), c.args ?? []));
+registerAdapter("codex", (id, c, o) => new CodexAdapter(id, c.command?.length ? c.command : ["codex"], selectionFrom(o || c.model), c.args ?? []), { cli: "codex" });

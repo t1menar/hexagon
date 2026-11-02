@@ -4,7 +4,7 @@ import path from "node:path";
 import { createAdapter } from "../agents/registry.js";
 import { contextFile, identityHash, loadSkills, projectContext, repositoryOverview, systemPrompt } from "../agents/prompts.js";
 import type { AgentAdapter, Reply } from "../agents/types.js";
-import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "../contracts/types.js";
+import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent, Task } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
 import { costReport } from "../core/cost.js";
 import { appendJsonl, atomicWriteJson, nowIso, readJson, readJsonl, readJsonlTail } from "../util/fsx.js";
@@ -31,10 +31,11 @@ import { Mutex } from "../util/mutex.js";
 import { reviewerWarnings } from "../core/security.js";
 import { AgentTokens } from "./auth.js";
 import { ControlService, type Proposal } from "./control.js";
-import { Approvals, ARTIFACT, checkStage, isUntraced, specHash, type Stage } from "../core/pipeline.js";
+import { Approvals, ARTIFACT, checkStage, isUntraced, MODES, parseMode, recommendMode, specHash, type Mode, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
-import { Scheduler, type PriorTask } from "../core/scheduler.js";
+import { replanRequest } from "../core/replan.js";
+import { overlaps, Scheduler, type PriorTask } from "../core/scheduler.js";
 import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
 import { SoloSession, sessionPush, type SessionStatus } from "../core/solo.js";
 import { StatusStore } from "../core/status.js";
@@ -142,7 +143,7 @@ export interface PermissionRequest {
   prefix: string | null;
   asked_at: string;
   /** Set for requests that came through `hexagon exec|install|sudo` (the agent's call is waiting); absent for refused native tool calls. */
-  action?: "exec" | "install" | "sudo";
+  action?: "exec" | "install" | "sudo" | "scope";
   /** Why the agent wants it, in its own words. */
   reason?: string;
   /** What the user can answer. `key` is the shortcut in the dashboard. */
@@ -162,6 +163,9 @@ export function commandPrefix(command: string): string | null {
 const PLANNER_COMMANDS = ["ls", "cat", "find", "grep", "rg", "head", "wc", "git log", "git status", "git ls-files", "mkdir"];
 
 /** Owns the project state inside the daemon. All mutations go through here. */
+/** Files a task may be granted without asking: lockfiles and registration/index files, named exactly. */
+const SAFE_SCOPE = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum|Cargo\.lock|poetry\.lock|Gemfile\.lock|composer\.lock|index\.(?:ts|js|mjs|tsx|jsx)|__init__\.py|mod\.rs)$/;
+
 export class Orchestrator extends EventEmitter {
   readonly paths: ProjectPaths;
   /** Tokens that identify agent processes to the RPC server. */
@@ -378,7 +382,61 @@ export class Orchestrator extends EventEmitter {
     if (op === "exec" || op === "install" || op === "sudo") return this.brokerCall(id, cwd, op, args);
     if (op === "command") return this.agentCommand(id, args);
     if (op === "goal") return this.agentGoal(id, args);
+    if (op === "scope") return this.scopeRequest(id, args);
+    if (op === "logs" || op === "proposals" || op === "tell") return this.assistantRead(id, op, args);
     return this.registry.call(id, op, args);
+  }
+
+  /**
+   * `hexagon scope request <glob…> --why "…"`: a task asks to write outside its mask. Refused when another running task
+   * holds an overlapping scope or the path is owned by the integration ([run].shared_files). Lockfiles and registration
+   * files are granted at once; anything else is the user's call, like `hexagon exec`.
+   */
+  private async scopeRequest(agent: string, args: Record<string, unknown>): Promise<Reply> {
+    const globs = (Array.isArray(args.globs) ? (args.globs as unknown[]).map(String) : []).map((x) => x.trim()).filter(Boolean);
+    const why = typeof args.why === "string" ? args.why.trim() : "";
+    if (!globs.length || !why) return { ok: false, message: 'usage: hexagon scope request <glob…> --why "<what needs it and why the plan did not include it>"' };
+    const run = this.current;
+    const st = run?.store.byTask(agent);
+    if (!run || !st || TERMINAL_STATES.has(st.state)) return { ok: false, message: "`hexagon scope request` is for a running task." };
+    if (globs.some((x) => x.startsWith("/") || x.includes(".."))) return { ok: false, message: "scope globs are paths inside the project (no absolute paths, no `..`)." };
+    const shared = this.cfg.run.shared_files;
+    const owned = globs.find((x) => overlaps([x], shared));
+    if (owned) return { ok: false, message: `${owned} is owned by the integration ([run].shared_files). Don't change it: say in your \`hexagon done\` summary what it needs and the integration step will apply it.` };
+    const probe = run.scheduler.scopeHolder(agent, globs);
+    if (probe) return { ok: false, message: `${probe} is running and holds a write scope that overlaps ${globs.join(", ")}. Wait for it, or finish with what you can and report the rest via \`hexagon done --status needs_spec_change\`.` };
+    const safe = globs.every((x) => !/[*?{]/.test(x) && SAFE_SCOPE.test(x));
+    if (!safe) {
+      const d = await this.askUser(agent, "scope", `write ${globs.join(", ")}`, why);
+      if (d === "deny") return { ok: false, message: "The user denied the scope request. Don't write those paths; carry on without them and say what is left undone." };
+    }
+    const g2 = run.scheduler.grantScope(agent, globs);
+    if (!g2.ok) return { ok: false, message: `${g2.heldBy} took an overlapping scope while you waited. Try again later or report it.` };
+    this.agentNote(agent, `scope: +${globs.join(", ")} (${safe ? "auto-approved" : "approved by the user"}): ${why}`);
+    return { ok: true, message: `Granted: you may now write ${globs.join(", ")} for as long as this task runs. Hexagon records it in the plan.` };
+  }
+
+  /**
+   * The Assistant's narrow routes: read an agent's recent steps, list the proposals waiting for the user, and send an
+   * instruction to a task that is running right now. Everything else (answering, approving, continuing finished work)
+   * stays with the user, whose token the RPC methods behind these require.
+   */
+  private assistantRead(agent: string, op: "logs" | "proposals" | "tell", args: Record<string, unknown>): Reply {
+    if (agent !== "control") return { ok: false, message: `\`hexagon ${op}\` is only for the Hexagon Assistant.` };
+    try {
+      if (op === "proposals") return { ok: true, message: JSON.stringify(this.control.list()) };
+      const task = String(args.task ?? "").trim().toUpperCase();
+      if (op === "logs") return { ok: true, message: JSON.stringify(this.agentEvents(task, Math.min(Number(args.limit) || 40, 200))) };
+      const body = String(args.body ?? "").trim();
+      if (!/^T-\d+$/.test(task) || !body) return { ok: false, message: 'usage: hexagon tell <T-n> "<instruction>"' };
+      const s = this.requireRun().store.byTask(task);
+      if (!s) return { ok: false, message: `unknown task ${task}` };
+      if (TERMINAL_STATES.has(s.state)) return { ok: false, message: `${task} is ${s.state}, not running: tell works only on running tasks. Propose a retry with \`hexagon do\` or ask the user.` };
+      void this.send(task, body);
+      return { ok: true, message: `sent to ${task}` };
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
   }
 
   /** `hexagon plan "<goal>"` from the assistant: starts the analyst; the user still approves the spec and the plan. */
@@ -504,13 +562,15 @@ export class Orchestrator extends EventEmitter {
    * Goal → analyst, in gated stages: analyze (analysis.md) → specify (spec.md [+ design.md]) → the user approves the
    * spec → plan (plan.json). Each stage must validate before the next one starts.
    */
-  newGoal(goal: string): { id: string } {
+  newGoal(goal: string, mode?: string): { id: string } {
     if (!goal.trim()) throw new Error("describe what you want built");
+    if (mode && !MODES.includes(mode as Mode)) throw new Error(`unknown mode "${mode}" (${MODES.join(", ")})`);
     this.reloadConfig();
     const id = `p-${stamp()}`;
     const out = path.join(this.paths.hex, "drafts", id);
     fs.mkdirSync(out, { recursive: true });
     fs.writeFileSync(path.join(out, "goal.txt"), goal.trim());
+    if (mode) fs.writeFileSync(path.join(out, "mode.override"), mode);
     const s = this.analystSession(out);
     const existingSpecs = fs.existsSync(path.join(this.root, "specs")) ? fs.readdirSync(path.join(this.root, "specs")).filter((f) => f.endsWith(".md")) : [];
     this.draft = null;
@@ -525,10 +585,26 @@ export class Orchestrator extends EventEmitter {
       `Output directory: ${out}`,
       existingSpecs.length ? `Existing specs (for context; don't modify them): ${existingSpecs.map((f) => `specs/${f}`).join(", ")}` : "",
       "",
-      "Stage 1 of 3: analyze. Read the codebase and the request, then write analysis.md with the sections Current state, Constraints, Risks, Open questions, Impacted areas. Ask the user only about decisions that change the outcome. Run `hexagon plan-check`, then `hexagon done`.",
+      "Stage 1 of 3: analyze. Read the codebase and the request, then write analysis.md with the sections Current state, Constraints, Risks, Open questions, Mode, Impacted areas. Mode: first word solo | single-task | dag, then the reason (solo = one small, understood edit; single-task = one agent with full checks; dag = several truly independent slices). Ask the user only about decisions that change the outcome. Run `hexagon plan-check`, then `hexagon done`.",
     ].filter((l) => l !== "").join("\n");
     void this.runPipeline(s, id, goal.trim(), out, "analyze", prompt);
     return { id };
+  }
+
+  /**
+   * Choose how much machinery this request gets: the user's --mode, else the analyst's `## Mode`, else the heuristic.
+   * "solo" is advice only (the assistant can do it in chat); the pipeline still runs it as one checked task.
+   */
+  private decideMode(out: string): void {
+    const file = path.join(out, "analysis.md");
+    const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    const forced = fs.existsSync(path.join(out, "mode.override")) ? (fs.readFileSync(path.join(out, "mode.override"), "utf8").trim() as Mode) : null;
+    const picked = forced ? { mode: forced, reason: "chosen by you" } : parseMode(text) ?? recommendMode(text);
+    const effective: Mode = picked.mode === "solo" ? "single-task" : picked.mode;
+    fs.writeFileSync(path.join(out, "mode.txt"), `${effective}\n${picked.reason}\n`);
+    this.notice("info", picked.mode === "solo"
+      ? `Mode: this looks small enough to ask the Assistant directly (${picked.reason}). Continuing as one checked task; start with \`/sdd --mode dag\` for a graph.`
+      : `Mode: ${effective} (${picked.reason}).${effective === "single-task" ? " One agent, no file masks, full checks. `/sdd --mode dag` forces a graph." : ""}`);
   }
 
   private analystSession(out: string): SoloSession {
@@ -605,6 +681,7 @@ export class Orchestrator extends EventEmitter {
     try {
       if (from === "analyze") {
         if (!(await this.runStage(s, prompt, followUp))) return;
+        this.decideMode(out);
         this.stage = "specify";
         from = "specify";
         prompt = "";
@@ -670,7 +747,7 @@ export class Orchestrator extends EventEmitter {
     this.push({ event: "spec_review", data: null });
     this.stage = "plan";
     this.registry.register("planner", s.api());
-    const followUp = `<stage>plan</stage>\nThe user approved spec.md (${Object.keys(a.requirements).join(", ")}). Stage 3 of 3: plan. Write plan.json in ${sr.out_dir}: tasks that each cite requirement and acceptance ids, depends_on, non-overlapping files.write, verify commands. Do not change spec.md. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
+    const followUp = `<stage>plan</stage>\nThe user approved spec.md (${Object.keys(a.requirements).join(", ")}). Stage 3 of 3: plan. Write plan.json in ${sr.out_dir}: ${readMode(sr.out_dir) === "single-task" ? "EXACTLY ONE task that cites every requirement (acceptance as REQ-X/AC-n), with the verify commands that prove them; Hexagon gives it the whole repository as scope" : "tasks that each cite requirement and acceptance ids, depends_on, non-overlapping files.write, verify commands"}. Do not change spec.md. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
     void this.runPipeline(s, sr.id, sr.goal, sr.out_dir, "plan", "", followUp);
     return { approved: rel, requirements: Object.keys(a.requirements).length, planning: true };
   }
@@ -685,7 +762,7 @@ export class Orchestrator extends EventEmitter {
     if (!ap || ap.hash !== specHash(fs.readFileSync(path.join(out, "spec.md"), "utf8"))) {
       throw new Error("spec.md was changed after you approved it; the plan was not accepted. Ask for the change with /respec so it is reviewed again.");
     }
-    const plan = normalizePlan(readJson(path.join(out, "plan.json")), { id, specs: [path.relative(this.root, specPath)] });
+    const plan = applyMode(normalizePlan(readJson(path.join(out, "plan.json")), { id, specs: [path.relative(this.root, specPath)] }), readMode(out));
     const planPath = path.join(this.paths.plans, `${id}.json`);
     atomicWriteJson(planPath, plan);
     return { id, goal, out_dir: out, spec_path: specPath, plan_path: planPath, plan, check: this.withAdvice(checkPlan(plan, [parseSpec(specPath)])), summary };
@@ -701,7 +778,7 @@ export class Orchestrator extends EventEmitter {
   reloadDraft(): Draft {
     const d = this.draft;
     if (!d) throw new Error("no draft");
-    const plan = normalizePlan(readJson(d.plan_path), { id: d.id, specs: [path.relative(this.root, d.spec_path)] });
+    const plan = applyMode(normalizePlan(readJson(d.plan_path), { id: d.id, specs: [path.relative(this.root, d.spec_path)] }), readMode(d.out_dir));
     this.draft = { ...d, plan, check: this.withAdvice(checkPlan(plan, [parseSpec(d.spec_path)])) };
     this.saveDraft();
     this.push({ event: "draft", data: this.draft });
@@ -831,6 +908,7 @@ export class Orchestrator extends EventEmitter {
       sessions: this.agentSessions, pool: this.pool, bus,
       agentEnv: (id) => this.agentEnv(id),
       preapprove: (task, commands, why) => this.preapprove(task, commands, why),
+      replan: (task, why, changed) => this.replan(task, why, changed),
       tasks: plan.tasks,
       returnTask: (from, to, issue) => scheduler.returnTask(from, to, issue),
     };
@@ -1057,12 +1135,13 @@ export class Orchestrator extends EventEmitter {
     if (st) this.current!.store.apply(st.agent_run_id, { type: "chat", from: "hexagon", text });
   }
 
-  private askUser(agent: string, action: "exec" | "install" | "sudo", command: string, reason?: string): Promise<Decision> {
+  private askUser(agent: string, action: "exec" | "install" | "sudo" | "scope", command: string, reason?: string): Promise<Decision> {
     const kind: PermissionRequest["kind"] = this.sessions.has(agent) ? "session" : "task";
     const prefix = action === "exec" ? commandPrefix(command) : null;
     const choices: NonNullable<PermissionRequest["choices"]> =
       action === "sudo" ? [{ id: "terminal", label: "run it in a terminal (you type the password)", key: "t" }, { id: "deny", label: "deny", key: "n" }]
       : action === "install" ? [{ id: "once", label: "install it", key: "y" }, { id: "deny", label: "deny", key: "n" }]
+      : action === "scope" ? [{ id: "once", label: "grant it to this task while it runs", key: "y" }, { id: "deny", label: "deny", key: "n" }]
       : [
         { id: "once", label: "run it this once", key: "y" },
         ...(prefix ? [{ id: "always" as const, label: `always allow \`${prefix}\``, key: "a" }] : []),
@@ -1287,6 +1366,20 @@ export class Orchestrator extends EventEmitter {
    * answers questions about the code and the run, and starts planning (`hexagon plan`) when
    * you ask for something to be built.
    */
+  /** A task is blocked by the plan itself: the Assistant proposes edits to what has not started; the user confirms them. */
+  private replan(task: Task, why: string, changed: string[]): void {
+    const run = this.current;
+    if (!run) return;
+    const after = new Set<string>();
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const t of run.plan.tasks) if (!after.has(t.id) && t.depends_on.some((d) => d === task.id || after.has(d))) { after.add(t.id); grew = true; }
+    }
+    const tail = [...after].filter((id) => run.scheduler.editable(id));
+    this.notice("attention", `${task.id} is blocked by the plan (${why.slice(0, 120)}). The Assistant is asked for a change to the tasks after it; you confirm with /apply.`);
+    this.chat(replanRequest(task, why, changed, tail, ""));
+  }
+
   chat(text: string): void {
     if (!text.trim()) return;
     // The state block is sent only when it differs from what the session was last told.
@@ -1471,6 +1564,20 @@ export class Orchestrator extends EventEmitter {
 }
 
 /** Validate a planner output directory (spec.md + plan.json). */
+/** The mode chosen for a draft (mode.txt in its directory); drafts from before modes existed are graphs. */
+export function readMode(out: string): Mode {
+  try {
+    const m = fs.readFileSync(path.join(out, "mode.txt"), "utf8").split("\n")[0]!.trim();
+    return m === "single-task" ? "single-task" : "dag";
+  } catch { return "dag"; }
+}
+
+/** single-task: the one task owns the whole repository (there is nothing to be disjoint from). */
+export function applyMode(plan: Plan, mode: Mode): Plan {
+  if (mode === "single-task" && plan.tasks.length === 1) plan.tasks[0]!.files.write = ["**"];
+  return plan;
+}
+
 export function draftCheck(root: string, out: string): { reply: Reply; spec?: Spec; plan?: Plan } {
   const specFile = path.join(out, "spec.md");
   const planFile = path.join(out, "plan.json");
@@ -1489,8 +1596,9 @@ export function draftCheck(root: string, out: string): { reply: Reply; spec?: Sp
     let raw: unknown;
     try { raw = JSON.parse(fs.readFileSync(planFile, "utf8")); } catch (e) { errors.push(`plan.json is not valid JSON: ${(e as Error).message}`); }
     if (raw) {
-      plan = normalizePlan(raw, { id: "draft", specs: ["spec.md"] });
+      plan = applyMode(normalizePlan(raw, { id: "draft", specs: ["spec.md"] }), readMode(out));
       if (!plan.tasks.length) errors.push("plan.json has no tasks");
+      if (readMode(out) === "single-task" && plan.tasks.length > 1) errors.push(`this request runs as ONE task (mode single-task): merge the ${plan.tasks.length} tasks into one that cites every requirement. (To run a graph instead, the user starts again with \`/sdd --mode dag\`.)`);
       const c = checkPlan(plan, spec ? [spec] : []);
       errors.push(...c.errors);
       warnings.push(...c.warnings);

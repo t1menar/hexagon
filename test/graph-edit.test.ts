@@ -51,11 +51,11 @@ describe("editing a running graph", () => {
 
   it("adds a task and an edge while the run is going; the new task runs after what it waits for", async () => {
     const { c, exec, finish, root } = await boot();
-    const added = await exec("graph.addNode", { role: "developer", title: "Docs", depends_on: ["T-2"] });
+    const added = await exec("graph.addNode", { write: ["docs/new.txt"], verify_exempt: "test fixture", role: "developer", title: "Docs", depends_on: ["T-2"] });
     expect(added.status).toBe("done");
     const plan = await c.call<{ plan: Plan }>("ui.snapshot");
     expect(plan.plan.tasks.map((t) => t.id)).toEqual(["T-1", "T-2", "T-3"]);
-    await exec("graph.addNode", { role: "qa", title: "Extra", id: "T-4" });
+    await exec("graph.addNode", { verify_exempt: "test fixture", role: "qa", title: "Extra", id: "T-4", write: ["docs/extra.txt"] });
     await exec("graph.addEdge", { from: "T-4", to: "T-3" });
     const final = await finish();
     expect(final.agents.map((a) => `${a.task_id}:${a.state}`).sort()).toEqual(["T-1:done", "T-2:done", "T-3:done", "T-4:done"]);
@@ -67,7 +67,7 @@ describe("editing a running graph", () => {
 
   it("removing a task asks for a yes first; once confirmed, a task that has not started is gone and nothing waits for it", async () => {
     const { c, exec, finish } = await boot();
-    await exec("graph.addNode", { role: "developer", title: "Docs", depends_on: ["T-2"] });
+    await exec("graph.addNode", { write: ["docs/new.txt"], verify_exempt: "test fixture", role: "developer", title: "Docs", depends_on: ["T-2"] });
     const r = await exec("graph.removeNode", { id: "T-2" });
     expect(r.status).toBe("proposed"); // destructive: your own call waits for a yes
     expect(r.proposal!.diff).toEqual(expect.arrayContaining(["- task T-2 [developer] Task T-2"]));
@@ -84,19 +84,113 @@ describe("editing a running graph", () => {
     await expect(exec("graph.removeNode", { id: "T-1" })).rejects.toThrow(/already started/);
     await expect(exec("graph.addEdge", { from: "T-2", to: "T-1" })).rejects.toThrow(/cycle|already started/);
     await expect(exec("graph.addEdge", { from: "T-1", to: "T-1" })).rejects.toThrow();
-    await expect(exec("graph.addNode", { role: "wizard", title: "x" })).rejects.toThrow(/unknown role/);
+    await expect(exec("graph.addNode", { write: ["docs/new.txt"], verify_exempt: "test fixture", role: "wizard", title: "x" })).rejects.toThrow(/unknown role/);
     await expect(exec("graph.removeEdge", { from: "T-9", to: "T-2" })).rejects.toThrow(/does not wait/);
     await finish();
-    await expect(exec("graph.addNode", { role: "developer", title: "late" })).rejects.toThrow(/no graph to edit|finished/);
+    await expect(exec("graph.addNode", { write: ["docs/new.txt"], verify_exempt: "test fixture", role: "developer", title: "late" })).rejects.toThrow(/no graph to edit|finished/);
   }, 90000);
 
   it("the assistant's live edit is a proposal; confirming applies it to the running graph", async () => {
     const { c, finish } = await boot();
-    const r = await c.call<{ ok: boolean; message: string }>("agent.api", { agent: "control", op: "command", args: { name: "graph.addNode", args: { role: "qa", title: "Check", depends_on: ["T-1"] } } });
+    const r = await c.call<{ ok: boolean; message: string }>("agent.api", { agent: "control", op: "command", args: { name: "graph.addNode", args: { write: ["docs/new.txt"], verify_exempt: "test fixture", role: "qa", title: "Check", depends_on: ["T-1"] } } });
     expect(r.message).toMatch(/Proposed P-1/);
     expect((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks).toHaveLength(2);
     await c.call("command.confirm", { id: "P-1" });
     expect((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks).toHaveLength(3);
     await finish();
+  }, 90000);
+});
+
+describe("hexagon scope request", () => {
+  const open: { s: DaemonServer; c: HexClient }[] = [];
+  afterEach(() => { for (const o of open.splice(0)) { o.c.close(); o.s.orch.shutdown(); } });
+
+  it("grants lockfiles at once, refuses what a running task holds, and asks the user for the rest", async () => {
+    const root = project();
+    // Both tasks hold still on a question, so both are running while the requests come in.
+    const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [], tasks: [task("T-1", [], "@ask: go on?"), task("T-2", [], "@ask: go on?")] };
+    fs.writeFileSync(path.join(root, "plan.json"), JSON.stringify(p));
+    const s = new DaemonServer(root); await s.listen();
+    const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });
+    await c.call("run.start", { plan_path: "plan.json" });
+    for (const t of ["T-1", "T-2"]) await until(async () => (await c.call<AgentStatus>("agent.status", { task: t })).state === "waiting_input");
+    const api = (args: Record<string, unknown>) => s.orch.agentApi("T-1", null, "scope", args) as Promise<{ ok: boolean; message: string }>;
+
+    expect(await api({ globs: ["package-lock.json"] })).toMatchObject({ ok: false, message: expect.stringMatching(/usage/) }); // no reason given
+    const lock = await api({ globs: ["package-lock.json"], why: "added a dependency" });
+    expect(lock.ok).toBe(true);
+    const plan = (await c.call<{ plan: Plan }>("ui.snapshot")).plan;
+    expect(plan.tasks.find((t) => t.id === "T-1")!.files.write).toContain("package-lock.json");
+
+    const held = await api({ globs: ["src/T-2.txt"], why: "needs the other task's file" });
+    expect(held).toMatchObject({ ok: false, message: expect.stringMatching(/T-2 is running/) });
+
+    s.orch.cfg.run.shared_files = ["src/registry.ts"];
+    expect(await api({ globs: ["src/registry.ts"], why: "register" })).toMatchObject({ ok: false, message: expect.stringMatching(/owned by the integration/) });
+
+    // Anything else is the user's call: the request waits for an answer in the approval box.
+    const pending = api({ globs: ["docs/guide.md"], why: "document the flag" });
+    const perm = await until(async () => (await c.call<{ permissions: { id: string; action?: string }[] }>("ui.snapshot")).permissions.find((x) => x.action === "scope"));
+    await c.call("question.answer", { question_id: perm.id, answer: "n" });
+    expect(await pending).toMatchObject({ ok: false, message: expect.stringMatching(/denied/) });
+    expect(((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks.find((t) => t.id === "T-1")!.files.write)).not.toContain("docs/guide.md");
+    const pending2 = api({ globs: ["docs/guide.md"], why: "document the flag" });
+    const perm2 = await until(async () => (await c.call<{ permissions: { id: string; action?: string }[] }>("ui.snapshot")).permissions.find((x) => x.action === "scope"));
+    await c.call("question.answer", { question_id: perm2.id, answer: "1" });
+    expect((await pending2).ok).toBe(true);
+  }, 60000);
+});
+
+describe("a blocked task", () => {
+  const open: { s: DaemonServer; c: HexClient }[] = [];
+  afterEach(() => { for (const o of open.splice(0)) { o.c.close(); o.s.orch.shutdown(); } });
+
+  async function blocked(reason: string) {
+    const root = project();
+    const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [], tasks: [task("T-1", [], `@block: ${reason}`), task("T-2", ["T-1"])] };
+    fs.writeFileSync(path.join(root, "plan.json"), JSON.stringify(p));
+    const s = new DaemonServer(root); await s.listen();
+    const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });
+    const asked: string[] = [];
+    s.orch.chat = (t: string) => { asked.push(t); };
+    await c.call("run.start", { plan_path: "plan.json" });
+    await until(async () => (await c.call<AgentStatus>("agent.status", { task: "T-1" })).state === "blocked");
+    await sleep(200);
+    return asked;
+  }
+
+  it("is re-planned only when the plan is the problem: the Assistant is asked about the tasks after it", async () => {
+    const asked = await blocked("REQ-A contradicts REQ-B about the retry limit");
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatch(/replan request/i);
+    expect(asked[0]).toContain("REQ-A contradicts REQ-B");
+    expect(asked[0]).toMatch(/not started and can still be edited[^.]*: T-2/);
+  }, 60000);
+
+  it("a missing tool is not a plan problem: no re-plan", async () => {
+    expect(await blocked("go is not installed")).toEqual([]);
+  }, 60000);
+});
+
+describe("a reviewer question", () => {
+  const open: { s: DaemonServer; c: HexClient }[] = [];
+  afterEach(() => { for (const o of open.splice(0)) { o.c.close(); o.s.orch.shutdown(); } });
+
+  it("goes to the user, and the answer comes back into the review before the verdict", async () => {
+    const { MockAdapter } = await import("../src/agents/mock.js");
+    MockAdapter.turns.length = 0;
+    MockAdapter.reviews.clear(); // the mock counts reviews per task id across tests
+    const root = project();
+    const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [], tasks: [task("T-1", [], "@review-question: keep the legacy flag?")] };
+    fs.writeFileSync(path.join(root, "plan.json"), JSON.stringify(p));
+    const s = new DaemonServer(root); await s.listen();
+    const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });
+    await c.call("run.start", { plan_path: "plan.json" });
+    const q = await until(async () => (await c.call<{ questions: { question_id: string; prompt: string }[] }>("inbox.list")).questions.find((x) => /Reviewer asks: keep the legacy flag\?/.test(x.prompt)));
+    expect((await c.call<AgentStatus>("agent.status", { task: "T-1" })).state).toBe("waiting_input");
+    await c.call("question.answer", { question_id: q.question_id, answer: "1" });
+    const st = await until(async () => { const x = await c.call<AgentStatus>("agent.status", { task: "T-1" }); return x.state === "done" || x.state === "failed" ? x : null; }, 60000);
+    expect(st.state).toBe("done");
+    expect(MockAdapter.turns.some((t) => /The user answered your question \("keep the legacy flag\?"\): 1\) Yes/.test(t.text))).toBe(true);
   }, 90000);
 });

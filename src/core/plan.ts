@@ -3,6 +3,16 @@ import type { Plan, Task } from "../contracts/types.js";
 import { validatePlan } from "../contracts/validate.js";
 import type { Spec } from "./spec.js";
 
+/**
+ * Commands that exit 0 whatever the code does. A verify made only of these checks nothing, which is worse than none:
+ * it looks like a check. Compound lines are trivial only when every part is.
+ */
+export function isTrivialVerify(cmd: string): boolean {
+  const parts = cmd.split(/&&|\|\||;|\|/).map((x) => x.trim()).filter(Boolean);
+  if (!parts.length) return true;
+  return parts.every((x) => /^(?:true|false\s*\|\|\s*true|:|exit\s+0|echo\b.*|printf\b.*|ls\b.*|pwd|cat\b.*|head\b.*|tail\b.*|sleep\b.*|date|which\b.*|command\s+-v\b.*|git\s+status\b.*|test\s+-[de]\s+\.|node\s+(?:-v|--version)|npm\s+(?:-v|--version))$/.test(x));
+}
+
 export interface PlanCheck { errors: string[]; warnings: string[]; order: string[] }
 
 /** Schema + semantic checks: unique ids, known deps, acyclic, AC coverage. */
@@ -21,6 +31,7 @@ export function checkPlan(plan: unknown, specs: Spec[] = []): PlanCheck {
     for (const d of t.depends_on) if (!ids.has(d)) errors.push(`${t.id} depends on unknown task ${d}`);
     if (t.depends_on.includes(t.id)) errors.push(`${t.id} depends on itself`);
     if (t.verify.length === 0 && !t.verify_exempt) errors.push(`${t.id} has no verify command, so nothing independent can check it. Add one, or set "verify_exempt": "<reason>" for work that cannot be run (docs, config)`);
+    for (const c of t.verify) if (isTrivialVerify(c)) errors.push(`${t.id} verify \`${c}\` proves nothing (it passes whatever the code does). Use a command that fails when the work is wrong, e.g. the test runner for this task, or set "verify_exempt" with a reason.`);
     if (t.verify.length && t.verify_exempt) warnings.push(`${t.id} has both verify and verify_exempt; the exemption is ignored`);
   }
   const order = topoOrder(p.tasks);

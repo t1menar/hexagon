@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HexClient } from "../src/client/client.js";
 import type { AgentStatus, Plan, StampedEvent } from "../src/contracts/types.js";
 import { scaffold } from "../src/core/project.js";
+import { MockAdapter } from "../src/agents/mock.js";
 import { DaemonServer } from "../src/daemon/server.js";
 import { readJsonl } from "../src/util/fsx.js";
 
@@ -34,11 +35,23 @@ describe("scope is enforced on committed changes too", () => {
     const s = new DaemonServer(root); await s.listen();
     const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });
     await c.call("run.start", { plan_path: plan });
+    MockAdapter.turns.length = 0;
     const st = await until(async () => { const x = await c.call<AgentStatus>("agent.status", { task: "T-1" }); return x.state === "done" || x.state === "failed" ? x : null; }, 60000);
     expect(st.state).toBe("done");
     const runDir = path.join(root, ".hexagon/runs", fs.readdirSync(path.join(root, ".hexagon/runs"))[0]!);
     const evs = readJsonl<StampedEvent>(path.join(runDir, "events.jsonl"));
     expect(evs.some((e) => e.event.type === "error" && /scope_violation/.test(e.event.kind) && /outside\/leak.txt/.test(e.event.message))).toBe(true);
+    // First offense: warned, not reverted. The warning reaches the agent as its next turn and says what and how.
+    const messages = evs.filter((e) => e.event.type === "error" && /scope_violation/.test(e.event.kind)).map((e) => (e.event as { message: string }).message).filter((m) => /out-of-scope/.test(m));
+    expect(messages[0]).toMatch(/not reverted yet/);
+    expect(messages.some((m) => /^reverted out-of-scope/.test(m))).toBe(true);
+    const warned = MockAdapter.turns.find((t) => t.agent === "T-1-a1" && /Nothing was reverted yet/.test(t.text));
+    expect(warned?.text).toMatch(/outside\/leak\.txt/);
+    expect(warned?.text).toMatch(/Write scope: src\/a\.txt/);
+    expect(warned?.text).toMatch(/needs_spec_change/);
+    // Second offense: reverted, and the reviewer is told which paths.
+    const review = MockAdapter.turns.find((x) => /<diffstat/.test(x.text));
+    expect(review?.text).toMatch(/<reverted_out_of_scope[^>]*>\s*outside\/leak\.txt/);
     const integ = git(root, "branch", "--list", "hexagon/*/integration", "--format=%(refname:short)").split("\n")[0]!;
     expect(git(root, "ls-tree", "-r", "--name-only", integ)).not.toContain("outside/leak.txt");
     expect(git(root, "ls-tree", "-r", "--name-only", integ)).toContain("src/a.txt");

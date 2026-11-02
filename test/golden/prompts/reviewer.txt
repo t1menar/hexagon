@@ -19,6 +19,7 @@ running the `hexagon` shell command (it is on your PATH; always run it as a sepa
 - `hexagon review approve --summary "<one or two sentences>"`, or
 - `hexagon review changes --summary "<…>" --finding "high: <file:line> <issue> -> <fix>" [--finding "medium: …"]`
   exactly once, as your last action. You must not modify files.
+- Only when a product decision you cannot infer from the spec decides the verdict: `hexagon review question --summary "<the decision you need>" [--option "…" …]`, then END YOUR TURN. The user's answer arrives as your next message and you finish with approve or changes. At most two questions per review.
 
 # Skills
 

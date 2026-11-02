@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { evaluateEvidence, missingEvidence } from "./evidence.js";
+import { classifyBlock } from "./replan.js";
+import { confirmByMutation, evaluateEvidence, missingEvidence, type MutationHost } from "./evidence.js";
 import { failureSignature, reviewSignature } from "./signature.js";
 import { DEFAULT_TEST_GLOBS, describeFlags, testIntegrity, type IntegrityFlag } from "./integrity.js";
 import fs from "node:fs";
@@ -61,6 +62,8 @@ export interface RunContext {
   agentEnv(agentId: string): Record<string, string>;
   /** Ask the user, before the work starts, to allow commands the task will need. Resolves with the ones they denied. */
   preapprove?(taskId: string, commands: string[], reason: string): Promise<string[]>;
+  /** A task stopped because the plan does not fit; ask for graph edits to the not-yet-started tail. */
+  replan?(task: Task, why: string, changed: string[]): void;
 }
 
 /** What was settled before the agent started: kept next to the status so a later question ("why did it start red?") has an answer. */
@@ -129,6 +132,12 @@ export class AgentRun {
   private checkpoint = "";
   /** Deleted, skipped or weakened tests since base: flagged for the reviewer and the report. */
   private integrity: IntegrityFlag[] = [];
+  /** Done runs that found out-of-scope changes. The first is a warning (nothing reverted); a repeat reverts. */
+  private scopeStrikes = 0;
+  /** Every path Hexagon reverted for being out of scope, shown to the reviewer. */
+  private scopeReverts: string[] = [];
+  /** Revert explanation not yet shown to the agent; prefixed to its next follow-up. */
+  private revertNotice = "";
   private takeoverCommit = "";
   private cancelled = false;
   private userDone = false;
@@ -384,7 +393,12 @@ export class AgentRun {
       if (r.status === "needs_spec_change" || r.status === "blocked") {
         this.notify(`${r.status.replace(/_/g, " ")}: ${[...r.blockers, ...r.spec_issues].join("; ") || r.summary}`);
         if (r.status === "needs_spec_change") this.ev({ type: "error", kind: "needs_spec_change", message: r.summary, retryable: false });
-        await this.commit();
+        await this.commit("final");
+        const why = [...r.blockers, ...r.spec_issues].join("; ") || r.summary;
+        const kind = classifyBlock(r.status, why);
+        this.ev({ type: "progress", text: `blocked (${kind}): ${why.slice(0, 200)}` });
+        if (kind === "plan") this.rc.replan?.(this.task, why, await g.changedFiles(this.worktree, this.baseCommit).catch(() => []));
+        else this.notify(`${this.task.id} is blocked by a ${kind === "tool" ? "missing tool or permission (hexagon exec/install)" : "scope problem (hexagon scope request)"}, not by the plan: ${why.slice(0, 200)}`);
         return this.final("blocked", r.status === "blocked" ? r.blockers.join("; ") || r.summary : `needs spec change: ${r.spec_issues.join("; ")}`);
       }
       if (r.status === "failed") {
@@ -396,8 +410,15 @@ export class AgentRun {
         continue;
       }
 
-      // 2. Scope + commit
-      await this.commit();
+      // 2. Scope + commit. A first offense is a warning: the agent is told what is outside its mask and nothing is reverted.
+      const maxFix = this.rc.cfg.run.max_fix_cycles;
+      const scope = await this.commit(maxFix <= 0 || fixLoops + 1 <= maxFix ? "warn" : "final");
+      if (scope.warn) {
+        this.ev({ type: "fix_cycle", n: ++fixLoops });
+        this.fixing = true;
+        followUp = this.scopeWarning(scope.warn);
+        continue;
+      }
 
       // 3. Verify
       this.fixing = false;
@@ -410,7 +431,7 @@ export class AgentRun {
         if (stuck) return this.final("failed", stuck);
         if (this.mayFix(++fixLoops) && !this.userDone) {
           this.fixing = true;
-          followUp = `Hexagon re-ran verification and it failed.\n\n$ ${v.cmd}\n(exit ${v.code})\n${this.excerpt(v.output, FIX_EXCERPT, "verify output")}\n\nFix the problem, re-run the command yourself, then run \`hexagon done\` again.`;
+          followUp = this.withNotice(`Hexagon re-ran verification and it failed.\n\n$ ${v.cmd}\n(exit ${v.code})\n${this.excerpt(v.output, FIX_EXCERPT, "verify output")}\n\nFix the problem, re-run the command yourself, then run \`hexagon done\` again.`);
           continue;
         }
         this.notify(this.escalation(`verification still fails after ${this.rc.cfg.run.max_fix_cycles} repair cycle(s)`, `\`${v.cmd}\` exited ${v.code}`));
@@ -421,6 +442,11 @@ export class AgentRun {
       if (r.acceptance_evidence.length) {
         const out = this.verifyLog.slice(-Math.max(1, this.task.verify.length)).map((x) => x.output).join("\n");
         r.acceptance_evidence = evaluateEvidence(this.worktree, r.acceptance_evidence, out);
+        // A string match proves little: a claimed test is verified only if it fails once the task's change is taken away.
+        if (r.acceptance_evidence.some((e) => e.verified)) {
+          this.st("verifying", "checking that claimed tests fail without the change");
+          r.acceptance_evidence = await confirmByMutation(r.acceptance_evidence, await this.mutationHost());
+        }
       }
 
       // 4. Review
@@ -440,7 +466,7 @@ export class AgentRun {
           if (stuck) return this.final("failed", stuck);
           if (this.mayFix(++fixLoops)) {
             this.fixing = true;
-            followUp = `The reviewer requested changes:\n${rv.summary}\n${rv.findings.map((f) => `- [${f.severity}] ${f.file ?? ""}${f.line ? `:${f.line}` : ""} ${f.issue}${f.suggestion ? ` → ${f.suggestion}` : ""}`).join("\n")}\n\nAddress the high and medium findings, then run \`hexagon done\` again.`;
+            followUp = this.withNotice(`The reviewer requested changes:\n${rv.summary}\n${rv.findings.map((f) => `- [${f.severity}] ${f.file ?? ""}${f.line ? `:${f.line}` : ""} ${f.issue}${f.suggestion ? ` → ${f.suggestion}` : ""}`).join("\n")}\n\nAddress the high and medium findings, then run \`hexagon done\` again.`);
             continue;
           }
           this.notify(this.escalation(`the reviewer still requests changes after ${this.rc.cfg.run.max_fix_cycles} repair cycle(s)`, rv.summary));
@@ -457,16 +483,16 @@ export class AgentRun {
         return this.final("blocked", integ.short);
       }
       if (integ.kind === "broken") {
-        this.ev({ type: "error", kind: "verify_failed", message: `post-merge: \`${integ.v.cmd}\` exited ${integ.v.code} on the integration branch`, retryable: true });
+        this.ev({ type: "error", kind: "verify_failed", message: `post-merge: \`${integ.v.cmd}\` (${integ.owner === this.task.id ? "this task's check" : `check of ${integ.owner}`}) exited ${integ.v.code} on the integration branch`, retryable: true });
         const stuck = this.noProgress(failureSignature(`post-merge ${integ.v.cmd}`, integ.v.code, integ.v.output));
         if (stuck) return this.final("failed", stuck);
         if (this.mayFix(++fixLoops)) {
           this.fixing = true;
-          followUp = `Your change passed its checks on its own, but after merging it into the integration branch (with what the other tasks delivered) this failed, so the merge was undone:\n\n$ ${integ.v.cmd}\n(exit ${integ.v.code})\n${this.excerpt(integ.v.output, FIX_EXCERPT, "verify output")}\n\nThe integration branch is now merged into your worktree. Make your change work together with it, re-run the command yourself, then run \`hexagon done\` again.`;
+          followUp = this.withNotice(`Your change passed its checks on its own, but after merging it into the integration branch (with what the other tasks delivered) ${integ.owner === this.task.id ? "your own check" : integ.owner === "final_verify" ? "the final check" : `the check of ${integ.owner}, which was already merged,`} failed, so the merge was undone:\n\n$ ${integ.v.cmd}\n(exit ${integ.v.code})\n${this.excerpt(integ.v.output, FIX_EXCERPT, "verify output")}\n\nThe integration branch is now merged into your worktree. Make your change work together with it, re-run the command yourself, then run \`hexagon done\` again.`);
           continue;
         }
         this.notify(this.escalation(`it passes alone but breaks the integration branch, after ${this.rc.cfg.run.max_fix_cycles} repair cycle(s)`, `\`${integ.v.cmd}\` exited ${integ.v.code}`));
-        return this.final("failed", `breaks the integration branch: ${integ.v.cmd}`);
+        return this.final("failed", `breaks the integration branch${integ.owner === this.task.id ? "" : ` (${integ.owner}'s check)`}: ${integ.v.cmd}`);
       }
       this.publishHandoff();
       return this.final("done");
@@ -548,7 +574,7 @@ export class AgentRun {
   private integrate(): Promise<
     | { kind: "merged" }
     | { kind: "blocked"; reason: string; short: string; detail: string }
-    | { kind: "broken"; v: { cmd: string; code: number; output: string } }
+    | { kind: "broken"; v: { cmd: string; code: number; output: string }; owner: string }
   > {
     return this.rc.integrationLock.run(async () => {
       const wt = this.rc.integration.worktree;
@@ -564,7 +590,29 @@ export class AgentRun {
         return { kind: "blocked" as const, short: m.conflict ? "merge conflict with integration branch" : "merge failed", detail: m.output,
           reason: m.conflict ? "merge conflict with the integration branch — resolve manually or /retry" : `merge failed: ${m.output}` };
       }
-      const v = await this.verify(wt);
+      // What must still hold on the integration branch. Each command is tagged with the task it belongs to so a failure
+      // can say whether this change broke its own check or an earlier task's.
+      const policy = this.rc.cfg.run.integration_verify;
+      const plan: { cmd: string; owner: string }[] = this.task.verify.map((cmd) => ({ cmd, owner: this.task.id }));
+      if (policy !== "task") {
+        for (const t of this.rc.tasks) {
+          if (t.id === this.task.id || this.rc.store.byTask(t.id)?.state !== "done") continue;
+          for (const cmd of t.verify) plan.push({ cmd, owner: t.id });
+        }
+      }
+      if (policy === "full") for (const cmd of this.rc.cfg.run.final_verify) plan.push({ cmd, owner: "final_verify" });
+      const seen = new Set<string>();
+      let v: { ok: boolean; cmd: string; code: number; output: string } = { ok: true, cmd: "", code: 0, output: "" };
+      let owner: string = this.task.id;
+      this.abort = new AbortController();
+      for (const step of plan) {
+        if (seen.has(step.cmd)) continue;
+        seen.add(step.cmd);
+        this.ev({ type: "progress", text: `verify on integration (${step.owner}): ${step.cmd}` });
+        const r = await runShell(step.cmd, wt, this.rc.cfg.sandbox.command_timeout_s, this.abort.signal);
+        this.verifyLog.push({ cmd: step.cmd, code: r.code, output: r.output });
+        if (r.code !== 0) { v = { ok: false, cmd: step.cmd, code: r.code, output: r.output }; owner = step.owner; break; }
+      }
       if (v.ok) return { kind: "merged" as const };
       await g.resetHard(wt, pre);
       const back = await g.merge(this.worktree, this.rc.integration.branch, `Merge integration into ${this.task.id} to reproduce a post-merge failure`);
@@ -573,7 +621,7 @@ export class AgentRun {
           reason: `${this.task.id} breaks the integration branch (\`${v.cmd}\`), and merging that branch into its worktree conflicts. Resolve it manually or /retry.` };
       }
       this.checkpoint = await g.revParse(this.worktree, "HEAD");
-      return { kind: "broken" as const, v };
+      return { kind: "broken" as const, v, owner };
     });
   }
 
@@ -1063,17 +1111,29 @@ export class AgentRun {
     this.ev({ type: "error", kind: "scope_violation", message: rewritten ? "the agent rewrote git history; its changes were kept as plain edits and checked against the scope" : "the agent made its own git commits; they were folded into one Hexagon commit and checked against the scope", retryable: false });
   }
 
-  private async commit(): Promise<void> {
+  /**
+   * Commit what the agent did. Changes outside the write mask: the first time they are reported back to the agent and
+   * nothing is committed or reverted ("warn"); if they are still there on the next done (or the agent cannot be
+   * given another round), they are reverted and the reason goes into the next follow-up and the reviewer's input.
+   */
+  private async commit(mode: "warn" | "final" = "final"): Promise<{ warn?: string[] }> {
     if (!this.userDone) await this.normaliseHistory();
     const changed = await g.uncommittedFiles(this.worktree);
     if (!this.userDone) {
       const outside = changed.filter((f) => !matchesAny(f, this.task.files.write));
+      if (outside.length && mode === "warn" && this.scopeStrikes === 0) {
+        this.scopeStrikes++;
+        this.ev({ type: "error", kind: "scope_violation", message: `out-of-scope changes (not reverted yet, the agent was told): ${outside.join(", ")}`, retryable: true });
+        return { warn: outside };
+      }
       for (const f of outside) {
         const tracked = (await g.git(this.worktree, ["ls-files", "--error-unmatch", f])).ok;
         if (tracked) await g.git(this.worktree, ["checkout", "--", f]);
         else fs.rmSync(path.join(this.worktree, f), { force: true, recursive: true });
       }
       if (outside.length) {
+        this.scopeReverts.push(...outside.filter((f) => !this.scopeReverts.includes(f)));
+        this.revertNotice = `Hexagon reverted these paths because they are outside this task's write scope${this.scopeStrikes ? " and were still there after the earlier warning" : ""}: ${outside.join(", ")}. Write scope: ${this.task.files.write.join(", ") || "(empty)"}. Anything your work needs from them must live inside the scope.`;
         this.ev({ type: "error", kind: "scope_violation", message: `reverted out-of-scope changes: ${outside.join(", ")}`, retryable: false });
       }
     }
@@ -1087,6 +1147,19 @@ export class AgentRun {
     const files = await g.changedFiles(this.worktree, this.baseCommit);
     if (files.length) this.ev({ type: "files", files });
     if (this.result) this.result.files_changed = files;
+    return {};
+  }
+
+  /** What the agent is told on the first out-of-scope finding. */
+  private scopeWarning(outside: string[]): string {
+    return `Hexagon found changes outside this task's write scope. Nothing was reverted yet and nothing was committed.\n\nOutside the scope:\n${outside.map((f) => `- ${f}`).join("\n")}\n\nWrite scope: ${this.task.files.write.join(", ") || "(empty)"}\n\nChoose one:\n1. Drop the changes: restore tracked files with \`git checkout -- <path>\`, delete files you created.\n2. Move the work into a file inside the scope.\n3. If the task cannot be done without these files, finish with \`hexagon done --status needs_spec_change --issue "<paths and why>"\` so the plan can be changed.\n\nThen run \`hexagon done\` again. If these paths are still changed then, Hexagon reverts them and tells you.`;
+  }
+
+  /** Prefix a follow-up with a pending explanation of what Hexagon reverted (once). */
+  private withNotice(text: string): string {
+    const n = this.revertNotice;
+    this.revertNotice = "";
+    return n ? `${n}\n\n${text}` : text;
   }
 
   private async verify(cwd = this.worktree): Promise<{ ok: boolean; cmd: string; code: number; output: string }> {
@@ -1110,12 +1183,21 @@ export class AgentRun {
     }
     const id = `${this.agentRunId}.review`;
     let verdict: ReviewVerdict | undefined;
+    let asked: { prompt: string; options: string[] } | undefined;
+    let reviewQuestions = 0;
     const api: AgentApi = {
       report: (r) => { this.ev({ type: "progress", text: `review: ${r.activity ?? ""}` }); return ok("ok"); },
       ask: () => ({ ok: false, message: "Reviewers can't ask the user; put open points in your findings." }),
       note: () => ok("ok"),
       done: () => ({ ok: false, message: "Reviewers finish with `hexagon review approve|changes`." }),
       review: (v) => {
+        if ((v.verdict as string) === "question") {
+          if (asked) return { ok: false, message: "You already asked a question; end your turn and wait for the answer." };
+          if (!v.summary?.trim()) return { ok: false, message: 'usage: hexagon review question --summary "<the decision you need>" [--option "…"]' };
+          if (reviewQuestions >= this.rc.cfg.messaging.max_blocking_questions) return { ok: false, message: "Question limit reached for this review. Decide with what you have: approve, or request changes and say what is unclear." };
+          asked = { prompt: v.summary.trim(), options: ((v as { options?: string[] }).options ?? []) };
+          return ok("Question sent to the user. End your turn now; the answer arrives as your next message and you then finish with approve or changes.");
+        }
         const verdictName = (v.verdict as string) === "changes" ? "request_changes" : v.verdict;
         verdict = { verdict: verdictName as ReviewVerdict["verdict"], summary: v.summary ?? "", findings: v.findings ?? [] };
         return ok("Review recorded. End your turn now.");
@@ -1157,15 +1239,17 @@ export class AgentRun {
         `<developer_claim unverified="true" note="what the developer says; nothing in it is checked unless marked above">\n${JSON.stringify(compactReport(this.result))}\n</developer_claim>`,
         `Review task ${this.task.id}. You may read files and run the verify commands. Finish with \`hexagon review\`.`,
       ].filter(Boolean).join("\n\n");
+      let turn = prompt;
+      for (;;) {
       this.abort = new AbortController();
       const out = await reviewer.run(this.ctx({
         role: "reviewer",
         sessionId: res.sessionId,
         resume: res.resume,
         handle: res.record.nativeHandle ?? null,
-        followUp: res.resume ? prompt : undefined,
+        followUp: res.resume ? turn : undefined,
         freshTask: true,
-        prompt,
+        prompt: turn,
         system: systemPrompt(this.rc.paths, "reviewer", this.rc.skills, this.rc.context, this.rc.cfg.roles.reviewer),
         readOnly: true,
         api,
@@ -1179,12 +1263,26 @@ export class AgentRun {
           drainInbox: () => [],
           onInbox: () => () => undefined,
           received: () => undefined,
-          isFinished: () => verdict !== undefined,
+          isFinished: () => verdict !== undefined || asked !== undefined,
           hasBlockingQuestion: () => false,
         },
       }));
       if (out.kind !== "error") this.rc.sessions.confirm(lease.agentId);
-      if (out.kind === "error") this.ev({ type: "error", ...out.error! });
+      if (out.kind === "error") { this.ev({ type: "error", ...out.error! }); break; }
+      // The reviewer asked instead of judging: the question goes to the user, the answer comes back into this same review session.
+      if (!asked || verdict || this.cancelled) break;
+      const q = asked;
+      asked = undefined;
+      reviewQuestions++;
+      const answer = await this.askForReview(q.prompt, q.options);
+      if (answer === null) break;
+      res = this.rc.sessions.resolve({
+        agentId: lease.agentId, role: "reviewer", adapterId: reviewer.adapterId, model: reviewer.model,
+        promptHash: identityHash(this.rc.paths, "reviewer", this.rc.skills, this.rc.cfg.roles.reviewer), cwd: this.worktree,
+        resumeAcrossCwd: cap.resumeAcrossCwd, supportsResume: cap.supportsSessionResume,
+      });
+      turn = `The user answered your question ("${q.prompt}"): ${answer}\n\nContinue the review of ${this.task.id} and finish with \`hexagon review approve|changes\`.`;
+      }
     } finally {
       this.sink = prevSink;
       this.cause = prevCause;
@@ -1194,8 +1292,53 @@ export class AgentRun {
     return verdict;
   }
 
+  /**
+   * The mutation check's access to the worktree. The task's product files (changed, not tests) go back to the base
+   * commit, the test runs, and the worktree is reset to exactly where it was, even if the run throws.
+   */
+  private async mutationHost(): Promise<MutationHost> {
+    const tg = this.rc.cfg.run.test_globs;
+    const globs = tg.length ? tg : DEFAULT_TEST_GLOBS;
+    const changed = await g.changedFiles(this.worktree, this.baseCommit);
+    const product = changed.filter((f) => !matchesAny(f, globs));
+    const tmpl = this.rc.cfg.run.test_command.trim();
+    const q = (x: string) => `'${x.replace(/'/g, `'\\''`)}'`;
+    const cmds = (file: string, name: string): string[] => (tmpl ? [tmpl.replace(/\{file\}/g, q(file)).replace(/\{name\}/g, q(name))] : this.task.verify);
+    return {
+      productFiles: product,
+      how: tmpl ? "test_command" : "the task's verify commands, no [run].test_command set",
+      withoutChange: async (run) => {
+        const head = await g.revParse(this.worktree, "HEAD");
+        try {
+          for (const f of product) {
+            const atBase = (await g.git(this.worktree, ["cat-file", "-e", `${this.baseCommit}:${f}`])).ok;
+            if (atBase) await g.git(this.worktree, ["checkout", this.baseCommit, "--", f]);
+            else fs.rmSync(path.join(this.worktree, f), { force: true, recursive: true });
+          }
+          return await run();
+        } finally {
+          await g.resetHard(this.worktree, head);
+        }
+      },
+      runTest: async (file, name) => {
+        this.abort = new AbortController();
+        for (const cmd of cmds(file, name)) {
+          this.ev({ type: "progress", text: `mutation check: ${cmd}` });
+          const r = await runShell(cmd, this.worktree, this.rc.cfg.sandbox.command_timeout_s, this.abort.signal);
+          if (r.code !== 0) return r.code;
+        }
+        return 0;
+      },
+    };
+  }
+
   /** What Hexagon ran and saw, as opposed to what the developer says. */
   private verifySummary(): string {
+    const reverted = this.scopeReverts.length ? `\n<reverted_out_of_scope note="Hexagon reverted these paths: the developer changed files outside the write scope">\n${this.scopeReverts.join("\n")}\n</reverted_out_of_scope>` : "";
+    return this.verifyBody() + reverted;
+  }
+
+  private verifyBody(): string {
     const last = this.verifyLog.slice(-Math.max(1, this.task.verify.length));
     if (!this.task.verify.length) return `<verification>no verify command${this.task.verify_exempt ? ` (exempt: ${this.task.verify_exempt})` : ""}: nothing independent was run</verification>`;
     return `<verification note="run by Hexagon after the developer finished">\n${last.map((v) => `${v.code === 0 ? "pass" : "FAIL"} (exit ${v.code}): ${v.cmd}`).join("\n")}\n</verification>`;
@@ -1305,6 +1448,23 @@ export class AgentRun {
     };
   }
 
+  /** Open question ids raised by the reviewer: the answer resolves the waiting review instead of reaching the developer. */
+  private reviewWaiters = new Map<string, (answer: string | null) => void>();
+
+  /** A reviewer's question to the user. Resolves with the answer, or null if the task is cancelled first. */
+  private askForReview(prompt: string, options: string[]): Promise<string | null> {
+    const opts = options.map((label, i) => ({ id: String(i + 1), label }));
+    const q: NeedsInput = {
+      question_id: this.rc.router.newQuestionId(), kind: opts.length ? "choice" : "clarification", blocking: true, prompt: `Reviewer asks: ${prompt}`,
+      options: opts, default_option: null, auto_answer_after_s: null, asked_at: nowIso(), refs: [],
+    };
+    const [msg] = this.rc.router.send({ from: { kind: "agent", id: this.task.id }, to: { kind: "user" }, type: "question", body: q.prompt, question: q, priority: "urgent" });
+    this.questions.set(q.question_id, { q, messageId: msg!.id });
+    this.ev({ type: "question", question: q });
+    this.st("waiting_input", `${q.question_id}: ${q.prompt.slice(0, 120)}`);
+    return new Promise((resolve) => this.reviewWaiters.set(q.question_id, resolve));
+  }
+
   private ask(a: { prompt: string; options?: string[]; default?: string; blocking: boolean }): Reply {
     if (this.blockingAsked >= this.rc.cfg.messaging.max_blocking_questions) {
       return { ok: false, message: "Question limit reached for this task. Choose the most reasonable option, record it with `--assume` when you finish, and continue." };
@@ -1345,6 +1505,8 @@ export class AgentRun {
     this.ev({ type: "answered", question_id: questionId, answer });
     this.ev({ type: "chat", from: "user", text: answer });
     if (this.state === "waiting_input" && !this.questions.size) this.st(this.gate ? "paused" : this.fixing ? "fixing" : "working");
+    const waiter = this.reviewWaiters.get(questionId);
+    if (waiter) { this.reviewWaiters.delete(questionId); this.st("reviewing"); waiter(answer); return true; }
     // Delivered to the agent through its inbox (live, or when it resumes).
     this.rc.router.send({
       from: { kind: "user" }, to: { kind: "agent", id: this.task.id }, type: "answer",
@@ -1387,6 +1549,8 @@ export class AgentRun {
 
   cancel(): void {
     this.cancelled = true;
+    for (const w of this.reviewWaiters.values()) w(null);
+    this.reviewWaiters.clear();
     this.quotaWake?.();
     this.abort.abort();
     this.gate?.resolve();

@@ -1,4 +1,5 @@
 import type { Plan, Task } from "../contracts/types.js";
+import { checkPlan } from "./plan.js";
 
 /**
  * The control surface of Hexagon, defined once. The daemon executes these, JSON-RPC and the CLI expose
@@ -23,6 +24,9 @@ export const COMMANDS: readonly CommandDef[] = [
   { name: "graph.addNode", kind: "mutate", summary: "Add a task to the draft plan.", params: [
     p("title", "string", "what the task does", true), p("role", "string", "role that does it (developer, qa, …)", true),
     p("id", "string", "task id (default: next free T-n)"), p("depends_on", "string[]", "ids this task waits for"), p("description", "string", "details for the agent"),
+    p("write", "string[]", "files/globs the task may change (required: no scope, no work)", true),
+    p("verify", "string[]", "commands Hexagon re-runs to check the task (required unless verify_exempt)"),
+    p("verify_exempt", "string", "reason this task cannot be verified by a command"), p("read", "string[]", "files/globs it may read"),
   ] },
   { name: "graph.removeNode", kind: "destructive", summary: "Remove a task and its edges from the draft plan.", params: [p("id", "string", "task id", true)] },
   { name: "graph.addEdge", kind: "mutate", summary: "Make `to` wait for `from`. Cycles are refused.", params: [p("from", "string", "task that must finish first", true), p("to", "string", "task that waits", true)] },
@@ -119,9 +123,16 @@ export function applyGraph(plan: Plan, name: string, a: Record<string, unknown>)
       else { let n = next.tasks.length + 1; while (used.has(`T-${n}`)) n++; id = `T-${n}`; }
       const deps = (a.depends_on as string[] | undefined) ?? [];
       for (const d of deps) need(next, d);
+      const list = (v: unknown): string[] => (Array.isArray(v) ? v : typeof v === "string" && v ? [v] : []).map(String).map((x) => x.trim()).filter(Boolean);
+      const write = list(a.write), verify = list(a.verify);
+      const exempt = typeof a.verify_exempt === "string" ? a.verify_exempt.trim() : "";
+      // A task with no write scope cannot change anything (every edit would be out of scope); one with no verify has no independent check.
+      if (!write.length) throw new Error("graph.addNode needs `write`: the files or globs the task may change (an empty scope would make every change out of scope)");
+      if (!verify.length && !exempt) throw new Error("graph.addNode needs `verify` (commands Hexagon re-runs) or `verify_exempt` (why none can exist)");
       next.tasks.push({
         id, title: a.title as string, role: a.role as string, requirements: [], acceptance: [], depends_on: deps,
-        files: { write: [], read: [] }, skills: [], definition_of_done: [], verify: [], ...(a.description ? { description: a.description as string } : {}),
+        files: { write, read: list(a.read) }, skills: [], definition_of_done: [`${a.title as string}: the change is made and its verify commands pass`], verify,
+        ...(exempt && !verify.length ? { verify_exempt: exempt } : {}), ...(a.description ? { description: a.description as string } : {}),
       });
       break;
     }
@@ -150,6 +161,11 @@ export function applyGraph(plan: Plan, name: string, a: Record<string, unknown>)
     default: throw new Error(`not a graph command: ${name}`);
   }
   if (hasCycle(next.tasks)) throw new Error("that would create a cycle");
+  // The edited graph must still be a valid plan. Only problems this edit introduces count, so a draft that was already
+  // imperfect can still be repaired one edit at a time.
+  const had = new Set(checkPlan(plan).errors);
+  const introduced = checkPlan(next).errors.filter((e) => !had.has(e));
+  if (introduced.length) throw new Error(`that edit would leave the plan invalid: ${introduced.join("; ")}`);
   return next;
 }
 

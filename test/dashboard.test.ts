@@ -196,11 +196,16 @@ describe("dashboard (real App, fake daemon)", () => {
     const { app, client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     push(client, "run", { ...makeSnapshot({}).run, state: "done" });
     const key = (name: string) => (app as never as { onKey(s: undefined, k: { name: string }): void }).onKey(undefined, { name });
-    key("f2"); await settle(80);
-    expect(text()).not.toContain("INSPECTOR");
-    key("f2"); await settle(80);
-    expect(text()).toContain("INSPECTOR");
-    key("f3"); await settle(500);
+    key("f2");
+    await vi.waitFor(() => expect(text()).not.toContain("INSPECTOR"));
+    key("f2");
+    await vi.waitFor(() => expect(text()).toContain("INSPECTOR"));
+    key("f3");
+    await vi.waitFor(() => expect(text()).toContain("motion: off"));
+    // Wait on a condition, not on elapsed time: the frame in flight when motion went off may still be written; after that
+    // the write count must stop moving for a full quiet window.
+    let last = -1;
+    await vi.waitFor(() => { const now = writes; const quiet = now === last; last = now; expect(quiet).toBe(true); }, { timeout: 5000, interval: 250 });
     const before = writes;
     await settle(400);
     expect(writes).toBe(before);
@@ -430,13 +435,13 @@ describe("dashboard (real App, fake daemon)", () => {
     const { app, client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     client.reply["command.exec"] = { status: "done", result: {} };
     const a = app as never as { command(line: string): Promise<void> };
-    await a.command("/add qa Write the tests after t1,T-2");
+    await a.command("/add qa Write the tests in tests/a.test.ts,tests/b.test.ts verify npm test after t1,T-2");
     await a.command("/rm t3");
     await a.command("/link T-1 T-3");
     await a.command("/unlink T-1 T-3");
     const calls = client.calls.filter((c) => c.m === "command.exec").map((c) => c.p);
     expect(calls).toEqual([
-      { name: "graph.addNode", args: { role: "qa", title: "Write the tests", depends_on: ["T-1", "T-2"] } },
+      { name: "graph.addNode", args: { role: "qa", title: "Write the tests", write: ["tests/a.test.ts", "tests/b.test.ts"], verify: ["npm test"], depends_on: ["T-1", "T-2"] } },
       { name: "graph.removeNode", args: { id: "T-3" } },
       { name: "graph.addEdge", args: { from: "T-1", to: "T-3" } },
       { name: "graph.removeEdge", args: { from: "T-1", to: "T-3" } },
