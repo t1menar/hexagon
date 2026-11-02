@@ -25,6 +25,7 @@ import { formatTrace, trace, type TaskEvidence } from "../core/trace.js";
 import { WaitStore } from "../core/recovery.js";
 import { AgentBus, type BusActivity, type Envelope } from "../core/bus.js";
 import { commandDocs } from "../core/commands.js";
+import { AgentTokens } from "./auth.js";
 import { ControlService, type Proposal } from "./control.js";
 import { Approvals, ARTIFACT, checkStage, specHash, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
@@ -159,6 +160,8 @@ const PLANNER_COMMANDS = ["ls", "cat", "find", "grep", "rg", "head", "wc", "git 
 /** Owns the project state inside the daemon. All mutations go through here. */
 export class Orchestrator extends EventEmitter {
   readonly paths: ProjectPaths;
+  /** Tokens that identify agent processes to the RPC server. */
+  readonly tokens = new AgentTokens();
   readonly registry = new ApiRegistry();
   cfg: HexagonConfig;
   current: ActiveRun | null = null;
@@ -350,6 +353,7 @@ export class Orchestrator extends EventEmitter {
   agentEnv(agentId: string, extra: Record<string, string> = {}): Record<string, string> {
     const bin = this.shim();
     return {
+      HEXAGON_TOKEN: this.tokens.issue(agentId),
       HEXAGON_ROOT: this.root,
       HEXAGON_AGENT: agentId,
       HEXAGON_BIN: bin,
@@ -369,7 +373,17 @@ export class Orchestrator extends EventEmitter {
     if (!id) return { ok: false, message: "Hexagon could not tell which agent you are (HEXAGON_AGENT is not set)." };
     if (op === "exec" || op === "install" || op === "sudo") return this.brokerCall(id, cwd, op, args);
     if (op === "command") return this.agentCommand(id, args);
+    if (op === "goal") return this.agentGoal(id, args);
     return this.registry.call(id, op, args);
+  }
+
+  /** `hexagon plan "<goal>"` from the assistant: starts the analyst; the user still approves the spec and the plan. */
+  private agentGoal(agent: string, args: Record<string, unknown>): Reply {
+    if (agent !== "control") return { ok: false, message: "`hexagon plan` is only for the Hexagon Assistant." };
+    const goal = String(args.goal ?? "").trim();
+    if (!goal) return { ok: false, message: 'usage: hexagon plan "<goal>"' };
+    this.newGoal(goal);
+    return { ok: true, message: "Planning started. The draft spec and task graph will appear in the dashboard for the user to approve." };
   }
 
   /** `hexagon do …` from an agent. Only the control agent may use the command API, and it only proposes. */

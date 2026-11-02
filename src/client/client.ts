@@ -7,6 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ProjectPaths } from "../core/project.js";
 import type { Push } from "../daemon/orchestrator.js";
 import { selfCommand } from "../util/resources.js";
+import { readUserToken } from "../util/token.js";
 
 export const PROTOCOL = 2;
 
@@ -91,7 +92,8 @@ export class HexClient extends EventEmitter {
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      this.sock!.write(JSON.stringify({ id, method, params }) + "\n");
+      // An agent process carries its own token; anything else is the user and reads the token file.
+      this.sock!.write(JSON.stringify({ id, method, params, token: process.env.HEXAGON_TOKEN ?? readUserToken(this.paths.root) }) + "\n");
     });
   }
 

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { listResources, readResource } from "../util/resources.js";
+import { userTokenPath } from "../util/token.js";
 
 /** Walk up from cwd to the directory containing .hexagon/ (or a git root as a fallback). */
 export function findProjectRoot(start = process.cwd()): string | null {
@@ -34,6 +35,8 @@ export class ProjectPaths {
     const hash = createHash("sha1").update(this.root).digest("hex").slice(0, 12);
     return path.join("/tmp", `hexagon-${process.getuid?.() ?? 0}-${hash}.sock`);
   }
+  /** The user's RPC token: in the user's state directory, not in the project (see daemon/auth.ts). */
+  get userToken() { return userTokenPath(this.root); }
   get daemonInfo() { return path.join(this.hex, "daemon.json"); }
   get daemonLog() { return path.join(this.hex, "daemon.log"); }
   get roles() { return path.join(this.hex, "roles"); }
