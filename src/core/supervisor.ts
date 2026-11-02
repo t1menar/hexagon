@@ -90,6 +90,8 @@ export class AgentRun {
   /** Summary produced by the last compaction, re-sent as pinned context in the fresh session. */
   private compactSummary = "";
   private reviewerSummary = "";
+  /** The first review of a task starts a fresh reviewer context; later reviews (after fixes) resume it. */
+  private reviewedOnce = false;
   /** Provider-limit recovery bookkeeping: none of it touches quality fix cycles or attempts. */
   private waitCount = 0;
   private contextRecoveries = 0;
@@ -967,6 +969,8 @@ export class AgentRun {
     this.cause = "review";
     try {
       const cap = reviewer.capabilities;
+      // Independence: a reviewer that remembers earlier tasks carries their conclusions. Fresh per task, kept across fix loops.
+      if (!this.reviewedOnce) { this.rc.sessions.reset(lease.agentId, "independent review: a new context for every task"); this.reviewedOnce = true; }
       let res = this.rc.sessions.resolve({
         agentId: lease.agentId, role: "reviewer", adapterId: reviewer.adapterId, model: reviewer.model,
         promptHash: identityHash(this.rc.paths, "reviewer", this.rc.skills, this.rc.cfg.roles.reviewer), cwd: this.worktree,
@@ -983,10 +987,14 @@ export class AgentRun {
       const prompt = [
         taskCard(this.task, this.rc.specs, "", []),
         res.mode === "new" && this.reviewerSummary ? `Your earlier review notes (compacted):\n${this.reviewerSummary}` : "",
-        `<developer_report>\n${JSON.stringify(compactReport(this.result))}\n</developer_report>`,
+        // The spec and the diff come first: form your own view before reading what the developer says about it.
         `<diffstat base="${base}">\n${stat}\n</diffstat>`,
         `<diff base="${base}"${diff.length > REVIEW_DIFF ? ` truncated="true"` : ""}>\n${shown}\n</diff>`,
         diff.length > REVIEW_DIFF ? `The diff above was cut (${diff.length} chars). Read the rest per file: \`git diff ${base}...HEAD -- <file>\`.` : "",
+        this.verifySummary(),
+        this.integrity.length ? `<test_integrity note="found by Hexagon; look at each before approving">\n${describeFlags(this.integrity).join("\n")}\n</test_integrity>` : "",
+        this.evidenceSummary(),
+        `<developer_claim unverified="true" note="what the developer says; nothing in it is checked unless marked above">\n${JSON.stringify(compactReport(this.result))}\n</developer_claim>`,
         `Review task ${this.task.id}. You may read files and run the verify commands. Finish with \`hexagon review\`.`,
       ].filter(Boolean).join("\n\n");
       this.abort = new AbortController();
@@ -1022,6 +1030,19 @@ export class AgentRun {
       unregister();
     }
     return verdict;
+  }
+
+  /** What Hexagon ran and saw, as opposed to what the developer says. */
+  private verifySummary(): string {
+    const last = this.verifyLog.slice(-Math.max(1, this.task.verify.length));
+    if (!this.task.verify.length) return `<verification>no verify command${this.task.verify_exempt ? ` (exempt: ${this.task.verify_exempt})` : ""}: nothing independent was run</verification>`;
+    return `<verification note="run by Hexagon after the developer finished">\n${last.map((v) => `${v.code === 0 ? "pass" : "FAIL"} (exit ${v.code}): ${v.cmd}`).join("\n")}\n</verification>`;
+  }
+
+  private evidenceSummary(): string {
+    const ev = this.result?.acceptance_evidence ?? [];
+    if (!ev.length) return "";
+    return `<evidence note="verified = Hexagon confirmed it; claimed = only the developer said so">\n${ev.map((e) => `${e.ac} [${e.verified ? "verified" : "claimed"}] ${e.basis ?? ""} :: ${truncateMiddle(e.evidence, 200)}`).join("\n")}\n</evidence>`;
   }
 
   private async userResult(): Promise<ResultEnvelope> {

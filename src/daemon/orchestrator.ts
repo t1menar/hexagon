@@ -25,6 +25,7 @@ import { formatTrace, trace, type TaskEvidence } from "../core/trace.js";
 import { WaitStore } from "../core/recovery.js";
 import { AgentBus, type BusActivity, type Envelope } from "../core/bus.js";
 import { commandDocs } from "../core/commands.js";
+import { reviewerWarnings } from "../core/security.js";
 import { AgentTokens } from "./auth.js";
 import { ControlService, type Proposal } from "./control.js";
 import { Approvals, ARTIFACT, checkStage, isUntraced, specHash, type Stage } from "../core/pipeline.js";
@@ -684,7 +685,7 @@ export class Orchestrator extends EventEmitter {
     const plan = normalizePlan(readJson(path.join(out, "plan.json")), { id, specs: [path.relative(this.root, specPath)] });
     const planPath = path.join(this.paths.plans, `${id}.json`);
     atomicWriteJson(planPath, plan);
-    return { id, goal, out_dir: out, spec_path: specPath, plan_path: planPath, plan, check: checkPlan(plan, [parseSpec(specPath)]), summary };
+    return { id, goal, out_dir: out, spec_path: specPath, plan_path: planPath, plan, check: this.withAdvice(checkPlan(plan, [parseSpec(specPath)])), summary };
   }
 
   private saveDraft() {
@@ -698,7 +699,7 @@ export class Orchestrator extends EventEmitter {
     const d = this.draft;
     if (!d) throw new Error("no draft");
     const plan = normalizePlan(readJson(d.plan_path), { id: d.id, specs: [path.relative(this.root, d.spec_path)] });
-    this.draft = { ...d, plan, check: checkPlan(plan, [parseSpec(d.spec_path)]) };
+    this.draft = { ...d, plan, check: this.withAdvice(checkPlan(plan, [parseSpec(d.spec_path)])) };
     this.saveDraft();
     this.push({ event: "draft", data: this.draft });
     return this.draft;
@@ -1072,6 +1073,11 @@ export class Orchestrator extends EventEmitter {
       timer.unref?.();
       this.pendingDecisions.set(req.id, (d) => { clearTimeout(timer); resolve(d); });
     });
+  }
+
+  /** Warnings the user should see when approving a plan, beyond what the plan itself says. */
+  private withAdvice(c: PlanCheck): PlanCheck {
+    return { ...c, warnings: [...c.warnings, ...reviewerWarnings(this.cfg)] };
   }
 
   /**

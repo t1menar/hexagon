@@ -125,7 +125,8 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 
 export function taskCard(task: Task, specs: Spec[], notes: string, others: Task[] = []): string {
   const reqs = specs.flatMap((s) => s.requirements).filter((r) => task.requirements.includes(r.id));
-  const acs = reqs.flatMap((r) => r.acceptance.filter((a) => task.acceptance.includes(a.id)).map((a) => ({ req: r.id, ...a })));
+  // A task lists REQ-X/AC-1 (or a bare AC-1 when only one of its requirements has it).
+  const acs = reqs.flatMap((r) => r.acceptance.filter((a) => task.acceptance.includes(`${r.id}/${a.id}`) || task.acceptance.includes(a.id)).map((a) => ({ req: r.id, ...a })));
   const parts = [
     `<task id="${task.id}" role="${task.role}">`,
     `  <title>${esc(task.title)}</title>`,
@@ -134,7 +135,7 @@ export function taskCard(task: Task, specs: Spec[], notes: string, others: Task[
     ...reqs.map((r) => `    <req id="${r.id}" title="${esc(r.title)}">\n${esc(r.body)}\n    </req>`),
     reqs.length ? "  </requirements>" : "",
     "  <acceptance>",
-    ...(acs.length ? acs.map((a) => `    <ac id="${a.id}" req="${a.req}">${esc(a.text)}</ac>`) : task.acceptance.map((a) => `    <ac id="${a}"/>`)),
+    ...(acs.length ? acs.map((a) => `    <ac id="${a.req}/${a.id}">${esc(a.text)}</ac>`) : task.acceptance.map((a) => `    <ac id="${a}"/>`)),
     "  </acceptance>",
     `  <scope write="${esc(task.files.write.join(", "))}"${task.files.read.length ? ` read="${esc(task.files.read.join(", "))}"` : ""}/>`,
     "  <definition_of_done>",

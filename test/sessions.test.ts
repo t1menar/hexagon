@@ -166,7 +166,7 @@ describe("one session per agent identity (mock agent)", () => {
   }
   const finished = (client: HexClient) => until(async () => { const r = await client.call<RunStatus>("run.status"); return r.state === "done" ? r : null; });
 
-  it("3 sequential tasks of one role: exactly 1 session created, 2 resumed — and the same for reviews", async () => {
+  it("3 sequential tasks of one role: the developer keeps one session; every task gets a fresh reviewer context", async () => {
     const root = project();
     const { client, server } = await boot(root);
     await client.call("run.start", { plan_path: chain(root, 3) });
@@ -176,7 +176,9 @@ describe("one session per agent identity (mock agent)", () => {
     const dev = events.filter((e) => e.agent === "developer-1");
     expect(dev.map((e) => e.kind)).toEqual(["created", "resumed", "resumed"]);
     const rev = events.filter((e) => e.agent === "reviewer-1");
-    expect(rev.map((e) => e.kind)).toEqual(["created", "resumed", "resumed"]);
+    // Review independence outranks session reuse: one new context per task (a reviewer that remembers earlier tasks carries their verdicts).
+    expect(rev.filter((e) => e.kind === "created")).toHaveLength(3);
+    expect(rev.some((e) => e.kind === "resumed")).toBe(false);
     expect(events.some((e) => e.agent === "developer-2")).toBe(false);
     const t3 = await client.call<AgentStatus>("agent.status", { task: "T-3" });
     expect(t3.session).toMatchObject({ agent: "developer-1", mode: "resumed" });

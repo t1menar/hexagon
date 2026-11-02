@@ -92,3 +92,20 @@ describe("implementation → verification → review loop", () => {
     expect(s.attempt).toBe(1);
   }, 60000);
 });
+
+describe("review independence", () => {
+  it("within one task the reviewer's session is kept across fix loops", async () => {
+    MockAdapter.reviews.clear();
+    const root = project();
+    const s = new DaemonServer(root); await s.listen();
+    const c = await HexClient.connect(root, { autostart: false });
+    try {
+      await c.call("run.start", { plan_path: plan(root, "@reject: 2") });
+      await until(async () => { const x = await c.call<AgentStatus>("agent.status", { task: "T-1" }); return x.state === "done" ? x : null; }, 60000);
+      const rev = s.orch.agentSessions.events().filter((e) => e.agent === "reviewer-1").map((e) => e.kind);
+      expect(rev[0]).toBe("created");
+      expect(rev.filter((k) => k === "created")).toHaveLength(1);
+      expect(rev.filter((k) => k === "resumed")).toHaveLength(2); // 3 reviews: one session
+    } finally { c.close(); s.orch.shutdown(); }
+  }, 90000);
+});
