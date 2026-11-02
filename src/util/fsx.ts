@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { redactDeep } from "./redact.js";
 
 export function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
@@ -11,7 +12,7 @@ export function atomicWriteJson(file: string, data: unknown): void {
   const tmp = `${file}.${process.pid}.tmp`;
   const fd = fs.openSync(tmp, "w");
   try {
-    fs.writeSync(fd, JSON.stringify(data, null, 2) + "\n");
+    fs.writeSync(fd, JSON.stringify(redactDeep(data), null, 2) + "\n");
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
@@ -21,7 +22,7 @@ export function atomicWriteJson(file: string, data: unknown): void {
 
 export function appendJsonl(file: string, data: unknown): void {
   ensureDir(path.dirname(file));
-  fs.appendFileSync(file, JSON.stringify(data) + "\n");
+  fs.appendFileSync(file, JSON.stringify(redactDeep(data)) + "\n");
 }
 
 export function readJsonl<T>(file: string): T[] {
