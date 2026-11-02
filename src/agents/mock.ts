@@ -130,6 +130,12 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         const rj = /@reject:\s*(\d+|always)/.exec(ctx.task?.description ?? "");
         const n = (MockAdapter.reviews.get(ctx.task?.id ?? "") ?? 0) + 1;
         MockAdapter.reviews.set(ctx.task?.id ?? "", n);
+        // `@review-question: <text>`: ask the user instead of judging, on the first review turn only (test hook).
+        const rq = /@review-question:\s*(.+)$/m.exec(ctx.task?.description ?? "");
+        if (rq && n === 1) {
+          api.review({ verdict: "question", summary: rq[1]!.trim(), findings: [], options: ["Yes", "No"] } as never);
+          return { kind: "finished" };
+        }
         if (rj && (rj[1] === "always" || n <= Number(rj[1]))) {
           const same = /@reject-same/.test(ctx.task?.description ?? "");
           api.review({ verdict: "request_changes", summary: same ? "Mock review: not good enough." : `Mock review #${n}: please improve.`, findings: [{ severity: "high", issue: same ? "still wrong" : `issue ${n}`, file: same ? "src/a.txt" : `src/a-${n}.txt` }] });

@@ -691,7 +691,8 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
     }
     case "review": {
       const verdict = a.shift();
-      if (verdict !== "approve" && verdict !== "changes") { console.error("usage: hexagon review approve|changes --summary \"…\" [--finding \"high: file:line issue -> fix\"]"); process.exit(2); }
+      if (verdict !== "approve" && verdict !== "changes" && verdict !== "question") { console.error("usage: hexagon review approve|changes|question --summary \"…\" [--finding \"high: file:line issue -> fix\"] [--option \"…\"]"); process.exit(2); }
+      const options = multi(a, "--option");
       const summary = one(a, "--summary") ?? a.join(" ");
       const findings = multi(a, "--finding").map((f) => {
         const m = /^\s*(high|medium|low)\s*:\s*(?:([^\s:]+\.[\w]+)(?::(\d+))?\s+)?([\s\S]*?)(?:\s*->\s*([\s\S]*))?$/i.exec(f);
@@ -699,7 +700,7 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
           ? { severity: m[1]!.toLowerCase(), ...(m[2] ? { file: m[2] } : {}), ...(m[3] ? { line: Number(m[3]) } : {}), issue: m[4]!.trim(), ...(m[5] ? { suggestion: m[5].trim() } : {}) }
           : { severity: "medium", issue: f };
       });
-      params = { verdict, summary, findings };
+      params = { verdict, summary, findings, options };
       op = "review";
       break;
     }
