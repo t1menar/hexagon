@@ -29,7 +29,7 @@ describe("scope is enforced on committed changes too", () => {
     fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/agent = "claude"/g, 'agent = "mock"').replace("step_ms = 600", "step_ms = 30"));
     git(root, "add", "-A"); git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hexagon init");
     const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [],
-      tasks: [{ id: "T-1", title: "Write", role: "developer", requirements: [], acceptance: ["AC-1"], depends_on: [], files: { write: ["src/a.txt"], read: [] }, skills: [], definition_of_done: ["done"], verify: [], description: "@commit-outside" }] };
+      tasks: [{ id: "T-1", title: "Write", role: "developer", requirements: [], acceptance: ["AC-1"], depends_on: [], files: { write: ["src/a.txt"], read: [] }, skills: [], definition_of_done: ["done"], verify: [], verify_exempt: "test fixture", description: "@commit-outside" }] };
     const plan = path.join(root, "plan.json"); fs.writeFileSync(plan, JSON.stringify(p));
     const s = new DaemonServer(root); await s.listen();
     const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });

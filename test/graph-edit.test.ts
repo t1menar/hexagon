@@ -24,7 +24,7 @@ function project(): string {
   git(root, "add", "-A"); git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hexagon init");
   return root;
 }
-const task = (id: string, deps: string[], description = ""): Task => ({ id, title: `Task ${id}`, role: "developer", requirements: [], acceptance: [], depends_on: deps, files: { write: [`src/${id}.txt`], read: [] }, skills: [], definition_of_done: ["done"], verify: [], description });
+const task = (id: string, deps: string[], description = ""): Task => ({ id, title: `Task ${id}`, role: "developer", requirements: [], acceptance: [], depends_on: deps, files: { write: [`src/${id}.txt`], read: [] }, skills: [], definition_of_done: ["done"], verify: [], verify_exempt: "test fixture", description });
 
 describe("editing a running graph", () => {
   const open: { s: DaemonServer; c: HexClient }[] = [];

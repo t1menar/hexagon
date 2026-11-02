@@ -32,7 +32,7 @@ const plan: Plan = {
   schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [],
   tasks: Array.from({ length: 4 }, (_, i) => ({
     id: `T-${i + 1}`, title: `Add module ${i + 1}`, role: "developer" as const, requirements: [], acceptance: ["AC-1", "AC-2"],
-    depends_on: i ? [`T-${i}`] : [], files: { write: [`src/new${i + 1}.ts`], read: [] }, skills: [], definition_of_done: ["works"], verify: [],
+    depends_on: i ? [`T-${i}`] : [], files: { write: [`src/new${i + 1}.ts`], read: [] }, skills: [], definition_of_done: ["works"], verify: [], verify_exempt: "benchmark fixture",
   })),
 };
 const planFile = path.join(root, "plan.json");

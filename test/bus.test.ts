@@ -154,7 +154,7 @@ describe("two agents on the bus (mock)", () => {
     fs.writeFileSync(cfgFile, fs.readFileSync(cfgFile, "utf8").replace(/agent = "claude"/g, 'agent = "mock"').replace("step_ms = 600", "step_ms = 20"));
     git(root, "add", "-A");
     git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hexagon init");
-    const mk = (id: string, deps: string[], description = ""): Plan["tasks"][number] => ({ id, title: `Task ${id}`, role: "developer", requirements: [], acceptance: ["AC-1"], depends_on: deps, files: { write: [`src/${id}.txt`], read: [] }, skills: [], definition_of_done: [], verify: [], description });
+    const mk = (id: string, deps: string[], description = ""): Plan["tasks"][number] => ({ id, title: `Task ${id}`, role: "developer", requirements: [], acceptance: ["AC-1"], depends_on: deps, files: { write: [`src/${id}.txt`], read: [] }, skills: [], definition_of_done: [], verify: [], verify_exempt: "test fixture", description });
     const plan: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [], tasks: [mk("T-1", [], "@decide: ids are UUIDv7"), mk("T-2", ["T-1"])] };
     fs.writeFileSync(path.join(root, "plan.json"), JSON.stringify(plan));
     const server = new DaemonServer(root);

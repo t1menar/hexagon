@@ -20,24 +20,54 @@ export function checkPlan(plan: unknown, specs: Spec[] = []): PlanCheck {
   for (const t of p.tasks) {
     for (const d of t.depends_on) if (!ids.has(d)) errors.push(`${t.id} depends on unknown task ${d}`);
     if (t.depends_on.includes(t.id)) errors.push(`${t.id} depends on itself`);
-    if (t.verify.length === 0) warnings.push(`${t.id} has no verify commands; only the agent's own report will be checked`);
+    if (t.verify.length === 0 && !t.verify_exempt) errors.push(`${t.id} has no verify command, so nothing independent can check it. Add one, or set "verify_exempt": "<reason>" for work that cannot be run (docs, config)`);
+    if (t.verify.length && t.verify_exempt) warnings.push(`${t.id} has both verify and verify_exempt; the exemption is ignored`);
   }
   const order = topoOrder(p.tasks);
   if (order === null) errors.push("dependency cycle detected");
 
   if (specs.length) {
     const covered = new Set<string>();
-    for (const t of p.tasks) for (const req of t.requirements) for (const ac of t.acceptance) covered.add(`${req}/${ac}`);
+    for (const t of p.tasks) {
+      const q = qualifyAcceptance(t, specs);
+      q.problems.forEach((x) => errors.push(x));
+      q.ids.forEach((id) => covered.add(id));
+    }
     const knownReqs = new Set<string>();
     for (const s of specs) {
       for (const r of s.requirements) {
         knownReqs.add(r.id);
-        for (const ac of r.acceptance) if (!covered.has(`${r.id}/${ac.id}`)) warnings.push(`${r.id}/${ac.id} is not covered by any task`);
+        for (const ac of r.acceptance) if (!covered.has(`${r.id}/${ac.id}`)) errors.push(`${r.id}/${ac.id} is not covered by any task (a task must list it under "acceptance" and cite ${r.id})`);
       }
     }
-    for (const t of p.tasks) for (const r of t.requirements) if (!knownReqs.has(r)) warnings.push(`${t.id} references unknown requirement ${r}`);
+    for (const t of p.tasks) for (const r of t.requirements) if (!knownReqs.has(r)) errors.push(`${t.id} references unknown requirement ${r}`);
+    for (const t of p.tasks) if (!t.requirements.length) warnings.push(`${t.id} cites no requirement: the spec does not cover it, so the user has to approve it to run`);
   }
   return { errors, warnings, order: order ?? [] };
+}
+
+/**
+ * Acceptance criteria are `REQ-X/AC-1`. The old bare `AC-1` is accepted when exactly one of the task's requirements has
+ * that criterion; if two do, the task must say which (a bare id would count for both).
+ */
+export function qualifyAcceptance(t: Pick<Task, "id" | "requirements" | "acceptance">, specs: Spec[]): { ids: string[]; problems: string[] } {
+  const ids: string[] = [];
+  const problems: string[] = [];
+  const reqs = new Map(specs.flatMap((s) => s.requirements).map((r) => [r.id, r]));
+  for (const ac of t.acceptance) {
+    if (ac.includes("/")) {
+      const [req, id] = ac.split("/") as [string, string];
+      if (!t.requirements.includes(req)) problems.push(`${t.id} lists ${ac}, but does not cite ${req}`);
+      else if (reqs.has(req) && !reqs.get(req)!.acceptance.some((a) => a.id === id)) problems.push(`${t.id} lists ${ac}, but ${req} has no ${id}`);
+      else ids.push(ac);
+      continue;
+    }
+    const owners = t.requirements.filter((r) => reqs.get(r)?.acceptance.some((a) => a.id === ac));
+    if (owners.length === 1) ids.push(`${owners[0]}/${ac}`);
+    else if (owners.length > 1) problems.push(`${t.id} lists ${ac}, which ${owners.join(" and ")} both define. Write ${owners.map((o) => `${o}/${ac}`).join(" or ")}`);
+    else if (t.requirements.length) problems.push(`${t.id} lists ${ac}, which none of its requirements (${t.requirements.join(", ")}) define`);
+  }
+  return { ids, problems };
 }
 
 export function topoOrder(tasks: Task[]): string[] | null {
