@@ -10,10 +10,10 @@ import { lintSpec, parseSpec, type Spec } from "./spec.js";
  * only when that file validates. The spec additionally needs the user's approval before a plan is derived from it,
  * and no task that cites requirements runs unless the approved spec still matches the file on disk.
  */
-export type Stage = "analyze" | "specify" | "plan";
+export type Stage = "analyze" | "spike" | "specify" | "plan" | "replan";
 export const STAGES: readonly Stage[] = ["analyze", "specify", "plan"];
 
-export const ARTIFACT: Record<Stage, string> = { analyze: "analysis.md", specify: "spec.md", plan: "plan.json" };
+export const ARTIFACT: Record<Stage, string> = { analyze: "analysis.md", specify: "spec.md", plan: "plan.json", replan: "replan.json", spike: "spike.md" };
 
 const ANALYSIS_SECTIONS = ["current state", "constraints", "risks", "open questions", "impacted areas"];
 const DESIGN_SECTIONS = ["interfaces", "data flow", "trade-offs"];
@@ -75,17 +75,57 @@ export function recommendMode(analysis: string): { mode: Mode; reason: string } 
   return { mode: "single-task", reason: modules.size ? `${modules.size} module(s), ${slices} independent slice(s): one agent with full checks is enough` : "scope unclear: one agent with full checks is the safe default" };
 }
 
+/** `- S-1: question` lines under the analysis's Spike section. */
+export function parseSpikes(analysis: string): { id: string; question: string }[] {
+  const body = sections(analysis).get("spike") ?? "";
+  return [...body.matchAll(/^\s*[-*]\s*(S-\d+)\s*[:.\-]\s*(.+)$/gim)].map((m) => ({ id: m[1]!.toUpperCase(), question: m[2]!.trim() }));
+}
+
+/**
+ * Signs in analysis.md that the next step cannot be a spec yet: the cause is unknown, the change crosses an API or
+ * schema, or the module boundaries are unclear. Each is a reason to look before writing requirements.
+ */
+export function spikeTriggers(analysis: string): string[] {
+  const s = sections(analysis);
+  const cur = `${s.get("current state") ?? ""}\n${s.get("open questions") ?? ""}`;
+  const out: string[] = [];
+  if (/\b(?:root cause|cause)\b[^.\n]{0,40}\b(?:unknown|unclear|not (?:yet )?(?:known|understood|found))\b|\bunknown (?:root )?cause\b|\bnot sure why\b|\bcannot reproduce\b/i.test(cur)) out.push("the cause is unknown");
+  const wide = `${s.get("constraints") ?? ""}\n${s.get("risks") ?? ""}\n${s.get("impacted areas") ?? ""}`;
+  if (/\b(?:cross[- ]cutting|schema change|breaking (?:api )?change|public api|data migration|wire format)\b/i.test(wide)) out.push("the change is cross-cutting (API, schema or migration)");
+  if (/\b(?:module )?boundar(?:y|ies)\b[^.\n]{0,30}\b(?:unclear|unknown|undefined|fuzzy)\b|\bunclear (?:module )?boundar/i.test(`${cur}\n${wide}`)) out.push("module boundaries are unclear");
+  return out;
+}
+
+/** spike.md answers every spike the analysis listed and ends in a decision. */
+export function checkSpike(text: string, dir: string): string[] {
+  const errors = missingSections(text, ["findings", "decision"], "spike.md");
+  const file = path.join(dir, "analysis.md");
+  const asked = fs.existsSync(file) ? parseSpikes(fs.readFileSync(file, "utf8")) : [];
+  for (const q of asked) if (!new RegExp(`\\b${q.id}\\b`, "i").test(text)) errors.push(`spike.md does not answer ${q.id}: ${q.question.slice(0, 80)}`);
+  if (!/\b[\w./-]+\.\w+:\d+/.test(text)) errors.push("spike.md cites no evidence: give file:line for what you found");
+  return errors;
+}
+
 export const checkAnalysis = (text: string): string[] => missingSections(text, ANALYSIS_SECTIONS, "analysis.md");
 export const checkDesign = (text: string): string[] => missingSections(text, DESIGN_SECTIONS, "design.md");
 
 /** Validate the artifact of a stage that is not the plan (the plan is checked by plan-check with its coverage rules). */
-export function checkStage(stage: "analyze" | "specify", dir: string, projectFiles?: string[]): { errors: string[]; warnings: string[] } {
+export function checkStage(stage: "analyze" | "spike" | "specify" | "replan", dir: string, projectFiles?: string[], opts: { requireSpike?: boolean } = {}): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
   const file = path.join(dir, ARTIFACT[stage]);
   if (!fs.existsSync(file)) return { errors: [`missing ${ARTIFACT[stage]} in ${dir}`], warnings };
   const text = fs.readFileSync(file, "utf8");
-  if (stage === "analyze") return { errors: checkAnalysis(text), warnings };
+  if (stage === "analyze") {
+    errors.push(...checkAnalysis(text));
+    // Uncertainty that a spec cannot resolve must be explored first, or the spec is a guess the human is asked to approve.
+    const why = spikeTriggers(text);
+    if (why.length && opts.requireSpike !== false && !parseSpikes(text).length) {
+      errors.push(`analysis.md shows uncertainty (${why.join("; ")}) but has no "Spike" section. List one read-only investigation per unknown as "- S-1: <question to answer>"; the answers become inputs to the spec. (Turn this off with [run].require_spike = false.)`);
+    }
+    return { errors, warnings };
+  }
+  if (stage === "spike") return { errors: checkSpike(text, dir), warnings };
   const spec = parseSpec(file, text);
   for (const i of lintSpec(spec, projectFiles)) (i.level === "error" ? errors : warnings).push(`spec.md:${i.line} ${i.message}`);
   const design = path.join(dir, "design.md");

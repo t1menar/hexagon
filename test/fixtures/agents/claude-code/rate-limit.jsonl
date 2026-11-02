@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","model":"fixture-model"}
+{"type":"result","subtype":"error","is_error":true,"result":"API Error: 429 rate limit exceeded, retry after 30 seconds"}

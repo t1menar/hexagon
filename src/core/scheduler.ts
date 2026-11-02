@@ -1,8 +1,9 @@
 import { EventEmitter } from "node:events";
-import type { AgentState, Effort, Plan, Task } from "../contracts/types.js";
+import type { AgentState, Effort, Plan, RunStatus, Task } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
-import { atomicWriteJson, globToRegExp } from "../util/fsx.js";
+import { atomicWriteJson } from "../util/fsx.js";
 import { applyGraph } from "./commands.js";
+import { overlaps } from "./plan.js";
 import { roleConfig } from "./config.js";
 import { AgentRun, type RunContext } from "./supervisor.js";
 
@@ -33,6 +34,8 @@ export class Scheduler extends EventEmitter {
   private returns = new Map<string, number>();
   /** Tasks held back by the spec gate; they start by themselves once the spec is approved again. */
   private gated = new Set<string>();
+  /** Tasks already sent to replan because the approved spec changed under them (once each). */
+  private respecced = new Set<string>();
   private tasks: Task[];
   paused = false;
   aborted = false;
@@ -99,11 +102,13 @@ export class Scheduler extends EventEmitter {
     return this.overrides.get(t.id)?.effort ?? escalate(base, attempt - 1);
   }
 
-  private depsState(t: Task): { ready: boolean; failedDep?: string; waitingOn?: string } {
+  private depsState(t: Task): { ready: boolean; failedDep?: string; waitingOn?: string; replan?: boolean } {
     for (const d of t.depends_on) {
       if (!this.tasks.some((x) => x.id === d)) continue; // outside --only selection: assumed satisfied
       const o = this.outcome.get(d);
       if (o === "done") continue;
+      // Blocked by the plan and waiting for its replan: the tasks after it wait too, they are not failed by it.
+      if (this.awaitingReplan.has(d)) return { ready: false, waitingOn: d, replan: true };
       if (o && TERMINAL_STATES.has(o)) return { ready: false, failedDep: d };
       return { ready: false, waitingOn: d };
     }
@@ -162,14 +167,21 @@ export class Scheduler extends EventEmitter {
         changed = true;
         continue;
       }
-      if (!deps.ready) { this.reason(id, `waiting for ${deps.waitingOn}`); continue; }
+      if (!deps.ready) { this.reason(id, deps.replan ? `waiting for the replan of ${deps.waitingOn}` : `waiting for ${deps.waitingOn}`); continue; }
       if (this.paused) { this.reason(id, "run paused"); continue; }
+      if (this.checkpoint) { this.reason(id, "waiting for your check after the first merge (/resume)"); continue; }
       const gate = this.rc.gate?.(t);
       if (gate && !gate.ok) {
         const why = `spec gate: ${gate.problems[0]}`;
         this.rc.store.apply(id, { type: "state", state: "blocked", reason: why });
         this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `${t.id} did not start. ${why}. Review and approve the spec (hexagon approve-spec <file>); the task then starts by itself.` });
         this.gated.add(t.id);
+        // A requirement changed after approval: the tasks that cite it, and what depends on them, have not started. Re-plan them
+        // (a proposal the user confirms) instead of leaving them gated for good. Unattended runs keep the plain gate.
+        if (gate.changed.length && !this.respecced.has(t.id) && process.env.HEXAGON_NO_CHECKPOINT !== "1") {
+          this.respecced.add(t.id);
+          this.rc.replan?.(t, `the spec changed after approval: ${gate.problems[0]}`, []);
+        }
         this.outcome.set(t.id, "blocked");
         changed = true;
         continue;
@@ -224,12 +236,64 @@ export class Scheduler extends EventEmitter {
       this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `${t.id}: retrying (attempt ${attempt + 1}) with more effort` });
     } else {
       this.outcome.set(t.id, state);
+      this.maybeCheckpoint(t, state);
       if (waiting?.length) {
         this.waiters.delete(t.id);
         for (const w of waiting) w({ state, summary: run.outcomeSummary });
       }
     }
     this.tick();
+  }
+
+  /**
+   * Tasks blocked by the plan itself. Their dependents are not failed by it: they wait (still editable, the run stays open)
+   * until the replan is applied, the task is retried, or the run is aborted.
+   */
+  private awaitingReplan = new Set<string>();
+  private checkpointItem: RunStatus["attention"][number] | null = null;
+
+  awaitReplan(taskId: string): void {
+    if (!this.tasks.some((t) => t.id === taskId)) return;
+    this.awaitingReplan.add(taskId);
+    this.syncAttention();
+    this.tick();
+  }
+  /** The replan was applied or abandoned for this task. */
+  releaseReplan(taskId: string): void {
+    if (!this.awaitingReplan.delete(taskId)) return;
+    this.syncAttention();
+    // No tick here: the caller retries the task (or has edited its edges) first, so dependents are not judged against a stale outcome.
+  }
+  /** Re-evaluate what can start (after a caller changed the graph or outcomes). */
+  resumeScheduling(): void { this.tick(); }
+  get waitingForReplan(): string[] { return [...this.awaitingReplan]; }
+
+  private syncAttention(): void {
+    const items: RunStatus["attention"] = this.checkpointItem ? [this.checkpointItem] : [];
+    for (const id of this.awaitingReplan) items.push({ kind: "replan", task_id: id, text: `${id} is blocked by the plan; the tasks after it wait. Confirm the proposed change with /apply, or fix the plan by hand (/add, /rm, /link, /respec) and /retry ${id}.` });
+    this.rc.store.setAttention(items);
+  }
+
+  /** New starts are held after the first merge of a graph, until the human continues. Running tasks are not touched. */
+  private checkpoint = false;
+  private checkpointSeen = false;
+
+  /**
+   * The first task of a graph is merged: stop starting the rest until a human has asked "are we still building the right
+   * thing?". Cheap to answer, expensive to skip: every later task builds on this one.
+   */
+  private maybeCheckpoint(t: Task, state: AgentState): void {
+    if (state !== "done" || this.checkpointSeen) return;
+    this.checkpointSeen = true;
+    const resumed = [...(this.opts.prior?.values() ?? [])].some((p) => p.state === "done");
+    const rest = this.tasks.filter((x) => x.id !== t.id && !this.outcome.has(x.id) && !this.active.has(x.id));
+    // HEXAGON_NO_CHECKPOINT=1: for unattended runs and the test suite (nobody is there to say continue).
+    if (!this.rc.cfg.run.checkpoint_after_first || process.env.HEXAGON_NO_CHECKPOINT === "1" || resumed || this.tasks.length < 2 || !rest.length) return;
+    this.checkpoint = true;
+    const text = `${t.id} is merged. Before the other ${rest.length} task(s) start: are we still building the right thing? Look at /changes (or hexagon diff ${t.id}). Continue with /resume; change course with /respec, /add, /rm or /link.`;
+    this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: text });
+    this.checkpointItem = { kind: "checkpoint", task_id: t.id, text };
+    this.syncAttention();
   }
 
   /** User-initiated retry with optional overrides. */
@@ -242,8 +306,10 @@ export class Scheduler extends EventEmitter {
     const next = (this.attempts.get(taskId) ?? 0) + 1;
     this.attempts.set(taskId, next);
     this.outcome.delete(taskId);
+    this.awaitingReplan.delete(taskId);
     this.reviveDependents(taskId);
     this.createStatus(t, next);
+    this.syncAttention();
     if (!cur) this.tick(); // otherwise finish() of the cancelled run ticks
   }
 
@@ -253,6 +319,7 @@ export class Scheduler extends EventEmitter {
       const t = this.task(id);
       if (!t || this.rc.gate?.(t).ok === false) continue;
       this.gated.delete(id);
+      this.awaitingReplan.delete(id);
       this.outcome.delete(id);
       this.reviveDependents(id);
       this.rc.store.apply(`${id}-a${this.attempts.get(id)}`, { type: "state", state: "queued", reason: "spec approved" });
@@ -270,7 +337,9 @@ export class Scheduler extends EventEmitter {
   /** A task may be changed only while nothing of it exists yet: it never launched, has no outcome, is not running. */
   editable(id: string): boolean {
     const prior = this.opts.prior?.get(id);
-    return this.tasks.some((t) => t.id === id) && !this.active.has(id) && !this.outcome.has(id) && !this.last.has(id) && (!prior || prior.state === "queued");
+    // A task held back only because something it waits for failed (outcome "blocked", never launched) has not started either.
+    const unlaunchedBlock = this.outcome.get(id) === "blocked" && !this.last.has(id);
+    return this.tasks.some((t) => t.id === id) && !this.active.has(id) && (!this.outcome.has(id) || unlaunchedBlock) && !this.last.has(id) && (!prior || prior.state === "queued");
   }
 
   /** Why `id` cannot be edited, or null. */
@@ -292,7 +361,12 @@ export class Scheduler extends EventEmitter {
    */
   editGraph(name: "graph.addNode" | "graph.removeNode" | "graph.addEdge" | "graph.removeEdge", a: Record<string, unknown>): void {
     if (this.aborted || this.rc.store.runState === "aborted") throw new Error("the run was aborted");
-    if (this.rc.store.runState === "done") throw new Error("the run is finished; start a new one");
+    // A run that ended only because tasks are blocked is not over: the plan can still be repaired (replan). Reopen it.
+    if (this.rc.store.runState === "done") {
+      if (!this.tasks.some((t) => this.outcome.get(t.id) === "blocked")) throw new Error("the run is finished; start a new one");
+      this.rc.store.runState = "running";
+      this.rc.store.startHeartbeat();
+    }
     const next = applyGraph(this.plan, name, a); // throws on unknown ids and cycles
     if (name === "graph.removeNode") { const why = this.whyNotEditable(String(a.id)); if (why) throw new Error(why); }
     if (name === "graph.addEdge" || name === "graph.removeEdge") { const why = this.whyNotEditable(String(a.to)); if (why) throw new Error(why); }
@@ -395,8 +469,10 @@ export class Scheduler extends EventEmitter {
 
   resumeAll(): void {
     this.paused = false;
+    this.checkpoint = false;
+    this.checkpointItem = null;
     this.rc.store.runState = "running";
-    this.rc.store.setAttention([]);
+    this.syncAttention();
     for (const r of this.active.values()) r.resume();
     this.tick();
   }
@@ -427,7 +503,7 @@ export class Scheduler extends EventEmitter {
   }
 
   private checkDone(): void {
-    if (this.active.size === 0 && this.tasks.every((t) => this.outcome.has(t.id))) {
+    if (this.active.size === 0 && this.awaitingReplan.size === 0 && this.tasks.every((t) => this.outcome.has(t.id))) {
       if (this.rc.store.runState !== "aborted") this.rc.store.runState = "done";
       this.rc.store.writeRun();
       this.rc.store.stop();
@@ -437,17 +513,4 @@ export class Scheduler extends EventEmitter {
   }
 }
 
-/** Two write-scopes overlap if a glob of one matches a glob (as a path) of the other. */
-export function overlaps(a: string[], b: string[]): boolean {
-  for (const x of a) {
-    for (const y of b) {
-      if (x === y) return true;
-      if (globToRegExp(x).test(y) || globToRegExp(y).test(x)) return true;
-      // Both are patterns: overlap when their literal prefixes nest (src/** vs src/auth/*.ts).
-      const lx = x.replace(/[*?{].*$/, "");
-      const ly = y.replace(/[*?{].*$/, "");
-      if (lx !== x && ly !== y && (lx.startsWith(ly) || ly.startsWith(lx))) return true;
-    }
-  }
-  return false;
-}
+export { overlaps } from "./plan.js";

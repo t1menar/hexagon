@@ -18,6 +18,8 @@ export interface ActivityItem {
   token: Token;
 }
 
+/** Frame rate of the continuous 'agent is working' effect. */
+const LIVE_FPS = 8;
 const ACTIVE_STATES = new Set<AgentState>(["preparing", "working", "fixing", "verifying", "reviewing", "integrating"]);
 
 export class Director {
@@ -153,8 +155,20 @@ export class Director {
       else if (s.state === "waiting_quota") { this.waitingSet.add(s.task_id); this.activeSet.delete(s.task_id); }
       else { this.activeSet.delete(s.task_id); this.waitingSet.delete(s.task_id); }
     }
-    if (this.activeSet.size) this.m.hold("live", this.m.fps); else this.m.release("live");
-    if (this.waitingSet.size && !this.activeSet.size) this.m.hold("wait", 4); else this.m.release("wait");
+    this.applyHolds();
+  }
+
+  private quiet = false;
+  /** While the user types, continuous effects release their frame timers; they come back when typing stops. */
+  setQuiet(q: boolean): void {
+    if (q === this.quiet) return;
+    this.quiet = q;
+    this.applyHolds();
+  }
+
+  private applyHolds(): void {
+    if (this.activeSet.size && !this.quiet) this.m.hold("live", LIVE_FPS); else this.m.release("live");
+    if (this.waitingSet.size && !this.activeSet.size && !this.quiet) this.m.hold("wait", 4); else this.m.release("wait");
   }
 
   /** An agent event from the event stream. */

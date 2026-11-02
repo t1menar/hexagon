@@ -140,7 +140,7 @@ export interface RunStatus {
     task_id: string; agent_run_id: string; role: Role; agent: string; state: AgentState;
     activity: string | null; needs_input: boolean; progress: AgentStatus["progress"] | null; cost_usd: number; tokens: number;
   }[];
-  attention: { kind: "question" | "failure" | "blocked" | "budget" | "stale"; task_id: string | null; text: string; ref?: string }[];
+  attention: { kind: "question" | "failure" | "blocked" | "budget" | "stale" | "checkpoint" | "replan"; task_id: string | null; text: string; ref?: string }[];
 }
 
 export type PartyKind = "user" | "agent" | "role" | "orchestrator" | "blackboard" | "broadcast" | "lead";
@@ -207,6 +207,8 @@ export interface ResultEnvelope {
   spec_issues: string[];
   assumptions: { text: string; question_id?: string | null }[];
   follow_ups: string[];
+  /** Why a `blocked` result is blocked, as the agent states it. Absent: the text is guessed (classifyBlock). */
+  block_kind?: "plan" | "tool" | "scope";
   /** Deleted, skipped or weakened tests found by Hexagon (not the agent). Flags for the reviewer, never an automatic failure. */
   test_integrity?: { kind: string; file: string; detail: string }[];
 }
@@ -221,6 +223,8 @@ export interface ReviewVerdict {
 export type AgentEvent =
   | { type: "state"; state: AgentState; reason?: string | null }
   | { type: "progress"; text: string }
+  /** The CLI finished a turn and now waits for the next message (chat sessions). The legacy `progress` text "ready" means the same. */
+  | { type: "turn_end" }
   /** The agent CLI refused a tool call that needs approval (e.g. a command outside allow_commands). */
   | { type: "permission_denied"; tool: string; command: string }
   /** A command the agent ran isn't installed (exit 127 / "command not found"). */

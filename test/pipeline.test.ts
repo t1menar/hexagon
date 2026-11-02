@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Approvals, checkAnalysis, checkDesign } from "../src/core/pipeline.js";
 
 const SPEC = (a: string, b = "prints bye") =>
@@ -101,6 +101,53 @@ describe("acceptance: an unapproved spec blocks implementation", () => {
       const { run_id } = await client.call<{ run_id: string }>("run.start", { plan_path: "plan.json" });
       expect(run_id).toMatch(/^r-/);
     } finally {
+      client.close();
+      server.orch.shutdown();
+    }
+  }, 30000);
+
+  it("a spec edit after approval sends the gated task to replan (once) instead of leaving it stuck", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { HexClient } = await import("../src/client/client.js");
+    const { DaemonServer } = await import("../src/daemon/server.js");
+    const { scaffold } = await import("../src/core/project.js");
+    const root = fs.mkdtempSync(path.join("/tmp", "hq-"));
+    const git = (...a: string[]) => execFileSync("git", a, { cwd: root, encoding: "utf8" });
+    git("init", "-q", "-b", "main");
+    fs.writeFileSync(path.join(root, "README.md"), "# demo\n");
+    git("add", "-A"); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+    scaffold(root);
+    const cfg = path.join(root, ".hexagon/config.toml");
+    fs.writeFileSync(cfg, fs.readFileSync(cfg, "utf8").replace(/agent = "claude"/g, 'agent = "mock"').replace("step_ms = 600", "step_ms = 30"));
+    git("add", "-A"); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hexagon");
+    fs.mkdirSync(path.join(root, "specs"), { recursive: true });
+    fs.writeFileSync(path.join(root, "specs/s.spec.md"), "# S\n\n## REQ-A-001: Greets\nSays hello.\n- AC-1: prints hello\n");
+    const plan = {
+      schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: ["specs/s.spec.md"], spec_issues: [],
+      tasks: [{ id: "T-1", title: "Greet", role: "developer", requirements: ["REQ-A-001"], acceptance: ["AC-1"], depends_on: [], files: { write: ["src/a.txt"], read: [] }, skills: [], definition_of_done: ["done"], verify: [], verify_exempt: "test fixture" }],
+    };
+    plan.tasks.push({ ...plan.tasks[0]!, id: "T-2", depends_on: ["T-1"], files: { write: ["src/b.txt"], read: [] } } as never);
+    fs.writeFileSync(path.join(root, "plan.json"), JSON.stringify(plan));
+    const saved = process.env.HEXAGON_NO_CHECKPOINT;
+    const server = new DaemonServer(root);
+    await server.listen();
+    const client = await HexClient.connect(root, { autostart: false });
+    try {
+      await client.call("spec.approve", { spec: "specs/s.spec.md" });
+      delete process.env.HEXAGON_NO_CHECKPOINT;
+      const calls: string[] = [];
+      (server.orch as any).replan = (task: { id: string }, why: string) => { calls.push(`${task.id}: ${why}`); };
+      await client.call("run.start", { plan_path: "plan.json" });
+      fs.writeFileSync(path.join(root, "specs/s.spec.md"), "# S\n\n## REQ-A-001: Greets\nSays hello loudly.\n- AC-1: prints HELLO\n");
+      // The checkpoint after the first merge holds T-2; once the human resumes, the changed spec gates it and sends it to replan.
+      await vi.waitFor(async () => expect(JSON.stringify(await client.call("run.status", {}))).toContain('"checkpoint"'), { timeout: 20000 });
+      await client.call("run.resume", {});
+      await vi.waitFor(() => expect(calls.length).toBe(1), { timeout: 20000 });
+      await new Promise((r) => setTimeout(r, 500));
+      expect(calls.length).toBe(1);
+      expect(calls[0]).toMatch(/^T-2: the spec changed after approval: REQ-A-001 changed/);
+    } finally {
+      if (saved !== undefined) process.env.HEXAGON_NO_CHECKPOINT = saved;
       client.close();
       server.orch.shutdown();
     }

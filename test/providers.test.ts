@@ -353,3 +353,21 @@ describe("real-CLI evidence is stated, not implied", () => {
     expect(realCliNote("claude-code", "9.0.0")).toMatch(/different version: untested/);
   });
 });
+
+describe("run policy projection", () => {
+  it("claude states what it enforces for THIS run: a '*' allow-list lifts the command allow-list", async () => {
+    const { ClaudeCodeAdapter } = await import("../src/agents/claude-code.js");
+    const { enforcedFor } = await import("../src/agents/contracts/policy.js");
+    const a = new ClaudeCodeAdapter("c", { command: ["claude"], model: null, args: [] } as never);
+    const base = { hexagonBin: "/x/hexagon", secretDeny: [], effort: "low" as const };
+    expect(enforcedFor(a, { ...base, readOnly: true, allowCommands: ["ls"] })).toEqual({ readOnlyEnforced: true, commandAllowList: true });
+    expect(enforcedFor(a, { ...base, readOnly: false, allowCommands: ["*"] })).toEqual({ readOnlyEnforced: false, commandAllowList: false });
+    const p = a.project({ ...base, readOnly: true, allowCommands: ["ls", "*"] });
+    expect(p.args).toContain("--disallowedTools");
+    expect(p.args).toContain("Bash(/x/hexagon:*)");
+  });
+  it("an adapter without a projection is judged by its static claim", async () => {
+    const { enforcedFor } = await import("../src/agents/contracts/policy.js");
+    expect(enforcedFor({ security: { readOnlyEnforced: false, commandAllowList: false } }, { readOnly: true, allowCommands: [], hexagonBin: null, secretDeny: [], effort: "low" })).toEqual({ readOnlyEnforced: false, commandAllowList: false });
+  });
+});

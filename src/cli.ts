@@ -10,8 +10,10 @@ import { argsFromFlags, commandDef, commandDocs, parseArgs } from "./core/comman
 import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
 import { adapterClis } from "./agents/registry.js";
+import { pluginReports } from "./agents/plugins.js";
 import { whichExecutable } from "./agents/contracts/adapter.js";
 import { loadConfig } from "./core/config.js";
+import { formatCard } from "./core/card.js";
 import type { CostReport, CostRow } from "./core/cost.js";
 import { parseEvidenceFlag } from "./core/evidence.js";
 import { securitySummary } from "./core/security.js";
@@ -52,6 +54,7 @@ ${c.bold("Watch & steer")}
   hexagon allow <cmd…> | all       let agents run these commands (e.g. allow brew curl) or everything
   hexagon model [role model|default]  show/set a model override per role (default = the CLI's own)
   hexagon agents [list|doctor|models <agent>|configure|add]   providers, CLI versions, auth, capabilities, discovered models
+  hexagon agents scaffold|record|conformance <id>   build, capture and check a third-party adapter (docs/ADAPTERS.md)
   hexagon install [go|node|java|maven]   install a toolchain for agents (official release, no Homebrew)
 
 ${c.bold("Agent protocol")} (run by agents inside their sessions)
@@ -113,6 +116,7 @@ async function main(argv: string[]): Promise<void> {
     process.exitCode = found.some((f) => f.level === "error") ? 1 : 0;
     return;
   }
+  if (cmd === "agents" && ["scaffold", "record", "conformance"].includes(rest[0] ?? "")) return void (await (await import("./shell/adapter-tools.js")).adapterTool(rest[0]!, rest.slice(1), root()));
   if (cmd === "commands") return void console.log(commandDocs());
   if (cmd === "bench") {
     // Real agents, real tokens: needs --real, and stops at [bench] max_cost_usd.
@@ -409,6 +413,12 @@ async function main(argv: string[]): Promise<void> {
           console.log(list.map((a) => formatAgent(a, sub === "doctor")).join("\n\n"));
           const bad = list.filter((a) => a.error || a.diagnostics?.installed === false || a.diagnostics?.auth === "unauthenticated");
           if (sub === "doctor") {
+            const plugins = (() => { try { loadConfig(new ProjectPaths(root()).config); } catch { /* reported below */ } return pluginReports(); })();
+            if (plugins.length) {
+              console.log("\nPlugins ([plugins].adapters):");
+              for (const p of plugins) console.log(p.ok ? `  ✔ ${p.spec} → ${p.adapters.join(", ")}` : `  ✖ ${p.spec}: ${p.error}`);
+              if (plugins.some((p) => !p.ok)) process.exitCode = 1;
+            }
             console.log(`\n${securitySummary(loadConfig(new ProjectPaths(root()).config), list).join("\n")}`);
             console.log(bad.length ? `\n${bad.length} agent(s) need attention.` : "\nAll configured agents look usable.");
             if (bad.length) process.exitCode = 1;
@@ -537,6 +547,7 @@ async function newGoal(args: string[]): Promise<void> {
   if (st.state !== "done") { client.close(); process.exitCode = 1; return; }
   const d = await draft;
   console.log(`\n${c.bold("Plan")} ${d.id} · spec ${path.relative(r, d.spec_path)}\n${planTree(d.plan)}`);
+  if (d.card) console.log(`\n${formatCard(d.card, c.bold("Before you approve:"))}`);
   for (const e of d.check.errors) console.log(c.orange(`✖ ${e}`));
   for (const w of d.check.warnings) console.log(`! ${w}`);
   console.log(`\nApprove with ${c.cyan("hexagon run")}, or open ${c.cyan("hexagon")} to revise it.`);
@@ -687,6 +698,7 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
         blockers: status === "blocked" ? multi(a, "--blocker").concat(multi(a, "--issue")) : multi(a, "--blocker"),
         assumptions: multi(a, "--assume").map((text) => ({ text })),
         follow_ups: multi(a, "--follow-up"),
+        block_kind: one(a, "--kind"),
         allow: multi(a, "--allow"),
       };
       break;

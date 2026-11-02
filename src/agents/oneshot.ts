@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { AdapterBase } from "./contracts/base.js";
+import { realCliBlocked } from "./adapter-registry.js";
 import type { AdapterOutcome, AgentRunContext } from "./types.js";
 import { formatInjected } from "./types.js";
 
@@ -23,6 +24,8 @@ export interface OneShotSpec {
   argv: string[];
   /** Prompt written to stdin (never interpolated into a shell). null = it is already in argv. */
   stdin: string | null;
+  /** Called once when the process has ended (temp files). */
+  cleanup?: () => void;
 }
 
 /**
@@ -50,6 +53,7 @@ export abstract class OneShotAdapter extends AdapterBase {
 
   run(ctx: AgentRunContext): Promise<AdapterOutcome> {
     const spec = this.build(ctx, this.promptFor(ctx));
+    if (realCliBlocked(spec.argv[0]!)) { spec.cleanup?.(); return Promise.resolve({ kind: "error", error: { kind: "internal", message: "the real CLI is disabled (HEXAGON_NO_REAL_CLI=1)", retryable: false } }); }
     return new Promise((resolve) => {
       let child;
       try {
@@ -69,8 +73,9 @@ export abstract class OneShotAdapter extends AdapterBase {
       child.stdin.end(spec.stdin ?? "");
       const kill = () => { try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ } };
       ctx.signal.addEventListener("abort", kill, { once: true });
-      child.on("error", (e) => resolve({ kind: "error", error: { kind: "internal", message: `cannot start ${spec.argv[0]}: ${e.message} — is it installed and on PATH?`, retryable: false } }));
+      child.on("error", (e) => { try { spec.cleanup?.(); } catch { /* best effort */ } resolve({ kind: "error", error: { kind: "internal", message: `cannot start ${spec.argv[0]}: ${e.message} — is it installed and on PATH?`, retryable: false } }); });
       child.on("close", (code, sig) => {
+        try { spec.cleanup?.(); } catch { /* best effort */ }
         handle(lines.flush());
         ctx.signal.removeEventListener("abort", kill);
         if (ctx.signal.aborted) return resolve({ kind: "interrupted" });

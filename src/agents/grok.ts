@@ -17,6 +17,8 @@ export class GrokAdapter extends OneShotAdapter implements AgentAdapter {
   readonly adapterId = "grok";
   readonly provider = "xai";
   readonly displayName = "xAI Grok CLI";
+  /** Grok's headless mode takes the prompt as `-p <text>`: declared, because it is limited by ARG_MAX and visible in `ps`. */
+  readonly promptInArgv = true;
   readonly capabilities = capabilities({
     supportsStreaming: true, supportsSessionResume: true, supportsModelDiscovery: true, supportsStructuredOutput: true,
     supportsNativePermissions: false,

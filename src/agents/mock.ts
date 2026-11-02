@@ -89,7 +89,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
       if (ctx.role === "control") {
         if (ctx.resume && ctx.followUp) host.emit({ type: "chat", from: "agent", text: `(mock) ${ctx.followUp.includes("approved") ? "Approved, running it now." : ctx.followUp}` });
         else host.emit({ type: "chat", from: "agent", text: `(mock) You said: ${ctx.prompt.replace(/<hexagon_state>[\s\S]*?<\/hexagon_state>\s*/g, "").replace(/<\/?user_message>/g, "").trim()}` });
-        host.emit({ type: "progress", text: "ready" });
+        host.emit({ type: "turn_end" });
         while (!ctx.signal.aborted) {
           await sleep(50);
           for (const m of host.drainInbox()) {
@@ -97,7 +97,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
             if (needs) host.emit({ type: "permission_denied", tool: "Bash", command: needs[1]!.trim() });
             host.emit({ type: "usage", input: 200, output: 20, cache_read: 0, cache_write: 0, cost_usd: 0, step: true });
             host.emit({ type: "chat", from: "agent", text: `(mock) You said: ${m.body.replace(/<hexagon_state>[\s\S]*?<\/hexagon_state>\s*/g, "").trim()}` });
-            host.emit({ type: "progress", text: "ready" });
+            host.emit({ type: "turn_end" });
           }
         }
         return { kind: "interrupted" };
@@ -179,7 +179,8 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         const r = api.return?.({ task: ret[1]!, issue: ret[2]!.trim() });
         if (r?.ok) return { kind: "finished" };
       }
-      const block = /@block:\s*(.+)$/m.exec(task.description ?? "");
+      // `@block-once:` blocks the first attempt only, so a replan followed by a retry can finish.
+      const block = /@block:\s*(.+)$/m.exec(task.description ?? "") ?? (/-a1$/.test(ctx.agentRunId) ? /@block-once:\s*(.+)$/m.exec(task.description ?? "") : null);
       if (block && firstOfTask) {
         host.emit({ type: "chat", from: "agent", text: `I can't finish: ${block[1]!.trim()}` });
         api.done({ status: "blocked", summary: block[1]!.trim(), blockers: [block[1]!.trim()] });
@@ -252,13 +253,24 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     ctx.api.report({ phase: "planning", activity: `Stage: ${stage}` });
     if (stage === "analyze") {
       await step("Reading the codebase");
-      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", "none", "", "## Mode", /@single-task/.test(goal) ? "single-task: mock goal asked for it" : "dag: mock goal splits into parallel parts", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
+      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", /@spike/.test(goal) ? "(mock) the root cause is unknown" : "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", "none", "", ...(/@spike/.test(goal) ? ["## Spike", "- S-1: find out why it fails", ""] : []), "## Mode", /@single-task/.test(goal) ? "single-task: mock goal asked for it" : "dag: mock goal splits into parallel parts", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
     } else if (stage === "specify") {
       await step("Writing the spec");
       fs.writeFileSync(path.join(out, "spec.md"), [
         "---", "spec: goal", "---", `# ${goal}`, "",
         ...reqs.flatMap((r) => [`## ${r.id}: ${r.title}`, `${r.title}.`, "", "**Acceptance**", `- AC-1: ${r.file} exists`, "", `**Touches**: \`${r.file}\``, ""]),
       ].join("\n"));
+    } else if (stage === "spike") {
+      await step("Investigating");
+      fs.writeFileSync(path.join(out, "spike.md"), ["# Spike", "", "## Findings", "S-1: the failure comes from src/core/a.ts:12 (mock).", "", "## Decision", "Assume the retry limit lives in a.ts.", "", "## Open risks", "none", ""].join("\n"));
+    } else if (stage === "replan") {
+      await step("Preparing a replan");
+      const tail = /Tasks you may change \(not started\): ([^.\n]+)\./.exec(text)?.[1]?.split(/,\s*/) ?? [];
+      const graph = [
+        ...(tail[0] ? [{ command: "graph.removeNode", args: { id: tail[0] } }] : []),
+        { command: "graph.addNode", args: { title: "Rework after replan", role: "developer", write: ["hexagon-mock/rework.md"], verify_exempt: "mock" } },
+      ];
+      fs.writeFileSync(path.join(out, "replan.json"), JSON.stringify({ summary: "mock replan: replace the next task with a rework task", graph }));
     } else {
       await step("Drafting tasks");
       const spec = parseSpec(path.join(out, "spec.md"));

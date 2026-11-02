@@ -43,6 +43,8 @@ export interface NetOptions {
    * k runs 0→1. Nodes glide to their new place, new nodes and edges fade in, edges of moving nodes wait until they settle.
    */
   morph?: { from: ReadonlyMap<string, { x: number; y: number }>; k: number; prevEdges: ReadonlySet<string> } | null;
+  /** "minimal" (default): one rounded solid border for every state, no review rail glyphs. "classic": square corners, dashed while queued. */
+  style?: "minimal" | "classic";
   /** Integration hub is shown when there is more than one node or the run is active. */
   hub?: boolean;
 }
@@ -230,7 +232,7 @@ export function renderNetwork(all: NetNode[], o: NetOptions): Geometry {
   for (const [k, bits] of mask) {
     const [x, y] = k.split(",").map(Number) as [number, number];
     const ch = LINE[bits] ?? "┼";
-    c.set(x, y, rank.get(k) === 1 ? DOUBLE[ch] ?? ch : ch, styleAt.get(k) ?? colorOf("border"));
+    c.set(x, y, rank.get(k) === 1 && (o.style ?? "minimal") === "classic" ? DOUBLE[ch] ?? ch : ch, styleAt.get(k) ?? colorOf("border"));
   }
   for (const a of arrows) c.set(a.x, a.y, "▸", a.s);
 
@@ -261,11 +263,14 @@ export function renderNetwork(all: NetNode[], o: NetOptions): Geometry {
       // frame (square corners; dashed while queued)
       c.fill(x0, y0, m.w, m.h, sty(), " ");
       const ring: [number, number][] = [];
-      for (let x = x0; x <= x1; x++) { c.set(x, y0, dashed ? "┄" : "─", outline); ring.push([x, y0]); }
-      for (let y = y0 + 1; y <= y1; y++) { c.set(x1, y, dashed ? "┆" : "│", outline); ring.push([x1, y]); }
-      for (let x = x1 - 1; x >= x0; x--) { c.set(x, y1, dashed ? "┄" : "─", outline); ring.push([x, y1]); }
-      for (let y = y1 - 1; y > y0; y--) { c.set(x0, y, dashed ? "┆" : "│", outline); ring.push([x0, y]); }
-      c.set(x0, y0, "┌", outline); c.set(x1, y0, "┐", outline); c.set(x0, y1, "└", outline); c.set(x1, y1, "┘", outline);
+      const minimal = (o.style ?? "minimal") === "minimal";
+      const dash = dashed && !minimal; // minimal: queued is dimmer, not a different line
+      for (let x = x0; x <= x1; x++) { c.set(x, y0, dash ? "┄" : "─", outline); ring.push([x, y0]); }
+      for (let y = y0 + 1; y <= y1; y++) { c.set(x1, y, dash ? "┆" : "│", outline); ring.push([x1, y]); }
+      for (let x = x1 - 1; x >= x0; x--) { c.set(x, y1, dash ? "┄" : "─", outline); ring.push([x, y1]); }
+      for (let y = y1 - 1; y > y0; y--) { c.set(x0, y, dash ? "┆" : "│", outline); ring.push([x0, y]); }
+      if (minimal) { c.set(x0, y0, "╭", outline); c.set(x1, y0, "╮", outline); c.set(x0, y1, "╰", outline); c.set(x1, y1, "╯", outline); }
+      else { c.set(x0, y0, "┌", outline); c.set(x1, y0, "┐", outline); c.set(x0, y1, "└", outline); c.set(x1, y1, "┘", outline); }
       geom.nodes.set(node.id, { x: pf.x, y: pf.y, w: m.w, h: m.h, cx: pf.x + Math.floor(m.w / 2), cy: pf.y + Math.floor(m.h / 2) });
 
       const glyph = uni ? look.symbol : look.ascii;
@@ -334,7 +339,7 @@ export function renderNetwork(all: NetNode[], o: NetOptions): Geometry {
       const railX = x0 + 1;
       const top = y0 + 1;
       const railOn = node.state === "reviewing" || Boolean(node.fixCycle) || fx?.review === "rejected";
-      if (railOn) {
+      if (railOn && !minimal) {
         for (let y = top; y <= revY; y++) c.set(railX, y, "╎", sty(sgr(mix(TOKENS.border, TOKENS.warning, node.fixCycle || fx?.review === "rejected" ? 0.7 : 0), depth)));
         c.set(railX, top, uni ? "▲" : "^", sty(sgr(node.fixCycle || fx?.review === "rejected" ? TOKENS.warning : TOKENS.muted, depth)));
       }

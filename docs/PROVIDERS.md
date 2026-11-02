@@ -7,7 +7,7 @@
 | Role (planner, implementer, reviewer, …) | `[roles.<role>]` → `agent = "<id>"` |
 | Agent (a configured CLI) | `[agents.<id>]`: `adapter`, `provider`, `command`, `args` |
 | Provider (vendor label) | `provider = "anthropic"`; defaults to the adapter's own |
-| Adapter (integration code) | registered in `src/agents/registry.ts` |
+| Adapter (integration code) | built in (`src/agents/registry.ts`), or a plugin: a manifest or module loaded through `[plugins]`; see [ADAPTERS.md](ADAPTERS.md) |
 | Model selection | optional `model = "…"` on the role or agent; absent = the CLI's default |
 | Runtime model | what the process reports (`model` event); shown as **CLI-managed** when it does not |
 
@@ -46,7 +46,7 @@ Unknown adapter names, and roles that name an undefined agent, are configuration
 | Claude Code (`claude-code`) | Implemented and used against the real CLI (stream-json, resume, native permissions, runtime model from `system/init`). Model discovery: **unsupported** (the CLI has no listing command). Auth: `claude auth status`. |
 | OpenAI Codex (`codex`) | Implemented from the public CLI docs (`exec --json`, `-m`, `-s`, `-C`, `exec resume`). **Not run against the real CLI** (not installed here); tested with a mock CLI. Discovery unsupported (no documented listing command); runtime model not reported. |
 | xAI Grok (`grok`) | Implemented from docs.x.ai (`-p`, `--output-format streaming-json`, `-m`, `--session-id/--resume`, `grok models`). **Not run against the real CLI**; tested with a mock CLI. `grok models` output format is undocumented, so parsing is best-effort. No documented read-only switch: it cannot review unless `allow_weaker_isolation = true`. |
-| Generic (`exec`) | Implemented. Claims no discovery/usage/runtime-model support. |
+| Generic (`exec`) | Implemented as a manifest built from `command`; the prompt goes to stdin (`{prompt}` / `{prompt_file}` opt in). Claims no discovery/usage/runtime-model support. |
 | Environment-variable filtering, OS sandbox fallback | Planned. Today: worktree isolation (all), CLI-native permissions (Claude Code, Codex read-only), explicit authorization for weaker read-only isolation. |
 
 ## Security reporting
