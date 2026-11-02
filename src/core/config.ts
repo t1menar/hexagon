@@ -60,6 +60,8 @@ export interface RoleConfig {
   group?: "analysis" | "implementation" | "review" | "integration";
 }
 
+export interface PriceRow { input_per_mtok?: number; cache_read_per_mtok?: number; output_per_mtok?: number }
+
 export interface HexagonConfig {
   run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** tokens one task may use (input + cache reads + output) before it stops and asks; 0 = no cap */ task_budget_tokens: number; /** commands that must pass on the integration branch before /merge; empty = every task's verify commands */ final_verify: string[]; /** a merge conflict goes to the release engineer once before the task blocks */ release_on_conflict: boolean; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null; /** run the task's verify commands once before work starts, to know what was already red */ baseline: boolean; /** files that count as tests for the test-integrity check; empty = per-language defaults */ test_globs: string[] };
   roles: Record<Role, RoleConfig>;
@@ -69,6 +71,8 @@ export interface HexagonConfig {
   context: ContextConfig;
   /** `hexagon bench` / `hexagon eval` spend real tokens; they stop when the reported cost reaches this. */
   bench: { max_cost_usd: number };
+  /** Your own prices per million tokens, by agent id. Hexagon ships none: it uses the cost a CLI reports, and only estimates from this table when a CLI reports none. */
+  prices: Record<string, PriceRow>;
   control: ControlConfig;
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
   sandbox: { allow_commands: string[]; command_timeout_s: number };
@@ -83,6 +87,7 @@ export const DEFAULT_CONFIG: HexagonConfig = {
   review: { mode: "agent" },
   context: { mode: "auto", compact_at: 0.7, min_turns_between: 3, assumed_window_tokens: 200_000, session_scope: "project", task_boundary: "note" },
   bench: { max_cost_usd: 5 },
+  prices: {},
   control: { auto_apply: false },
   messaging: { max_outbound_per_run: 10, max_blocking_questions: 2 },
   sandbox: {
