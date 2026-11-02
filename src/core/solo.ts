@@ -116,6 +116,9 @@ export class SoloSession extends EventEmitter {
 
   private onEvent(e: AgentEvent) {
     switch (e.type) {
+      case "session_handle":
+        this.opts.sessions?.setHandle(this.id, e.handle);
+        return;
       case "progress":
         // Fires on every CLI start, resumed or not: it only confirms the session exists.
         if (e.text === "session started") { this.opts.sessions?.confirm(this.id); return; }
@@ -278,6 +281,7 @@ export class SoloSession extends EventEmitter {
       followUp: fu,
       sessionId: this.status.session_id,
       resume: res ? res.resume : this.started,
+      handle: res?.record.nativeHandle ?? null,
       env: this.opts.env,
       allowCommands: this.opts.allowCommands,
       readOnly: this.opts.readOnly ?? false,

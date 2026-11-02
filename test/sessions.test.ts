@@ -68,6 +68,16 @@ describe("session registry (pure)", () => {
     expect(r.info("developer-1", "resumed", null, 200_000).cli_compactions).toBe(1);
   });
 
+  it("keeps the CLI's own session id with the session: it survives a restart and is dropped when the session changes", () => {
+    const dir = fs.mkdtempSync(path.join("/tmp", "hsr-"));
+    const r = new SessionRegistry(dir);
+    r.resolve(spec()); r.confirm("developer-1");
+    r.setHandle("developer-1", "th-9");
+    expect(new SessionRegistry(dir).resolve(spec()).record.nativeHandle).toBe("th-9"); // a restarted daemon
+    r.compacted("developer-1");
+    expect(r.resolve(spec()).record.nativeHandle).toBeUndefined(); // a new session has no thread yet
+  });
+
   it("creates once, then resumes the same native session", () => {
     const r = reg();
     const a = r.resolve(spec());

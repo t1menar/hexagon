@@ -58,6 +58,8 @@ export interface AgentRunContext {
   /** Stable conversation id; `resume` continues it. */
   sessionId: string;
   resume: boolean;
+  /** The CLI's own session id as stored by Hexagon (null until the CLI reported one). */
+  handle?: string | null;
   env: Record<string, string>;
   /** Shell commands the agent may run (prefixes). "*" = anything. */
   allowCommands: string[];

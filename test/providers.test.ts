@@ -31,7 +31,7 @@ process.stdin.on("data", (d) => stdin += d);
 process.stdin.on("end", () => {
   if (log) fs.appendFileSync(log, JSON.stringify({ argv: a, stdin }) + "\\n");
   if (process.env.FAKE_FAIL) { console.error(process.env.FAKE_FAIL); process.exit(1); }
-  const out = [JSON.stringify({ type: "thread.started", thread_id: "th-1" }), "not json {{", JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } })].join("\\n") + "\\n";
+  const out = [JSON.stringify({ type: "thread.started", thread_id: process.env.FAKE_THREAD || "th-1" }), "not json {{", JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } })].join("\\n") + "\\n";
   // split mid-line to prove chunk-boundary handling
   process.stdout.write(out.slice(0, 20));
   setTimeout(() => { process.stdout.write(out.slice(20)); }, 30);
@@ -205,6 +205,33 @@ describe("one-shot adapters against a fake CLI", () => {
     const b = new LineBuffer();
     expect([...b.push('{"a":'), ...b.push('1}\n{"b"'), ...b.push(":2}\n"), ...b.flush()]).toEqual(['{"a":1}', '{"b":2}']);
     expect(new LineBuffer().flush()).toEqual([]);
+  });
+
+  it("codex: the native thread belongs to the session, not to the adapter instance; a resume sends only the new message", async () => {
+    const dir = tmp(); const bin = fakeCli(dir); const log = path.join(dir, "log");
+    const calls = () => fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const resumed = (c: { argv: string[] }) => { const i = c.argv.indexOf("resume"); return i < 0 ? null : c.argv[i + 1]; };
+    const a = new CodexAdapter("cx", [bin], null); // ONE instance, two agent sessions
+    const evA: any[] = [];
+    await a.run(ctx({ sessionId: "s-A", env: { FAKE_LOG: log, FAKE_THREAD: "th-A" } }, evA));
+    await a.run(ctx({ sessionId: "s-B", env: { FAKE_LOG: log, FAKE_THREAD: "th-B" } }));
+    await a.run(ctx({ sessionId: "s-A", resume: true, followUp: "more A", env: { FAKE_LOG: log } }));
+    await a.run(ctx({ sessionId: "s-B", resume: true, followUp: "more B", env: { FAKE_LOG: log } }));
+    expect(resumed(calls()[2])).toBe("th-A");
+    expect(resumed(calls()[3])).toBe("th-B");
+    // what the session already knows is not sent again
+    expect(calls()[0].stdin).toContain("SYS");
+    expect(calls()[2].stdin).toBe("more A");
+    // the handle is reported so Hexagon can store it
+    expect(evA.find((e) => e.type === "session_handle")).toMatchObject({ handle: "th-A" });
+    // a new adapter instance (daemon restart) resumes from the stored handle
+    await new CodexAdapter("cx", [bin], null).run(ctx({ sessionId: "s-A", resume: true, handle: "th-A", followUp: "after restart", env: { FAKE_LOG: log } }));
+    expect(resumed(calls()[4])).toBe("th-A");
+    // no handle known: do not guess; start a new thread with the whole first message
+    await new CodexAdapter("cx", [bin], null).run(ctx({ sessionId: "s-A", resume: true, followUp: "lost", prompt: "FULL CARD", env: { FAKE_LOG: log } }));
+    expect(resumed(calls()[5])).toBeNull();
+    expect(calls()[5].stdin).toContain("SYS");
+    expect(calls()[5].stdin).toContain("FULL CARD");
   });
 
   it("codex: stdin prompt, no shell, no model flag by default, override passthrough, resume by thread id, partial JSONL", async () => {

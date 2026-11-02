@@ -243,6 +243,8 @@ export type AgentEvent =
   | { type: "controller"; controller: "agent" | "user" | "none" }
   /** The CLI reported the model actually serving this execution. */
   | { type: "model"; model: string }
+  /** The CLI's own id for this session (e.g. Codex thread id). Hexagon stores it with the session; adapters keep none. */
+  | { type: "session_handle"; handle: string }
   | { type: "cli_info"; version: string | null }
   | { type: "fix_cycle"; n: number }
   /** Provider-limit recovery lifecycle. */

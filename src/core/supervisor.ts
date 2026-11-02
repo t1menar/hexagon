@@ -639,7 +639,7 @@ export class AgentRun {
     this.abort = new AbortController();
     try {
       const out = await who.adapter.run(this.ctx({
-        role: who.role, sessionId: res.sessionId, resume: true, followUp: compactRequest(), prompt: compactRequest(),
+        role: who.role, sessionId: res.sessionId, resume: true, handle: res.record.nativeHandle ?? null, followUp: compactRequest(), prompt: compactRequest(),
         system: systemPrompt(this.rc.paths, who.role, this.rc.skills, this.rc.context, this.rc.cfg.roles[who.role]), readOnly: true,
         api: { report: refuse, ask: refuse, note: refuse, done: refuse, review: refuse }, host, agentId: this.agentRunId,
       }));
@@ -722,6 +722,7 @@ export class AgentRun {
         role: this.task.role,
         sessionId: res.sessionId,
         resume: res.resume,
+        handle: res.record.nativeHandle ?? null,
         followUp: input.followUp,
         freshTask: input.freshTask,
         prompt: input.prompt,
@@ -973,7 +974,7 @@ export class AgentRun {
     ].filter(Boolean).join("\n\n");
   }
 
-  private ctx(o: { role: Role; sessionId: string; resume: boolean; followUp?: string; freshTask?: boolean; prompt: string; system: string; readOnly: boolean; api: AgentApi; host: AgentHost; agentId: string; cwd?: string }): AgentRunContext {
+  private ctx(o: { role: Role; sessionId: string; resume: boolean; handle?: string | null; followUp?: string; freshTask?: boolean; prompt: string; system: string; readOnly: boolean; api: AgentApi; host: AgentHost; agentId: string; cwd?: string }): AgentRunContext {
     return {
       agentRunId: o.agentId,
       role: o.role,
@@ -986,6 +987,7 @@ export class AgentRun {
       freshTask: o.freshTask,
       sessionId: o.sessionId,
       resume: o.resume,
+      handle: o.handle ?? null,
       env: this.rc.agentEnv(o.agentId),
       allowCommands: this.rc.cfg.sandbox.allow_commands,
       readOnly: o.readOnly,
@@ -1160,6 +1162,7 @@ export class AgentRun {
         role: "reviewer",
         sessionId: res.sessionId,
         resume: res.resume,
+        handle: res.record.nativeHandle ?? null,
         followUp: res.resume ? prompt : undefined,
         freshTask: true,
         prompt,
@@ -1170,6 +1173,7 @@ export class AgentRun {
         host: {
           emit: (e) => {
             if (e.type === "progress" && e.text === "session started") { this.rc.sessions.confirm(lease.agentId); return; }
+            if (e.type === "session_handle") { this.rc.sessions.setHandle(lease.agentId, e.handle); return; }
             this.ev(e.type === "progress" ? { ...e, text: `review: ${e.text}` } : e.type === "tool_call" ? { ...e, summary: `review: ${e.summary}` } : e);
           },
           drainInbox: () => [],
@@ -1218,6 +1222,7 @@ export class AgentRun {
       emit: (e) => {
         // "session started" fires on every CLI start, resumed or not: it only confirms the session exists.
         if (e.type === "progress" && e.text === "session started") { this.sessionSeen = true; if (this.identity) this.rc.sessions.confirm(this.identity); return; }
+        if (e.type === "session_handle") { if (this.identity) this.rc.sessions.setHandle(this.identity, e.handle); return; }
         this.ev(e);
       },
       drainInbox: () => this.drain(),
