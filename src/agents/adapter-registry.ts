@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { stateDir } from "../util/token.js";
 import type { AgentConfig } from "../core/config.js";
 import type { AgentAdapter } from "./types.js";
 
@@ -70,7 +73,29 @@ export function adapterClis(): Array<{ adapter: string; cli: string }> {
   return [...metas].filter(([, m]) => m.cli).map(([adapter, m]) => ({ adapter, cli: m.cli! }));
 }
 
+/**
+ * Tests set HEXAGON_NO_REAL_CLI=1 so they can never start a vendor's real CLI (it would spend tokens). Every runner asks this
+ * before it spawns: true when the executable is the CLI an integration declares (`meta.cli`), by basename.
+ */
+export function realCliBlocked(bin: string): boolean {
+  if (process.env.HEXAGON_NO_REAL_CLI !== "1") return false;
+  const base = bin.split("/").at(-1);
+  return [...metas.values()].some((m) => m.cli && m.cli === base);
+}
+
 /** The recorded real-CLI run of an adapter, if there is one. */
 export function realRunOf(adapter: string): { version: string; date: string; covered: string } | undefined {
-  return metas.get(adapter)?.realRun;
+  return userVerified()[adapter] ?? metas.get(adapter)?.realRun;
+}
+
+/** `<state dir>/verified.json`: written by `hexagon agents conformance <id> --real`, so a provider can be marked verified without a commit. */
+export function verifiedFile(): string { return path.join(stateDir(), "verified.json"); }
+function userVerified(): Record<string, { version: string; date: string; covered: string }> {
+  try { return JSON.parse(fs.readFileSync(verifiedFile(), "utf8")) as Record<string, { version: string; date: string; covered: string }>; } catch { return {}; }
+}
+export function recordVerified(adapter: string, row: { version: string; date: string; covered: string }): void {
+  const all = userVerified();
+  all[adapter] = row;
+  fs.mkdirSync(path.dirname(verifiedFile()), { recursive: true });
+  fs.writeFileSync(verifiedFile(), JSON.stringify(all, null, 2) + "\n");
 }

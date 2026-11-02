@@ -70,6 +70,7 @@ describe("editing a running graph", () => {
     await exec("graph.addNode", { write: ["docs/new.txt"], verify_exempt: "test fixture", role: "developer", title: "Docs", depends_on: ["T-2"] });
     const r = await exec("graph.removeNode", { id: "T-2" });
     expect(r.status).toBe("proposed"); // destructive: your own call waits for a yes
+    expect((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks.map((t) => t.id)).toEqual(["T-1", "T-2", "T-3"]); // destructive: your own call waits for a yes
     expect(r.proposal!.diff).toEqual(expect.arrayContaining(["- task T-2 [developer] Task T-2"]));
     await c.call("command.confirm", { id: r.proposal!.id });
     const snap = await c.call<{ plan: Plan }>("ui.snapshot");
@@ -145,9 +146,9 @@ describe("a blocked task", () => {
   const open: { s: DaemonServer; c: HexClient }[] = [];
   afterEach(() => { for (const o of open.splice(0)) { o.c.close(); o.s.orch.shutdown(); } });
 
-  async function blocked(reason: string) {
+  async function blocked(reason: string, tag = "@block") {
     const root = project();
-    const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [], tasks: [task("T-1", [], `@block: ${reason}`), task("T-2", ["T-1"])] };
+    const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [], tasks: [task("T-1", [], `${tag}: ${reason}`), task("T-2", ["T-1"])] };
     fs.writeFileSync(path.join(root, "plan.json"), JSON.stringify(p));
     const s = new DaemonServer(root); await s.listen();
     const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });
@@ -155,20 +156,62 @@ describe("a blocked task", () => {
     s.orch.chat = (t: string) => { asked.push(t); };
     await c.call("run.start", { plan_path: "plan.json" });
     await until(async () => (await c.call<AgentStatus>("agent.status", { task: "T-1" })).state === "blocked");
-    await sleep(200);
-    return asked;
+    return { c, s, asked };
   }
+  const proposals = async (c: HexClient) => (await c.call<{ proposals: { id: string; command: string; diff: string[] }[] }>("ui.snapshot")).proposals;
 
-  it("is re-planned only when the plan is the problem: the Assistant is asked about the tasks after it", async () => {
-    const asked = await blocked("REQ-A contradicts REQ-B about the retry limit");
-    expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatch(/replan request/i);
-    expect(asked[0]).toContain("REQ-A contradicts REQ-B");
-    expect(asked[0]).toMatch(/not started and can still be edited[^.]*: T-2/);
+  it("is re-planned only when the plan is the problem: the analyst proposes, nothing changes until you confirm, and started tasks are untouched", async () => {
+    const { c, asked } = await blocked("REQ-A contradicts REQ-B about the retry limit");
+    const { MockAdapter } = await import("../src/agents/mock.js");
+    const p = await until(async () => (await proposals(c)).find((x) => x.command === "replan.apply"));
+    expect(asked).toEqual([]);
+    expect(MockAdapter.turns.some((t) => /<stage>replan<\/stage>[\s\S]*Waiting behind it: T-2 "Task T-2"/.test(t.text))).toBe(true); // real context, not an empty note // the analyst was free, so the Assistant was not asked
+    expect(p.diff[0]).toMatch(/mock replan/);
+    expect(p.diff).toEqual(expect.arrayContaining(["- task T-2 [developer] Task T-2"]));
+    expect(p.diff.some((d) => /^\+ task T-3 \[developer\] Rework after replan/.test(d))).toBe(true);
+    expect(p.diff.some((d) => /^[-+~] task T-1\b/.test(d))).toBe(false); // T-1 (the blocked, started task) is not edited
+    expect((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks.map((t) => t.id)).toEqual(["T-1", "T-2"]); // proposal only
+    await c.call("command.confirm", { id: p.id });
+    expect((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks.map((t) => t.id)).toEqual(["T-1", "T-3"]);
+  }, 60000);
+
+  it("while the replan is pending the tasks after it wait (not failed), the run stays open and its graph stays editable", async () => {
+    const { c } = await blocked("REQ-A contradicts REQ-B about the retry limit");
+    const state = async (id: string) => (await c.call<AgentStatus>("agent.status", { task: id })).state;
+    await until(async () => (await proposals(c)).find((x) => x.command === "replan.apply"));
+    expect(await state("T-2")).toBe("queued");
+    const snap = await c.call<{ run: { state: string; attention: { kind: string; task_id: string }[] } }>("ui.snapshot");
+    expect(snap.run.state).toBe("running");
+    expect(snap.run.attention).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "replan", task_id: "T-1" })]));
+    // The Assistant's own graph edit works meanwhile: this is the "no graph to edit" regression.
+    const r = await c.call<{ status: string }>("command.exec", { name: "graph.addNode", args: { write: ["docs/x.txt"], verify_exempt: "test fixture", role: "developer", title: "Extra", depends_on: ["T-2"] } });
+    expect(r.status).toBe("done");
+    expect((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks.map((t) => t.id)).toEqual(["T-1", "T-2", "T-3"]);
+  }, 60000);
+
+  it("applying the replan retries the blocked task and the new task after it runs", async () => {
+    const { c } = await blocked("REQ-A contradicts REQ-B about the retry limit", "@block-once");
+    const p = await until(async () => (await proposals(c)).find((x) => x.command === "replan.apply"));
+    await c.call("command.confirm", { id: p.id });
+    // The first attempt was the only one that blocked: the retry completes, then T-3 (added by the replan) runs.
+    await until(async () => (await c.call<AgentStatus>("agent.status", { task: "T-1" })).state === "done");
+    await until(async () => (await c.call<AgentStatus>("agent.status", { task: "T-3" }).catch(() => null))?.state === "done");
+    const snap = await c.call<{ run: { attention: unknown[] } }>("ui.snapshot");
+    expect(snap.run.attention).toEqual([]);
+  }, 60000);
+
+  it("rejecting the proposal leaves the plan as it was", async () => {
+    const { c } = await blocked("REQ-A contradicts REQ-B about the retry limit");
+    const p = await until(async () => (await proposals(c)).find((x) => x.command === "replan.apply"));
+    await c.call("command.reject", { id: p.id });
+    expect((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks.map((t) => t.id)).toEqual(["T-1", "T-2"]);
   }, 60000);
 
   it("a missing tool is not a plan problem: no re-plan", async () => {
-    expect(await blocked("go is not installed")).toEqual([]);
+    const { c, asked } = await blocked("go is not installed");
+    await sleep(600);
+    expect(asked).toEqual([]);
+    expect(await proposals(c)).toEqual([]);
   }, 60000);
 });
 

@@ -1,0 +1,1 @@
+{"emits":["chat","tool_call","model","usage"],"model":"fixture-model","usage":"some"}

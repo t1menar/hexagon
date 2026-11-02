@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"th-fixture"}
+{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"Listed the files."}}
+{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":50,"output_tokens":12}}

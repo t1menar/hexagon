@@ -11,6 +11,7 @@ import type {
 import { validateResult } from "../contracts/validate.js";
 import { identityHash, skillsBlock, systemPrompt, taskCard, type Skill } from "../agents/prompts.js";
 import type { AdapterOutcome, AgentAdapter, AgentApi, AgentHost, AgentRunContext, Injected, Reply } from "../agents/types.js";
+import { enforcedFor, SECRET_DENY_GLOBS, type RunPolicy } from "../agents/contracts/policy.js";
 import { classifyProviderError, recoveryFor } from "../agents/contracts/errors.js";
 import { planRetry, waitTooLong, type WaitStore } from "./recovery.js";
 import { atomicWriteJson, matchesAny, nowIso, truncateMiddle } from "../util/fsx.js";
@@ -84,6 +85,10 @@ export interface Preparation {
 interface Gate { promise: Promise<void>; resolve: () => void }
 
 /** Supervises one attempt of one task. The only writer of its status (through the store). */
+/** Shared turn lifecycle: how often a CLI that ended its turn without reporting is asked to report. */
+const MAX_SILENT_TURNS = 2;
+export const DONE_NUDGE = "You ended your turn without reporting a result. If you are finished, run `hexagon done --summary \"…\"` (see the Hexagon protocol); otherwise continue the task.";
+
 export class AgentRun {
   readonly agentRunId: string;
   readonly worktree: string;
@@ -357,6 +362,7 @@ export class AgentRun {
     let followUp: string | undefined = initial;
     let quiet = initialFromUser;
     let fixLoops = 0;
+    let silentTurns = 0;
     for (;;) {
       // 1. Implement (or fix)
       this.finished = false;
@@ -386,6 +392,14 @@ export class AgentRun {
         return this.final("failed", e.message);
       }
       const r = this.result;
+      // The turn lifecycle belongs to the core: a CLI that exits without reporting is told once or twice to report, in the same
+      // session, instead of failing the task. (A live-input CLI is nudged inside its own stream, where it is cheaper.)
+      if (!r && outcome.kind === "finished" && silentTurns < MAX_SILENT_TURNS && this.adapter.capabilities.supportsSessionResume && !this.adapter.capabilities.supportsLiveInput && !this.cancelled) {
+        silentTurns++;
+        this.ev({ type: "progress", text: `the agent ended its turn without \`hexagon done\`; asking it to report (${silentTurns}/${MAX_SILENT_TURNS})` });
+        followUp = DONE_NUDGE;
+        continue;
+      }
       if (!r) {
         this.ev({ type: "error", kind: "invalid_output", message: "the agent stopped without running `hexagon done`", retryable: true });
         return this.final("failed", "no result reported");
@@ -395,7 +409,7 @@ export class AgentRun {
         if (r.status === "needs_spec_change") this.ev({ type: "error", kind: "needs_spec_change", message: r.summary, retryable: false });
         await this.commit("final");
         const why = [...r.blockers, ...r.spec_issues].join("; ") || r.summary;
-        const kind = classifyBlock(r.status, why);
+        const kind = classifyBlock(r.status, why, r.block_kind);
         this.ev({ type: "progress", text: `blocked (${kind}): ${why.slice(0, 200)}` });
         if (kind === "plan") this.rc.replan?.(this.task, why, await g.changedFiles(this.worktree, this.baseCommit).catch(() => []));
         else this.notify(`${this.task.id} is blocked by a ${kind === "tool" ? "missing tool or permission (hexagon exec/install)" : "scope problem (hexagon scope request)"}, not by the plan: ${why.slice(0, 200)}`);
@@ -1039,6 +1053,7 @@ export class AgentRun {
       env: this.rc.agentEnv(o.agentId),
       allowCommands: this.rc.cfg.sandbox.allow_commands,
       readOnly: o.readOnly,
+      policy: { readOnly: o.readOnly, allowCommands: this.rc.cfg.sandbox.allow_commands, hexagonBin: this.rc.agentEnv(o.agentId).HEXAGON_BIN ?? null, secretDeny: SECRET_DENY_GLOBS, effort: o.role === "reviewer" ? roleConfig(this.rc.cfg, "reviewer").effort : this.effort },
       host: o.host,
       api: o.api,
       signal: this.abort.signal,
@@ -1175,7 +1190,9 @@ export class AgentRun {
 
   private async runReview(): Promise<ReviewVerdict | undefined> {
     const reviewer = this.rc.adapterFor("reviewer");
-    if (!reviewer.security.readOnlyEnforced && reviewer.adapterId !== "mock" && !this.rc.cfg.agents[reviewer.id]?.allow_weaker_isolation) {
+    // What the reviewer enforces for THIS read-only run (its projection), not only what it claims in general.
+    const reviewPolicy: RunPolicy = { readOnly: true, allowCommands: this.rc.cfg.sandbox.allow_commands, hexagonBin: this.rc.agentEnv(`${this.agentRunId}.review`).HEXAGON_BIN ?? null, secretDeny: SECRET_DENY_GLOBS, effort: roleConfig(this.rc.cfg, "reviewer").effort };
+    if (!enforcedFor(reviewer, reviewPolicy).readOnlyEnforced && reviewer.adapterId !== "mock" && !this.rc.cfg.agents[reviewer.id]?.allow_weaker_isolation) {
       const m = `the reviewer agent "${reviewer.id}" (${reviewer.displayName}) cannot enforce read-only execution; reviews run read-only. Use another agent for the reviewer role, or set allow_weaker_isolation = true under [agents.${reviewer.id}] to accept weaker isolation.`;
       this.ev({ type: "error", kind: "internal", message: m, retryable: false });
       this.notify(`review blocked: ${m}`);
@@ -1415,6 +1432,7 @@ export class AgentRun {
           spec_issues: d.spec_issues ?? [],
           assumptions: d.assumptions ?? [],
           follow_ups: d.follow_ups ?? [],
+          ...(d.block_kind ? { block_kind: d.block_kind } : {}),
         };
         const v = validateResult(r);
         if (!v.ok) return { ok: false, message: `Result rejected: ${v.errors.join("; ")}. Fix it and run \`hexagon done\` again.` };

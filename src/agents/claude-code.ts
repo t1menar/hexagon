@@ -4,9 +4,10 @@ import { AdapterBase } from "./contracts/base.js";
 import { capabilities } from "./contracts/capabilities.js";
 import { classifyProviderError } from "./contracts/errors.js";
 import { selectionFrom, type ModelSelection } from "./contracts/model-selection.js";
+import { policyOf, type PolicyProjector, type Projection, type RunPolicy } from "./contracts/policy.js";
 import type { AdapterOutcome, AgentAdapter, AgentRunContext } from "./types.js";
 import { formatInjected, MESSAGE_ID_RE } from "./types.js";
-import { registerAdapter } from "./adapter-registry.js";
+import { realCliBlocked, registerAdapter } from "./adapter-registry.js";
 import type { AgentConfig } from "../core/config.js";
 
 export interface CliAgentConfig {
@@ -31,7 +32,7 @@ const MAX_NUDGES = 2;
 /** Reading dotenv files is refused by default; the user lifts it by editing the adapter command args. */
 const SECRET_FILES = ["Read(**/.env)", "Read(**/.env.*)", "Bash(cat .env:*)", "Bash(cat ./.env:*)"];
 
-export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
+export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter, PolicyProjector {
   readonly adapterId = "claude-code";
   readonly provider = "anthropic";
   readonly displayName = "Claude Code";
@@ -75,23 +76,34 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
     ];
     a.push(...this.modelArgs());
     a.push(...this.conf.args);
-    const hex = ["Bash(hexagon:*)", ...(ctx.env.HEXAGON_BIN ? [`Bash(${ctx.env.HEXAGON_BIN}:*)`] : [])];
-    if (ctx.readOnly) {
-      a.push("--permission-mode", "default", "--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit", ...SECRET_FILES);
-      a.push("--allowedTools", "Read", "Glob", "Grep", ...hex, ...ctx.allowCommands.filter((c) => c !== "*").map(bashRule));
-    } else if (ctx.allowCommands.includes("*")) {
-      a.push("--permission-mode", "bypassPermissions");
-    } else {
-      a.push("--permission-mode", "acceptEdits", "--disallowedTools", ...SECRET_FILES);
-      a.push("--allowedTools", "Read", "Glob", "Grep", "Edit", "Write", "MultiEdit", "TodoWrite", ...hex, ...ctx.allowCommands.map(bashRule));
-    }
+    a.push(...this.project(policyOf(ctx)).args);
     return a;
+  }
+
+  /** The core's policy projected onto Claude Code's permission flags, and what that enforces for this run. */
+  project(policy: RunPolicy): Projection {
+    const hex = ["Bash(hexagon:*)", ...(policy.hexagonBin ? [`Bash(${policy.hexagonBin}:*)`] : [])];
+    const secrets = SECRET_FILES;
+    if (policy.readOnly) {
+      return {
+        args: ["--permission-mode", "default", "--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit", ...secrets,
+          "--allowedTools", "Read", "Glob", "Grep", ...hex, ...policy.allowCommands.filter((c) => c !== "*").map(bashRule)],
+        enforced: { readOnlyEnforced: true, commandAllowList: true },
+      };
+    }
+    // "*" lifts the command allow-list altogether: this run does not enforce one, and says so.
+    if (policy.allowCommands.includes("*")) return { args: ["--permission-mode", "bypassPermissions"], enforced: { readOnlyEnforced: false, commandAllowList: false } };
+    return {
+      args: ["--permission-mode", "acceptEdits", "--disallowedTools", ...secrets,
+        "--allowedTools", "Read", "Glob", "Grep", "Edit", "Write", "MultiEdit", "TodoWrite", ...hex, ...policy.allowCommands.map(bashRule)],
+      enforced: { readOnlyEnforced: false, commandAllowList: true },
+    };
   }
 
   run(ctx: AgentRunContext): Promise<AdapterOutcome> {
     const [bin] = this.conf.command;
     // Tests set this so that a role nobody pointed at the mock agent fails loudly instead of spending real tokens.
-    if (process.env.HEXAGON_NO_REAL_CLI === "1" && bin === "claude") {
+    if (realCliBlocked(bin!)) {
       return Promise.resolve({ kind: "error", error: { kind: "internal", message: "the real CLI is disabled (HEXAGON_NO_REAL_CLI=1)", retryable: false } });
     }
     return new Promise((resolve) => {
@@ -156,7 +168,7 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
         if (host.isFinished()) return close();
         if (deliverInbox()) return;
         if (host.hasBlockingQuestion()) return; // wait; the answer arrives through the inbox
-        if (ctx.conversational) return host.emit({ type: "progress", text: "ready" }); // chat: wait for the next message
+        if (ctx.conversational) return host.emit({ type: "turn_end" }); // chat: wait for the next message
         if (nudges++ < MAX_NUDGES) {
           write("You ended your turn without reporting a result. If you are finished, run `hexagon done ...` (see the Hexagon protocol); otherwise continue the task.");
           return;
@@ -220,7 +232,9 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
             // The CLI reports the real context window of the model it used: prefer it to any assumed size.
             const mu = Object.values((e.modelUsage ?? {}) as Record<string, { contextWindow?: number }>);
             const window = Math.max(0, ...mu.map((m) => Number(m.contextWindow ?? 0)));
-            host.emit({ type: "usage", input: 0, output: 0, cache_read: 0, cache_write: 0, cost_usd: Math.max(0, total - lastCost), ...(window > 0 ? { window } : {}) });
+            // Only a real correction is reported: an all-zero usage event would look like a measurement.
+            const dCost = Math.max(0, total - lastCost);
+            if (dCost > 0 || window > 0) host.emit({ type: "usage", input: 0, output: 0, cache_read: 0, cache_write: 0, cost_usd: dCost, ...(window > 0 ? { window } : {}) });
             lastCost = Math.max(lastCost, total);
             if (e.is_error) {
               const msg = String(e.result ?? e.subtype ?? "error");

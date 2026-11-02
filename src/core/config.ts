@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse } from "smol-toml";
 import type { Effort, Role } from "../contracts/types.js";
+import { loadPlugins, pluginErrors } from "../agents/plugins.js";
 import { adapterNames, defaultAgents, migrateAgentEntry, primaryAgentId } from "../agents/registry.js";
 import { BUILTIN_ROLES, ROLE_ALIASES } from "./roles.js";
 import { DEFAULT_RECOVERY, type RecoveryConfig } from "./recovery.js";
@@ -63,7 +64,9 @@ export interface RoleConfig {
 export interface PriceRow { input_per_mtok?: number; cache_read_per_mtok?: number; output_per_mtok?: number }
 
 export interface HexagonConfig {
-  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** tokens one task may use (input + cache reads + output) before it stops and asks; 0 = no cap */ task_budget_tokens: number; /** paths only the integration may change (lockfiles, registries): a task cannot be granted them through `hexagon scope request` */ shared_files: string[]; /** runs ONE test for the mutation check; {file} and {name} are shell-quoted placeholders (e.g. `npx vitest run {file} -t {name}`). Empty = re-run the task's verify commands instead */ test_command: string; /** which verify commands run on the integration branch after each merge: this task's ("task"), plus those of tasks already merged ("merged"), plus final_verify ("full") */ integration_verify: "task" | "merged" | "full"; /** commands that must pass on the integration branch before /merge; empty = every task's verify commands */ final_verify: string[]; /** a merge conflict goes to the release engineer once before the task blocks */ release_on_conflict: boolean; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null; /** run the task's verify commands once before work starts, to know what was already red */ baseline: boolean; /** files that count as tests for the test-integrity check; empty = per-language defaults */ test_globs: string[] };
+  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** tokens one task may use (input + cache reads + output) before it stops and asks; 0 = no cap */ task_budget_tokens: number; /** a graph of 2+ tasks holds the rest of the tasks back after the first one is merged, until the human has looked and says continue */ checkpoint_after_first: boolean; /** analysis that shows unresolved uncertainty (unknown cause, cross-cutting change, unclear boundaries) must list read-only spikes before a spec is written */ require_spike: boolean; /** paths only the integration may change (lockfiles, registries): a task cannot be granted them through `hexagon scope request` */ shared_files: string[]; /** runs ONE test for the mutation check; {file} and {name} are shell-quoted placeholders (e.g. `npx vitest run {file} -t {name}`). Empty = re-run the task's verify commands instead */ test_command: string; /** which verify commands run on the integration branch after each merge: this task's ("task"), plus those of tasks already merged ("merged"), plus final_verify ("full") */ integration_verify: "task" | "merged" | "full"; /** commands that must pass on the integration branch before /merge; empty = every task's verify commands */ final_verify: string[]; /** a merge conflict goes to the release engineer once before the task blocks */ release_on_conflict: boolean; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null; /** run the task's verify commands once before work starts, to know what was already red */ baseline: boolean; /** files that count as tests for the test-integrity check; empty = per-language defaults */ test_globs: string[] };
+  /** Third-party adapters: manifest files (.toml/.json) or modules, relative to the project root, or package names. Additive; see docs/ADAPTERS.md. */
+  plugins: { adapters: string[] };
   roles: Record<Role, RoleConfig>;
   agents: Record<string, AgentConfig>;
   recovery: RecoveryConfig;
@@ -76,11 +79,12 @@ export interface HexagonConfig {
   control: ControlConfig;
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
   sandbox: { allow_commands: string[]; command_timeout_s: number };
-  ui: { open_with: "auto" | "tmux" | "iterm" | "terminal" | "print"; /** auto | full | reduced | off */ animation: string; startup_animation: boolean; inspector: boolean; /** faint ambient hexagons behind the network (full motion only) */ ambient: boolean; /** wheel scrolling and clicking agents; Shift-drag still selects text in most terminals */ mouse: boolean };
+  ui: { open_with: "auto" | "tmux" | "iterm" | "terminal" | "print"; /** auto | full | reduced | off */ animation: string; startup_animation: boolean; inspector: boolean; /** "minimal" (default): shared solid rules, no boxes, quiet input; "classic": the earlier framed look */ style: "minimal" | "classic"; /** faint ambient hexagons behind the network (full motion only) */ ambient: boolean; /** wheel scrolling and clicking agents; Shift-drag still selects text in most terminals */ mouse: boolean };
 }
 
 export const DEFAULT_CONFIG: HexagonConfig = {
-  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 3, task_budget_tokens: 3_000_000, shared_files: [], test_command: "", integration_verify: "merged", final_verify: [], release_on_conflict: true, max_identical_failures: 3, budget_tokens: null, base_branch: null, baseline: true, test_globs: [] },
+  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 3, task_budget_tokens: 3_000_000, checkpoint_after_first: true, require_spike: true, shared_files: [], test_command: "", integration_verify: "merged", final_verify: [], release_on_conflict: true, max_identical_failures: 3, budget_tokens: null, base_branch: null, baseline: true, test_globs: [] },
+  plugins: { adapters: [] },
   roles: Object.fromEntries(BUILTIN_ROLES.map((r) => [r.id, { agent: primaryAgentId(), effort: r.effort }])),
   agents: defaultAgents(),
   recovery: DEFAULT_RECOVERY,
@@ -97,7 +101,7 @@ export const DEFAULT_CONFIG: HexagonConfig = {
     ],
     command_timeout_s: 600,
   },
-  ui: { open_with: "auto", animation: "auto", startup_animation: true, inspector: true, ambient: true, mouse: true },
+  ui: { open_with: "auto", animation: "auto", startup_animation: true, inspector: true, style: "minimal", ambient: false, mouse: true },
 };
 
 /** Read-only probes every agent may always run (checking what's installed, looking around). */
@@ -159,11 +163,15 @@ export function loadConfig(file: string): HexagonConfig {
   const raw = parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
   raw.roles = migrateRoles(raw.roles);
   const cfg = merge(structuredClone(DEFAULT_CONFIG), raw);
+  // Plugins register adapters, so they load before the agents that name them are checked.
+  if (!Array.isArray(cfg.plugins?.adapters) || !cfg.plugins.adapters.every((x) => typeof x === "string")) throw new Error(`[plugins].adapters must be a list of paths or package names`);
+  loadPlugins(cfg.plugins.adapters, path.dirname(path.dirname(path.resolve(file))));
+  const why = () => (pluginErrors().length ? ` Plugin problems: ${pluginErrors().join("; ")}` : "");
   for (const [id, a] of Object.entries(cfg.agents)) {
     a.id = id;
     migrateAgentEntry(a); // an old adapter name maps onto the current integration
     if (!a.adapter) throw new Error(`[agents.${id}] needs adapter = "…" (available: ${adapterNames().join(", ")})`);
-    if (!adapterNames().includes(a.adapter)) throw new Error(`[agents.${id}] unknown adapter "${a.adapter}" (available: ${adapterNames().join(", ")}). No fallback is used.`);
+    if (!adapterNames().includes(a.adapter)) throw new Error(`[agents.${id}] unknown adapter "${a.adapter}" (available: ${adapterNames().join(", ")}). No fallback is used.${why()}`);
   }
   for (const [role, r] of Object.entries(cfg.roles)) {
     // A custom role only has to say what is different: the rest comes from the developer role.

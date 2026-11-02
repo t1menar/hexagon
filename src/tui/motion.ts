@@ -60,11 +60,11 @@ export type ParticleKind = "information" | "execution" | "review" | "completion"
 
 interface KindLook { token: Token; glyph: [string, string]; ascii: string; priority: number; size: 1 | 2 }
 const KIND: Record<ParticleKind, KindLook> = {
-  information: { token: "info", glyph: ["⬢", "⬡"], ascii: "O", priority: 3, size: 2 },
+  information: { token: "info", glyph: ["●", "○"], ascii: "O", priority: 3, size: 2 },
   execution: { token: "active", glyph: ["⬡", "·"], ascii: "o", priority: 2, size: 1 },
-  review: { token: "warning", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
-  completion: { token: "success", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
-  recovery: { token: "brand", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
+  review: { token: "warning", glyph: ["●", "○"], ascii: "O", priority: 4, size: 2 },
+  completion: { token: "success", glyph: ["●", "○"], ascii: "O", priority: 4, size: 2 },
+  recovery: { token: "brand", glyph: ["●", "○"], ascii: "O", priority: 4, size: 2 },
   ambient: { token: "border", glyph: ["·", "·"], ascii: ".", priority: 0, size: 1 },
 };
 
@@ -139,26 +139,34 @@ export class ParticleSystem {
    * Draw onto a canvas without ever hiding information: a particle may only land on blank cells or on connection
    * line characters, never on text, node outlines or other widgets.
    */
-  draw(c: Canvas, now: number, o: { depth: ColorDepth; unicode: boolean; bg?: Rgb; reduced?: boolean }): void {
+  draw(c: Canvas, now: number, o: { depth: ColorDepth; unicode: boolean; bg?: Rgb; reduced?: boolean; /** Over a line cell: "recolor" keeps the line's glyph and only tints it (the line stays continuous); "glyph" (classic) draws the particle. */ onLines?: "glyph" | "recolor" }): void {
     const bg = o.bg ?? TOKENS.surface2;
     for (const v of this.visible(now)) {
       const look = KIND[v.kind];
       const under = c.chars[v.y]?.[v.x];
       if (under === undefined || !(under === " " || LINE_CELLS.has(under))) continue;
       const col = mix(bg, TOKENS[look.token], 0.35 + 0.65 * v.alpha);
+      if (o.onLines === "recolor") {
+        // Edge activity on a minimal canvas: the connection itself lights up, nothing is drawn over it.
+        if (under !== " ") {
+          c.styles[v.y]![v.x] = st(sgr(col, o.depth), v.alpha > 0.7 && v.kind !== "ambient" ? "1" : "");
+          for (const [tx, ty] of v.trail) { const u3 = c.chars[ty]?.[tx]; if (u3 !== undefined && LINE_CELLS.has(u3)) c.styles[ty]![tx] = st(sgr(mix(bg, TOKENS[look.token], 0.35 + 0.35 * v.alpha), o.depth)); }
+          continue;
+        }
+      }
       const glyph = !o.unicode ? look.ascii : look.glyph[v.alpha > 0.55 ? 0 : 1];
       v.trail.forEach(([tx, ty], i) => {
         if ((tx === v.x && ty === v.y) || (i === 1 && tx === v.trail[0]![0] && ty === v.trail[0]![1])) return;
         const u2 = c.chars[ty]?.[tx];
         if (u2 === undefined || !(u2 === " " || LINE_CELLS.has(u2))) return;
         const tcol = mix(bg, TOKENS[look.token], (0.5 - 0.2 * i) * v.alpha + 0.1);
-        c.set(tx, ty, !o.unicode ? "." : i === 0 ? "⬡" : "·", st(sgr(tcol, o.depth)));
+        c.set(tx, ty, !o.unicode ? "." : i === 0 ? "○" : "·", st(sgr(tcol, o.depth)));
       });
       c.set(v.x, v.y, glyph, st(sgr(col, o.depth), v.alpha > 0.7 && v.kind !== "ambient" ? "1" : ""));
     }
   }
 }
-const LINE_CELLS = new Set("╎─│╭╮╰╯├┤┬┴┼═║╔╗╚╝╠╣╦╩╬▸·•-|+>".split(""));
+export const LINE_CELLS = new Set("╎─│╭╮╰╯├┤┬┴┼═║╔╗╚╝╠╣╦╩╬▸·•-|+>".split(""));
 
 // ───────────── tweens, timelines, scheduler ─────────────
 
@@ -180,6 +188,8 @@ export interface ManagerOptions {
   manual?: boolean;
 }
 
+const MIN_FRAME_MS = 16;
+
 export class AnimationManager {
   readonly clock: Clock;
   readonly particles = new ParticleSystem();
@@ -191,6 +201,9 @@ export class AnimationManager {
   private nextId = 1;
   private timer: NodeJS.Timeout | undefined;
   private disposed = false;
+  private lastStep = -Infinity;
+  /** When the armed timer fires (clock ms). */
+  private dueAt = Infinity;
   private pending = false;
   /** Continuous effects (e.g. a perimeter highlight on a working agent): keep the loop alive at their own frame rate. */
   private holds = new Map<string, number>();
@@ -198,7 +211,7 @@ export class AnimationManager {
   constructor(private o: ManagerOptions = {}) {
     this.clock = o.clock ?? systemClock;
     this.motion = o.motion ?? "full";
-    this.fps = o.fps ?? (this.motion === "full" ? 24 : this.motion === "reduced" ? 8 : 0);
+    this.fps = o.fps ?? (this.motion === "full" ? 15 : this.motion === "reduced" ? 8 : 0);
   }
 
   get enabled() { return this.motion !== "off" && !this.disposed; }
@@ -275,7 +288,11 @@ export class AnimationManager {
   /** Ask for a redraw at the next frame without any animation (demand-driven rendering). */
   invalidate(): void {
     this.pending = true;
-    this.wake();
+    // Input must not wait for a slow ambient/hold frame: pull an armed timer forward to the next ~16 ms slot.
+    if (this.timer && !this.o.manual && !this.disposed) {
+      const due = Math.max(this.clock.now(), this.lastStep + MIN_FRAME_MS);
+      if (this.dueAt - due > MIN_FRAME_MS) { this.stop(); this.arm(due - this.clock.now()); }
+    } else this.wake();
   }
 
   /** Advance everything to `now` (or the clock). Returns true when a redraw is needed. */
@@ -295,13 +312,20 @@ export class AnimationManager {
 
   private wake(): void {
     if (this.o.manual || this.timer || this.disposed) return;
+    this.arm(0);
+  }
+
+  private arm(ms: number): void {
     const loop = () => {
       this.timer = undefined;
+      this.dueAt = Infinity;
       if (this.disposed) return;
+      this.lastStep = this.clock.now();
       this.step();
-      if (this.busy || this.pending) { this.timer = setTimeout(loop, this.delay()); this.timer.unref?.(); }
+      if (this.busy || this.pending) this.arm(this.delay());
     };
-    this.timer = setTimeout(loop, 0);
+    this.dueAt = this.clock.now() + ms;
+    this.timer = setTimeout(loop, Math.max(0, ms));
     this.timer.unref?.();
   }
 

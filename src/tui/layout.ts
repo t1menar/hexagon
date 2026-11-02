@@ -20,7 +20,22 @@ export interface DashLayout {
 /** Rows the input box may grow to (a notice line above and a key hint below come on top). */
 export const MAX_INPUT_ROWS = 6;
 
-export function computeLayout(W: number, H: number, o: { inspector?: boolean; inputRows?: number } = {}): DashLayout {
+export function computeLayout(W: number, H: number, o: { inspector?: boolean; inputRows?: number; /** minimal chrome: neighbouring panels share one rule (their regions overlap by the border cells) */ shared?: boolean } = {}): DashLayout {
+  const L = baseLayout(W, H, o);
+  if (!o.shared) return L;
+  // Shared rules: a panel's frame is drawn on its edge cells, so the neighbour's frame must be the same cells. Interiors keep their size.
+  const { agents, network, inspector, activity, chat, strip } = L;
+  if (agents) {
+    network.x -= 1; network.w += 1;
+    if (activity) { activity.x -= 1; activity.w += 2; } else { chat.x -= 1; chat.w += 1; }
+  }
+  if (inspector) { network.w += 1; inspector.h += 1; }
+  network.h += 1; // the network's bottom rule is the band's top rule
+  void strip;
+  return L;
+}
+
+function baseLayout(W: number, H: number, o: { inspector?: boolean; inputRows?: number } = {}): DashLayout {
   const mode: LayoutMode = W >= 150 && H >= 30 ? "large" : W >= 100 && H >= 22 ? "medium" : "small";
   const inputH = 2 + Math.max(1, Math.min(MAX_INPUT_ROWS, o.inputRows ?? 1));
   const header: Region = { x: 0, y: 0, w: W, h: 1 };

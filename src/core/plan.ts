@@ -1,3 +1,4 @@
+import { globToRegExp } from "../util/fsx.js";
 import { canonicalRole } from "./roles.js";
 import type { Plan, Task } from "../contracts/types.js";
 import { validatePlan } from "../contracts/validate.js";
@@ -11,6 +12,61 @@ export function isTrivialVerify(cmd: string): boolean {
   const parts = cmd.split(/&&|\|\||;|\|/).map((x) => x.trim()).filter(Boolean);
   if (!parts.length) return true;
   return parts.every((x) => /^(?:true|false\s*\|\|\s*true|:|exit\s+0|echo\b.*|printf\b.*|ls\b.*|pwd|cat\b.*|head\b.*|tail\b.*|sleep\b.*|date|which\b.*|command\s+-v\b.*|git\s+status\b.*|test\s+-[de]\s+\.|node\s+(?:-v|--version)|npm\s+(?:-v|--version))$/.test(x));
+}
+
+/** Two write-scopes overlap if a glob of one matches a glob (as a path) of the other. */
+export function overlaps(a: string[], b: string[]): boolean {
+  for (const x of a) {
+    for (const y of b) {
+      if (x === y) return true;
+      if (globToRegExp(x).test(y) || globToRegExp(y).test(x)) return true;
+      // Both are patterns: overlap when their literal prefixes nest (src/** vs src/auth/*.ts).
+      const lx = x.replace(/[*?{].*$/, "");
+      const ly = y.replace(/[*?{].*$/, "");
+      if (lx !== x && ly !== y && (lx.startsWith(ly) || ly.startsWith(lx))) return true;
+    }
+  }
+  return false;
+}
+
+/** Do tasks `a` and `b` have a dependency path between them (either way)? */
+export function ordered(tasks: Task[], a: string, b: string): boolean {
+  const deps = new Map(tasks.map((t) => [t.id, t.depends_on]));
+  const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
+    if (from === to) return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (deps.get(from) ?? []).some((d) => reaches(d, to, seen));
+  };
+  return reaches(a, b) || reaches(b, a);
+}
+
+/**
+ * Two tasks that run in parallel and share an interface: one writes what the other reads. Without a task that both
+ * wait for (a contract: the types, schema or API shape), they build against a guess of each other.
+ */
+export function contractSmells(plan: Plan): string[] {
+  const out: string[] = [];
+  const isContract = (t: Task) => /\bcontract\b/i.test(t.title) || /\bcontract\b/i.test(t.id);
+  for (const a of plan.tasks) {
+    for (const b of plan.tasks) {
+      if (a.id >= b.id || ordered(plan.tasks, a.id, b.id)) continue;
+      const shared = [...a.files.write.filter((x) => overlaps([x], b.files.read)), ...b.files.write.filter((x) => overlaps([x], a.files.read))];
+      if (!shared.length) continue;
+      const common = plan.tasks.filter((t) => isContract(t) && a.depends_on.includes(t.id) && b.depends_on.includes(t.id));
+      if (!common.length) out.push(`${a.id} and ${b.id} run in parallel and share ${[...new Set(shared)].join(", ")}, but no contract task that both wait for defines it`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Does this verify command point at something concrete: a test file or path, or a selector for one test? A bare
+ * `npm test` or `go test ./...` runs everything and says nothing about the criterion it is supposed to prove.
+ */
+export function isSpecificVerify(cmd: string): boolean {
+  if (/(?:^|\s)(?:-k|-t|-run|--run|--grep|--filter|--testPathPattern|--test|-Dtest=\S*|-only)\b/.test(cmd) || /::\w/.test(cmd)) return true;
+  return cmd.split(/\s+/).slice(1).some((w) => !w.startsWith("-") && (/\.\w{1,5}$/.test(w) || (w.includes("/") && !/^\.{0,2}\/?\.\.\.$/.test(w) && !/\/\.\.\.$/.test(w))));
 }
 
 export interface PlanCheck { errors: string[]; warnings: string[]; order: string[] }
@@ -36,6 +92,7 @@ export function checkPlan(plan: unknown, specs: Spec[] = []): PlanCheck {
   }
   const order = topoOrder(p.tasks);
   if (order === null) errors.push("dependency cycle detected");
+  else warnings.push(...contractSmells(p));
 
   if (specs.length) {
     const covered = new Set<string>();
@@ -49,6 +106,13 @@ export function checkPlan(plan: unknown, specs: Spec[] = []): PlanCheck {
       for (const r of s.requirements) {
         knownReqs.add(r.id);
         for (const ac of r.acceptance) if (!covered.has(`${r.id}/${ac.id}`)) errors.push(`${r.id}/${ac.id} is not covered by any task (a task must list it under "acceptance" and cite ${r.id})`);
+      }
+    }
+    // An AC id on a task is a claim. It counts only if some verify command of the task points at a concrete test.
+    for (const t of p.tasks) {
+      const wholeRepo = t.files.write[0] === "**"; // single-task: the one task proves everything, a suite-wide run is the honest check
+      if (t.acceptance.length && t.verify.length && !wholeRepo && !t.verify.some(isSpecificVerify)) {
+        errors.push(`${t.id} lists acceptance criteria but its verify (${t.verify.map((v) => `\`${v}\``).join(", ")}) names no test file or test id, so nothing ties ${t.acceptance.slice(0, 3).join(", ")} to a check. Use a command that targets the test (e.g. \`npx vitest run test/a.test.ts\`, \`pytest tests/test_a.py -k name\`, \`go test ./pkg -run TestName\`).`);
       }
     }
     for (const t of p.tasks) for (const r of t.requirements) if (!knownReqs.has(r)) errors.push(`${t.id} references unknown requirement ${r}`);
