@@ -105,8 +105,8 @@ describe("startup sequence", () => {
 });
 
 describe("square cards", () => {
-  it("draw rectangular frames, with an explicit review footer in text", () => {
-    const g = render({ still: true });
+  it("classic style: square corners, dashed while queued, explicit review footer in text", () => {
+    const g = render({ still: true, style: "classic" });
     const out = plain(g.canvas);
     expect(g.card).not.toBeNull();
     expect(out).not.toMatch(/[⬡⬢╱╲]/); // no hexagon shapes or symbols
@@ -114,6 +114,14 @@ describe("square cards", () => {
     expect(out).toMatch(/REVIEW/);
     expect(out).toMatch(/not reviewed yet|in review|approved/);
     for (const r of g.nodes.values()) expect(r.w).toBe(g.card!.w);
+  });
+  it("minimal style (default): one rounded solid border for every state, no dashed lines or review rail", () => {
+    const g = render({ still: true });
+    const out = plain(g.canvas);
+    expect(out).toMatch(/╭.*T-1/);
+    expect(out).not.toMatch(/[┌┐└┘┄┆╎]/);
+    expect(out).not.toMatch(/[⬡⬢]/);
+    expect(out).toMatch(/REVIEW/);
   });
   it("review verdicts are written out, not only coloured", () => {
     const rejected = new Map<string, NodeFx>([["T-2", { review: "rejected" }]]);

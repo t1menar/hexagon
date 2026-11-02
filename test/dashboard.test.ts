@@ -54,7 +54,7 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tmp, ".hexagon"));
   screen = [];
   writes = 0;
-  for (const k of ["TERM", "COLORTERM", "LANG", "HEXAGON_STARTUP", "HEXAGON_ANIMATION", "HEXAGON_AMBIENT", "NO_MOTION", "NO_COLOR", "HEXAGON_ASCII", "SSH_CONNECTION"]) saved[k] = process.env[k];
+  for (const k of ["TERM", "COLORTERM", "LANG", "HEXAGON_STARTUP", "HEXAGON_ANIMATION", "HEXAGON_AMBIENT", "NO_MOTION", "NO_COLOR", "HEXAGON_ASCII", "SSH_CONNECTION", "HEXAGON_UI_STYLE"]) saved[k] = process.env[k];
   saved.isTTY = process.stdout.isTTY;
   Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
   vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string) => {
@@ -343,6 +343,29 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
 
+  it("minimal chrome (default): shared solid rules with titles in them, no boxes, no doubled lines, quiet input", async () => {
+    const { exit } = await boot({ "T-1": "done", "T-2": "working", "T-3": "queued" });
+    const t = text();
+    expect(t).toMatch(/─ AGENT NETWORK /);
+    expect(t).toMatch(/─ AGENTS /);
+    expect(t).not.toMatch(/││/); // neighbouring panels share one rule
+    expect(t).not.toMatch(/[┌┐└┘]/); // one border family
+    const rows = t.split("\n");
+    const rule = rows.findIndex((r) => /^─{40,}$/.test(r));
+    expect(rule).toBeGreaterThan(0); // the full-width rule above the status line
+    expect(rows[rule + 1]).toContain("F1 help");
+    expect(t).not.toMatch(/to chat/); // no recipient chip: the recipient is in the status line
+    exit();
+  });
+
+  it("classic style stays available (framed panels, bar input)", async () => {
+    const { exit } = await boot({ "T-1": "done", "T-2": "working" }, 160, 45, { HEXAGON_UI_STYLE: "classic" });
+    const t = text();
+    expect(t).toMatch(/╭─ AGENT NETWORK|╭ AGENT NETWORK/);
+    expect(t).toContain("Alt-Enter"); // the long key line under the input
+    exit();
+  });
+
   it("input grows to several lines (Alt-Enter, Ctrl-J, trailing backslash) and sends them as one message", async () => {
     const { app, client, exit } = await boot({ "T-1": "done", "T-2": "working" });
     const a = app as never as { onKey(s: string | undefined, k: Record<string, unknown>): void };
@@ -358,7 +381,8 @@ describe("dashboard (real App, fake daemon)", () => {
     const rows = text().split("\n");
     const at = rows.findIndex((r) => r.includes("first"));
     expect(rows.slice(at, at + 4).map((r) => r.replace(/^.*[›·]\s?/, "").trim())).toEqual(["first", "second", "third", "fourth"]);
-    expect(rows[at + 4]).toContain("Alt-Enter"); // key hint sits below the last input row
+    expect(rows[at + 4]).toMatch(/^─+$/); // minimal chrome: a solid rule under the last input row...
+    expect(rows[at + 5]).toContain("shortcuts"); // ...then one dim status line (full key help is behind ? / F1)
     a.onKey("\r", { name: "return" });
     await vi.waitFor(() => expect(client.calls.find((c) => c.m === "chat.send")).toBeTruthy());
     expect((client.calls.find((c) => c.m === "chat.send")!.p as { text: string }).text).toBe("first\nsecond\nthird\nfourth");

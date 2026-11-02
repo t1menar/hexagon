@@ -7,11 +7,24 @@ export const CAPS: Caps = detectCaps();
 /** Style table: every entry resolves a semantic design token for this terminal (see theme.ts). */
 export const S = buildStyles(CAPS.color);
 
+const UP = 1, RIGHT = 2, DOWN = 4, LEFT = 8;
+/** One border family: straight rules, rounded corners, tees and a cross. */
+const BITS_GLYPH: Record<number, string> = {
+  [RIGHT | LEFT]: "─", [RIGHT]: "─", [LEFT]: "─", [UP | DOWN]: "│", [UP]: "│", [DOWN]: "│",
+  [RIGHT | DOWN]: "╭", [LEFT | DOWN]: "╮", [UP | RIGHT]: "╰", [UP | LEFT]: "╯",
+  [UP | DOWN | RIGHT]: "├", [UP | DOWN | LEFT]: "┤", [LEFT | RIGHT | DOWN]: "┬", [LEFT | RIGHT | UP]: "┴", [UP | DOWN | LEFT | RIGHT]: "┼",
+};
+const GLYPH_BITS = new Map<string, number>([
+  ["─", RIGHT | LEFT], ["│", UP | DOWN], ["╭", RIGHT | DOWN], ["╮", LEFT | DOWN], ["╰", UP | RIGHT], ["╯", UP | LEFT],
+  ["├", UP | DOWN | RIGHT], ["┤", UP | DOWN | LEFT], ["┬", LEFT | RIGHT | DOWN], ["┴", LEFT | RIGHT | UP], ["┼", UP | DOWN | LEFT | RIGHT],
+]);
+
 export const st = (...codes: string[]) => codes.filter(Boolean).join(";");
 
 export class Canvas {
   readonly chars: string[][];
   readonly styles: string[][];
+  private readonly ruleBits = new Map<number, number>();
 
   constructor(readonly w: number, readonly h: number) {
     this.chars = Array.from({ length: h }, () => Array<string>(w).fill(" "));
@@ -55,6 +68,31 @@ export class Canvas {
       this.set(x + w - 1, y + j, "│", style);
     }
     if (title) this.text(x + 2, y, ` ${title} `, titleStyle ?? style, x + w - 2);
+  }
+
+  /**
+   * Horizontal rule of `w` cells. Where it meets another rule the cell becomes the right junction (├ ┤ ┬ ┴ ┼ or a rounded
+   * corner); text already on the cell is never overwritten. The ends only point inward, so a rule that ends on a vertical
+   * rule makes a tee or a corner, and a free end stays a plain `─`.
+   */
+  hrule(x: number, y: number, w: number, style: string): void {
+    for (let i = 0; i < w; i++) this.join(x + i, y, (i < w - 1 ? RIGHT : 0) | (i > 0 ? LEFT : 0) || (RIGHT | LEFT), style);
+  }
+  /** Vertical rule of `h` cells; same junction rules as `hrule`. */
+  vrule(x: number, y: number, h: number, style: string): void {
+    for (let j = 0; j < h; j++) this.join(x, y + j, (j < h - 1 ? DOWN : 0) | (j > 0 ? UP : 0) || (UP | DOWN), style);
+  }
+  /** Merge line directions into the cell (blank cells and other line glyphs only). */
+  private join(x: number, y: number, bits: number, style: string): void {
+    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return;
+    const cur = this.chars[y]![x]!;
+    const key = y * this.w + x;
+    // A free end draws as a full line glyph, so the real directions are remembered instead of read back from the glyph.
+    const mem = this.ruleBits.get(key);
+    const have = cur === " " ? 0 : mem !== undefined && BITS_GLYPH[mem] === cur ? mem : GLYPH_BITS.get(cur);
+    if (have === undefined) return; // text: leave it
+    this.ruleBits.set(key, have | bits);
+    this.set(x, y, BITS_GLYPH[have | bits] ?? "┼", style);
   }
 
   /** Copy another canvas into this one (clipped). */
