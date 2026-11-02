@@ -202,6 +202,8 @@ export interface ResultEnvelope {
   spec_issues: string[];
   assumptions: { text: string; question_id?: string | null }[];
   follow_ups: string[];
+  /** Deleted, skipped or weakened tests found by Hexagon (not the agent). Flags for the reviewer, never an automatic failure. */
+  test_integrity?: { kind: string; file: string; detail: string }[];
 }
 
 export interface ReviewVerdict {
