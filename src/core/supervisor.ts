@@ -129,6 +129,12 @@ export class AgentRun {
   private checkpoint = "";
   /** Deleted, skipped or weakened tests since base: flagged for the reviewer and the report. */
   private integrity: IntegrityFlag[] = [];
+  /** Done runs that found out-of-scope changes. The first is a warning (nothing reverted); a repeat reverts. */
+  private scopeStrikes = 0;
+  /** Every path Hexagon reverted for being out of scope, shown to the reviewer. */
+  private scopeReverts: string[] = [];
+  /** Revert explanation not yet shown to the agent; prefixed to its next follow-up. */
+  private revertNotice = "";
   private takeoverCommit = "";
   private cancelled = false;
   private userDone = false;
@@ -384,7 +390,7 @@ export class AgentRun {
       if (r.status === "needs_spec_change" || r.status === "blocked") {
         this.notify(`${r.status.replace(/_/g, " ")}: ${[...r.blockers, ...r.spec_issues].join("; ") || r.summary}`);
         if (r.status === "needs_spec_change") this.ev({ type: "error", kind: "needs_spec_change", message: r.summary, retryable: false });
-        await this.commit();
+        await this.commit("final");
         return this.final("blocked", r.status === "blocked" ? r.blockers.join("; ") || r.summary : `needs spec change: ${r.spec_issues.join("; ")}`);
       }
       if (r.status === "failed") {
@@ -396,8 +402,15 @@ export class AgentRun {
         continue;
       }
 
-      // 2. Scope + commit
-      await this.commit();
+      // 2. Scope + commit. A first offense is a warning: the agent is told what is outside its mask and nothing is reverted.
+      const maxFix = this.rc.cfg.run.max_fix_cycles;
+      const scope = await this.commit(maxFix <= 0 || fixLoops + 1 <= maxFix ? "warn" : "final");
+      if (scope.warn) {
+        this.ev({ type: "fix_cycle", n: ++fixLoops });
+        this.fixing = true;
+        followUp = this.scopeWarning(scope.warn);
+        continue;
+      }
 
       // 3. Verify
       this.fixing = false;
@@ -410,7 +423,7 @@ export class AgentRun {
         if (stuck) return this.final("failed", stuck);
         if (this.mayFix(++fixLoops) && !this.userDone) {
           this.fixing = true;
-          followUp = `Hexagon re-ran verification and it failed.\n\n$ ${v.cmd}\n(exit ${v.code})\n${this.excerpt(v.output, FIX_EXCERPT, "verify output")}\n\nFix the problem, re-run the command yourself, then run \`hexagon done\` again.`;
+          followUp = this.withNotice(`Hexagon re-ran verification and it failed.\n\n$ ${v.cmd}\n(exit ${v.code})\n${this.excerpt(v.output, FIX_EXCERPT, "verify output")}\n\nFix the problem, re-run the command yourself, then run \`hexagon done\` again.`);
           continue;
         }
         this.notify(this.escalation(`verification still fails after ${this.rc.cfg.run.max_fix_cycles} repair cycle(s)`, `\`${v.cmd}\` exited ${v.code}`));
@@ -440,7 +453,7 @@ export class AgentRun {
           if (stuck) return this.final("failed", stuck);
           if (this.mayFix(++fixLoops)) {
             this.fixing = true;
-            followUp = `The reviewer requested changes:\n${rv.summary}\n${rv.findings.map((f) => `- [${f.severity}] ${f.file ?? ""}${f.line ? `:${f.line}` : ""} ${f.issue}${f.suggestion ? ` → ${f.suggestion}` : ""}`).join("\n")}\n\nAddress the high and medium findings, then run \`hexagon done\` again.`;
+            followUp = this.withNotice(`The reviewer requested changes:\n${rv.summary}\n${rv.findings.map((f) => `- [${f.severity}] ${f.file ?? ""}${f.line ? `:${f.line}` : ""} ${f.issue}${f.suggestion ? ` → ${f.suggestion}` : ""}`).join("\n")}\n\nAddress the high and medium findings, then run \`hexagon done\` again.`);
             continue;
           }
           this.notify(this.escalation(`the reviewer still requests changes after ${this.rc.cfg.run.max_fix_cycles} repair cycle(s)`, rv.summary));
@@ -462,7 +475,7 @@ export class AgentRun {
         if (stuck) return this.final("failed", stuck);
         if (this.mayFix(++fixLoops)) {
           this.fixing = true;
-          followUp = `Your change passed its checks on its own, but after merging it into the integration branch (with what the other tasks delivered) this failed, so the merge was undone:\n\n$ ${integ.v.cmd}\n(exit ${integ.v.code})\n${this.excerpt(integ.v.output, FIX_EXCERPT, "verify output")}\n\nThe integration branch is now merged into your worktree. Make your change work together with it, re-run the command yourself, then run \`hexagon done\` again.`;
+          followUp = this.withNotice(`Your change passed its checks on its own, but after merging it into the integration branch (with what the other tasks delivered) this failed, so the merge was undone:\n\n$ ${integ.v.cmd}\n(exit ${integ.v.code})\n${this.excerpt(integ.v.output, FIX_EXCERPT, "verify output")}\n\nThe integration branch is now merged into your worktree. Make your change work together with it, re-run the command yourself, then run \`hexagon done\` again.`);
           continue;
         }
         this.notify(this.escalation(`it passes alone but breaks the integration branch, after ${this.rc.cfg.run.max_fix_cycles} repair cycle(s)`, `\`${integ.v.cmd}\` exited ${integ.v.code}`));
@@ -1063,17 +1076,29 @@ export class AgentRun {
     this.ev({ type: "error", kind: "scope_violation", message: rewritten ? "the agent rewrote git history; its changes were kept as plain edits and checked against the scope" : "the agent made its own git commits; they were folded into one Hexagon commit and checked against the scope", retryable: false });
   }
 
-  private async commit(): Promise<void> {
+  /**
+   * Commit what the agent did. Changes outside the write mask: the first time they are reported back to the agent and
+   * nothing is committed or reverted ("warn"); if they are still there on the next done (or the agent cannot be
+   * given another round), they are reverted and the reason goes into the next follow-up and the reviewer's input.
+   */
+  private async commit(mode: "warn" | "final" = "final"): Promise<{ warn?: string[] }> {
     if (!this.userDone) await this.normaliseHistory();
     const changed = await g.uncommittedFiles(this.worktree);
     if (!this.userDone) {
       const outside = changed.filter((f) => !matchesAny(f, this.task.files.write));
+      if (outside.length && mode === "warn" && this.scopeStrikes === 0) {
+        this.scopeStrikes++;
+        this.ev({ type: "error", kind: "scope_violation", message: `out-of-scope changes (not reverted yet, the agent was told): ${outside.join(", ")}`, retryable: true });
+        return { warn: outside };
+      }
       for (const f of outside) {
         const tracked = (await g.git(this.worktree, ["ls-files", "--error-unmatch", f])).ok;
         if (tracked) await g.git(this.worktree, ["checkout", "--", f]);
         else fs.rmSync(path.join(this.worktree, f), { force: true, recursive: true });
       }
       if (outside.length) {
+        this.scopeReverts.push(...outside.filter((f) => !this.scopeReverts.includes(f)));
+        this.revertNotice = `Hexagon reverted these paths because they are outside this task's write scope${this.scopeStrikes ? " and were still there after the earlier warning" : ""}: ${outside.join(", ")}. Write scope: ${this.task.files.write.join(", ") || "(empty)"}. Anything your work needs from them must live inside the scope.`;
         this.ev({ type: "error", kind: "scope_violation", message: `reverted out-of-scope changes: ${outside.join(", ")}`, retryable: false });
       }
     }
@@ -1087,6 +1112,19 @@ export class AgentRun {
     const files = await g.changedFiles(this.worktree, this.baseCommit);
     if (files.length) this.ev({ type: "files", files });
     if (this.result) this.result.files_changed = files;
+    return {};
+  }
+
+  /** What the agent is told on the first out-of-scope finding. */
+  private scopeWarning(outside: string[]): string {
+    return `Hexagon found changes outside this task's write scope. Nothing was reverted yet and nothing was committed.\n\nOutside the scope:\n${outside.map((f) => `- ${f}`).join("\n")}\n\nWrite scope: ${this.task.files.write.join(", ") || "(empty)"}\n\nChoose one:\n1. Drop the changes: restore tracked files with \`git checkout -- <path>\`, delete files you created.\n2. Move the work into a file inside the scope.\n3. If the task cannot be done without these files, finish with \`hexagon done --status needs_spec_change --issue "<paths and why>"\` so the plan can be changed.\n\nThen run \`hexagon done\` again. If these paths are still changed then, Hexagon reverts them and tells you.`;
+  }
+
+  /** Prefix a follow-up with a pending explanation of what Hexagon reverted (once). */
+  private withNotice(text: string): string {
+    const n = this.revertNotice;
+    this.revertNotice = "";
+    return n ? `${n}\n\n${text}` : text;
   }
 
   private async verify(cwd = this.worktree): Promise<{ ok: boolean; cmd: string; code: number; output: string }> {
@@ -1196,6 +1234,11 @@ export class AgentRun {
 
   /** What Hexagon ran and saw, as opposed to what the developer says. */
   private verifySummary(): string {
+    const reverted = this.scopeReverts.length ? `\n<reverted_out_of_scope note="Hexagon reverted these paths: the developer changed files outside the write scope">\n${this.scopeReverts.join("\n")}\n</reverted_out_of_scope>` : "";
+    return this.verifyBody() + reverted;
+  }
+
+  private verifyBody(): string {
     const last = this.verifyLog.slice(-Math.max(1, this.task.verify.length));
     if (!this.task.verify.length) return `<verification>no verify command${this.task.verify_exempt ? ` (exempt: ${this.task.verify_exempt})` : ""}: nothing independent was run</verification>`;
     return `<verification note="run by Hexagon after the developer finished">\n${last.map((v) => `${v.code === 0 ? "pass" : "FAIL"} (exit ${v.code}): ${v.cmd}`).join("\n")}\n</verification>`;
