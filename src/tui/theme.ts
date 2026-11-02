@@ -34,7 +34,7 @@ export function detectCaps(env: Env = process.env, isTTY = Boolean(process.stdou
   let motion: MotionMode;
   if (req === "off" || env.NO_MOTION || !isTTY || term === "dumb") motion = "off";
   else if (req === "reduced" || env.REDUCE_MOTION || ssh) motion = "reduced";
-  else motion = req === "full" ? "full" : "reduced"; // "auto" is deliberately calm: full motion is opt-in
+  else motion = req === "auto" || req === "full" ? "full" : "reduced"; // "auto" = full locally, reduced over SSH
   if (req === "full" && !env.NO_MOTION && isTTY && term !== "dumb") motion = "full";
   const fps = motion === "full" ? 15 : motion === "reduced" ? 8 : 0;
   const startupAnimation = (over.startup ?? true) && env.HEXAGON_STARTUP !== "off" && motion === "full";

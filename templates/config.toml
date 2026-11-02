@@ -142,7 +142,7 @@ command_timeout_s = 600
 
 [ui]
 open_with = "auto"      # "auto" | "tmux" | "iterm" | "terminal" | "print"
-animation = "auto"      # "auto" (= reduced: 8 fps, no ambient layer) | "full" (opt-in, 15 fps, particles + ambient) | "reduced" | "off"; also HEXAGON_ANIMATION, NO_MOTION
+animation = "auto"      # "auto" (= full, 15 fps; reduced over SSH) | "full" (forced)  | "reduced" | "off"; also HEXAGON_ANIMATION, NO_MOTION
 startup_animation = true
 inspector = true        # show the inspector panel when the terminal is wide enough
 mouse = true            # wheel scrolls the chat, click selects an agent; hold Shift to select text
