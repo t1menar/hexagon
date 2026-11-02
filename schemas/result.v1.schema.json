@@ -28,6 +28,7 @@
         "properties": { "cmd": { "type": "string" }, "exit_code": { "type": "integer" } }
       }
     },
+    "block_kind": { "enum": ["plan", "tool", "scope"] },
     "blockers": { "type": "array", "items": { "type": "string" } },
     "spec_issues": { "type": "array", "items": { "type": "string" } },
     "assumptions": {

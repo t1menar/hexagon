@@ -395,7 +395,7 @@ export class AgentRun {
         if (r.status === "needs_spec_change") this.ev({ type: "error", kind: "needs_spec_change", message: r.summary, retryable: false });
         await this.commit("final");
         const why = [...r.blockers, ...r.spec_issues].join("; ") || r.summary;
-        const kind = classifyBlock(r.status, why);
+        const kind = classifyBlock(r.status, why, r.block_kind);
         this.ev({ type: "progress", text: `blocked (${kind}): ${why.slice(0, 200)}` });
         if (kind === "plan") this.rc.replan?.(this.task, why, await g.changedFiles(this.worktree, this.baseCommit).catch(() => []));
         else this.notify(`${this.task.id} is blocked by a ${kind === "tool" ? "missing tool or permission (hexagon exec/install)" : "scope problem (hexagon scope request)"}, not by the plan: ${why.slice(0, 200)}`);
@@ -1415,6 +1415,7 @@ export class AgentRun {
           spec_issues: d.spec_issues ?? [],
           assumptions: d.assumptions ?? [],
           follow_ups: d.follow_ups ?? [],
+          ...(d.block_kind ? { block_kind: d.block_kind } : {}),
         };
         const v = validateResult(r);
         if (!v.ok) return { ok: false, message: `Result rejected: ${v.errors.join("; ")}. Fix it and run \`hexagon done\` again.` };

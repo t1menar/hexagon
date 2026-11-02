@@ -13,6 +13,9 @@ describe("blocked is classified before anything is re-planned", () => {
     expect(classifyBlock("blocked", "REQ-A-001 contradicts REQ-B-002: both define the retry limit")).toBe("plan");
     expect(classifyBlock("blocked", "")).toBe("plan");
     expect(classifyBlock("needs_spec_change", "go is not installed")).toBe("plan");
+    // What the agent states wins over guessing from English (no regex on a Russian or terse message).
+    expect(classifyBlock("blocked", "нужен другой файл", "scope")).toBe("scope");
+    expect(classifyBlock("blocked", "go is not installed", "plan")).toBe("plan");
   });
 
   it("the request quotes the agent as data and names only the tasks that can still be edited", () => {

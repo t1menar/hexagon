@@ -179,7 +179,8 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         const r = api.return?.({ task: ret[1]!, issue: ret[2]!.trim() });
         if (r?.ok) return { kind: "finished" };
       }
-      const block = /@block:\s*(.+)$/m.exec(task.description ?? "");
+      // `@block-once:` blocks the first attempt only, so a replan followed by a retry can finish.
+      const block = /@block:\s*(.+)$/m.exec(task.description ?? "") ?? (/-a1$/.test(ctx.agentRunId) ? /@block-once:\s*(.+)$/m.exec(task.description ?? "") : null);
       if (block && firstOfTask) {
         host.emit({ type: "chat", from: "agent", text: `I can't finish: ${block[1]!.trim()}` });
         api.done({ status: "blocked", summary: block[1]!.trim(), blockers: [block[1]!.trim()] });

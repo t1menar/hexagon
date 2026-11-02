@@ -78,7 +78,9 @@ export class ControlService {
     o.approveUntraced(live.plan, "by this replan");
     live.scheduler.reviveGated();
     const task = String(a.task);
+    live.scheduler.releaseReplan(task);
     if (live.plan.tasks.some((t) => t.id === task) && live.store.byTask(task)?.state === "blocked") live.scheduler.retry(task, {});
+    live.scheduler.resumeScheduling();
     return { tasks: live.plan.tasks.length, retried: live.plan.tasks.some((t) => t.id === task) ? task : null };
   }
 

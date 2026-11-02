@@ -14,8 +14,9 @@ const SCOPE = /\b(out[- ]of[- ]scope|write scope|outside (?:my|the|its) (?:scope
  * are named as such. `needs_spec_change` is always a plan problem; a `blocked` with none of the tool/scope signs is
  * treated as a plan problem too (the safe reading: a person looks at it instead of the task silently dying).
  */
-export function classifyBlock(status: "blocked" | "needs_spec_change", text: string): BlockClass {
+export function classifyBlock(status: "blocked" | "needs_spec_change", text: string, stated?: BlockClass): BlockClass {
   if (status === "needs_spec_change") return "plan";
+  if (stated === "plan" || stated === "tool" || stated === "scope") return stated; // the agent said so: no guessing from English
   if (SCOPE.test(text)) return "scope";
   if (TOOL.test(text)) return "tool";
   return "plan";
