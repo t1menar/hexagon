@@ -1,3 +1,4 @@
+import { redact } from "../util/redact.js";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -82,19 +83,7 @@ type Line =
   | { t: "state"; id: string; state: DeliveryState; message_ids?: string[]; reason?: string | null; at: string }
   | { t: "sub"; agent: string; topic: string; at: string };
 
-const SECRETS: RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-  /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}\b/g,
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
-  /\b(?:password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S{6,}/gi,
-];
-
-/** Secrets never go on the bus. */
-export function redact(text: string): string {
-  return SECRETS.reduce((t, re) => t.replace(re, "[redacted]"), text);
-}
+export { redact };
 
 /** Bus content is data. It cannot close or forge the wrappers Hexagon puts around messages. */
 export function neutralize(text: string): string {
