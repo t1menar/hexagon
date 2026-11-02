@@ -119,6 +119,9 @@ export class SoloSession extends EventEmitter {
       case "session_handle":
         this.opts.sessions?.setHandle(this.id, e.handle);
         return;
+      case "turn_end":
+        if (this.opts.conversational) { if (this.status.state === "running") this.status.state = "idle"; this.status.activity = null; }
+        break;
       case "progress":
         // Fires on every CLI start, resumed or not: it only confirms the session exists.
         if (e.text === "session started") { this.opts.sessions?.confirm(this.id); return; }

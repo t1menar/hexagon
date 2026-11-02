@@ -84,6 +84,10 @@ export interface Preparation {
 interface Gate { promise: Promise<void>; resolve: () => void }
 
 /** Supervises one attempt of one task. The only writer of its status (through the store). */
+/** Shared turn lifecycle: how often a CLI that ended its turn without reporting is asked to report. */
+const MAX_SILENT_TURNS = 2;
+export const DONE_NUDGE = "You ended your turn without reporting a result. If you are finished, run `hexagon done --summary \"…\"` (see the Hexagon protocol); otherwise continue the task.";
+
 export class AgentRun {
   readonly agentRunId: string;
   readonly worktree: string;
@@ -357,6 +361,7 @@ export class AgentRun {
     let followUp: string | undefined = initial;
     let quiet = initialFromUser;
     let fixLoops = 0;
+    let silentTurns = 0;
     for (;;) {
       // 1. Implement (or fix)
       this.finished = false;
@@ -386,6 +391,14 @@ export class AgentRun {
         return this.final("failed", e.message);
       }
       const r = this.result;
+      // The turn lifecycle belongs to the core: a CLI that exits without reporting is told once or twice to report, in the same
+      // session, instead of failing the task. (A live-input CLI is nudged inside its own stream, where it is cheaper.)
+      if (!r && outcome.kind === "finished" && silentTurns < MAX_SILENT_TURNS && this.adapter.capabilities.supportsSessionResume && !this.adapter.capabilities.supportsLiveInput && !this.cancelled) {
+        silentTurns++;
+        this.ev({ type: "progress", text: `the agent ended its turn without \`hexagon done\`; asking it to report (${silentTurns}/${MAX_SILENT_TURNS})` });
+        followUp = DONE_NUDGE;
+        continue;
+      }
       if (!r) {
         this.ev({ type: "error", kind: "invalid_output", message: "the agent stopped without running `hexagon done`", retryable: true });
         return this.final("failed", "no result reported");

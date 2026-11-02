@@ -223,6 +223,8 @@ export interface ReviewVerdict {
 export type AgentEvent =
   | { type: "state"; state: AgentState; reason?: string | null }
   | { type: "progress"; text: string }
+  /** The CLI finished a turn and now waits for the next message (chat sessions). The legacy `progress` text "ready" means the same. */
+  | { type: "turn_end" }
   /** The agent CLI refused a tool call that needs approval (e.g. a command outside allow_commands). */
   | { type: "permission_denied"; tool: string; command: string }
   /** A command the agent ran isn't installed (exit 127 / "command not found"). */

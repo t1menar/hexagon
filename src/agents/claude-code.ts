@@ -156,7 +156,7 @@ export class ClaudeCodeAdapter extends AdapterBase implements AgentAdapter {
         if (host.isFinished()) return close();
         if (deliverInbox()) return;
         if (host.hasBlockingQuestion()) return; // wait; the answer arrives through the inbox
-        if (ctx.conversational) return host.emit({ type: "progress", text: "ready" }); // chat: wait for the next message
+        if (ctx.conversational) return host.emit({ type: "turn_end" }); // chat: wait for the next message
         if (nudges++ < MAX_NUDGES) {
           write("You ended your turn without reporting a result. If you are finished, run `hexagon done ...` (see the Hexagon protocol); otherwise continue the task.");
           return;

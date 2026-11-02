@@ -33,7 +33,7 @@ export function ctx(over: Partial<AgentRunContext> = {}, events: AgentEvent[] = 
 export async function oneTurn(a: AgentAdapter, c: Conformance, over: Partial<AgentRunContext>): Promise<{ events: AgentEvent[]; kind: string }> {
   const events: AgentEvent[] = [];
   const ac = new AbortController();
-  const done = () => events.some((e) => e.type === "progress" && e.text === "ready");
+  const done = () => events.some((e) => e.type === "turn_end" || (e.type === "progress" && e.text === "ready"));
   const timer = setInterval(() => { if (done()) ac.abort(); }, 100);
   try {
     const out = await a.run(ctx({ env: c.env ?? {}, signal: ac.signal, ...over }, events));

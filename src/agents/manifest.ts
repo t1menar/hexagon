@@ -133,7 +133,7 @@ export function applyRules(rules: EventRule[], line: Record<string, unknown>): A
         out.push({ type: "usage", input: i, output: o, cache_read: num(g(r.cache_read)) ?? 0, cache_write: num(g(r.cache_write)) ?? 0, cost_usd: num(g(r.cost_usd)) ?? 0, step: true, ...(w ? { window: w } : {}) });
         break;
       }
-      case "turn_end": break; // a one-shot turn ends when the process exits; accepted so a manifest can state it
+      case "turn_end": out.push({ type: "turn_end" }); break;
     }
   }
   return out;

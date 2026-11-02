@@ -89,7 +89,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
       if (ctx.role === "control") {
         if (ctx.resume && ctx.followUp) host.emit({ type: "chat", from: "agent", text: `(mock) ${ctx.followUp.includes("approved") ? "Approved, running it now." : ctx.followUp}` });
         else host.emit({ type: "chat", from: "agent", text: `(mock) You said: ${ctx.prompt.replace(/<hexagon_state>[\s\S]*?<\/hexagon_state>\s*/g, "").replace(/<\/?user_message>/g, "").trim()}` });
-        host.emit({ type: "progress", text: "ready" });
+        host.emit({ type: "turn_end" });
         while (!ctx.signal.aborted) {
           await sleep(50);
           for (const m of host.drainInbox()) {
@@ -97,7 +97,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
             if (needs) host.emit({ type: "permission_denied", tool: "Bash", command: needs[1]!.trim() });
             host.emit({ type: "usage", input: 200, output: 20, cache_read: 0, cache_write: 0, cost_usd: 0, step: true });
             host.emit({ type: "chat", from: "agent", text: `(mock) You said: ${m.body.replace(/<hexagon_state>[\s\S]*?<\/hexagon_state>\s*/g, "").trim()}` });
-            host.emit({ type: "progress", text: "ready" });
+            host.emit({ type: "turn_end" });
           }
         }
         return { kind: "interrupted" };
