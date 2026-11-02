@@ -15,6 +15,8 @@ agent usage and output quality.
 full-screen TUI uses a small built-in ANSI renderer. Agents are wrapped coding CLIs (Claude
 Code via `claude -p` stream-json, or any `exec` CLI). State is kept in JSON and JSONL files.
 
+> **Later changes** (see [SDD.md](SDD.md)): single-task is the default mode and a graph is opt-in; out-of-scope edits warn before they revert; evidence is verified by mutation; merges re-run earlier tasks' verify. Sections below that describe a graph as the only path are historical.
+>
 > **v0.2 changes vs. this plan:**
 > - **No direct API integration.** Agents are CLI sessions that report through
 >   `hexagon report|ask|note|done|review` shell commands; see COMMUNICATION.md, "v0.2".
