@@ -1398,6 +1398,8 @@ export class Orchestrator extends EventEmitter {
       for (const t of run.plan.tasks) if (!after.has(t.id) && t.depends_on.some((d) => d === task.id || after.has(d))) { after.add(t.id); grew = true; }
     }
     const tail = [...after].filter((id) => run.scheduler.editable(id));
+    // A spec change gated this task: it has not started either, so it is part of what the replan may rewrite.
+    if (changed.length === 0 && why.startsWith("the spec changed") && run.scheduler.editable(task.id)) tail.unshift(task.id);
     // The analyst proposes a minimal spec patch and graph edits; if it is busy with a draft, the Assistant is asked instead.
     if (this.sessions.get("planner")?.alive) {
       this.notice("attention", `${task.id} is blocked by the plan (${why.slice(0, 120)}). The analyst is busy; the Assistant is asked for a change to the tasks after it. You confirm with /apply.`);

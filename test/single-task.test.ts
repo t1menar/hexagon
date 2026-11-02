@@ -75,6 +75,8 @@ describe("single-task mode runs end to end", () => {
   afterEach(() => { for (const o of open.splice(0)) { o.c.close(); o.s.orch.shutdown(); } });
 
   it("one task with the whole repository as scope, and the usual checks run on it", async () => {
+    const { MockAdapter } = await import("../src/agents/mock.js");
+    MockAdapter.turns.length = 0;
     const root = fs.mkdtempSync(path.join("/tmp", "hst-"));
     git(root, "init", "-q", "-b", "main");
     fs.writeFileSync(path.join(root, "README.md"), "# demo\n");
@@ -108,6 +110,8 @@ describe("single-task mode runs end to end", () => {
     await c.call("draft.approve", {});
     const st = await until(async () => { const x = await c.call<AgentStatus>("agent.status", { task: "T-1" }); return x.state === "done" || x.state === "failed" ? x : null; });
     expect(st.state).toBe("done");
+    // Single-task keeps the whole pipeline: a reviewer turn ran on the task, it was not skipped for being alone.
+    expect(MockAdapter.turns.some((t) => /^T-1-a\d+\.review$/.test(t.agent))).toBe(true);
   }, 120000);
 
   it("an uncertain goal runs a spike before the spec, and the spec step is told to use its decision", async () => {

@@ -5,9 +5,39 @@ A goal goes through gated stages. Each stage writes one artifact and Hexagon val
 | Stage | Agent | Artifact | Checked for |
 |---|---|---|---|
 | analyze | analyst | `analysis.md` | sections: current state, constraints, risks, open questions, mode, impacted areas |
+| spike (only when analyze is uncertain) | analyst, read-only | `spike.md` | every `S-n` answered with `file:line` evidence, then a decision |
 | specify | analyst | `spec.md` (+ optional `design.md`) | spec lint (requirement ids, acceptance criteria); design: interfaces, data flow, trade-offs |
 | **approve** | you | `.hexagon/approvals.json` | the spec exactly as on disk, hashed per requirement |
 | plan | analyst | `plan.json` | `hexagon plan-check` |
+| replan (only when a running plan breaks) | analyst | `replan.json` (+ patched `spec.md`) | graph commands only, never a started task |
+
+```
+goal → analyze → [spike] → specify → approve (card) → plan (card) → run → merge
+                                          ↑                          │
+                                          └── replan ← blocked(plan) / needs_spec_change / spec edited after approval
+```
+
+It is not a one-way waterfall: findings during the run flow back into the spec and the tasks that have not started.
+
+## Exploring first (spike)
+
+If the analysis says the cause is unknown, the change is cross-cutting, or the boundaries are unclear, it must contain a `## Spike` section (`S-n` questions) or analysis validation fails (`[run].require_spike`, default on). A spike is a read-only investigation by the analyst: it reads and runs nothing that changes the repo, writes `spike.md` (findings with `file:line` per question, then the decision), and the specify step is told to build on that decision. No sandbox experiments yet.
+
+## What you read at a gate
+
+Both gates show a card of at most five bullets: what will change, how it will be verified, the plan smells (task without verify or with a verify that passes whatever the code does, no requirement cited, parallel tasks writing the same files, a shared interface without a contract task) and the files to read in full. Nothing is approved by showing it.
+
+## When the plan breaks (replan)
+
+A task blocked by the plan itself, an agent answer of `needs_spec_change`, or a requirement edited after approval, asks the analyst for a minimal change: a patch to the spec (per-requirement hashes show what moved) plus `graph.*` edits to tasks that have not started. It arrives as one proposal showing both. `/apply` re-approves the patched spec, edits the live graph and retries the blocked task; `/reject` leaves everything as it was. Started and finished tasks are never edited. If the analyst is busy the Assistant is asked instead. Tool and scope blocks are not replans: they point at `hexagon exec/install` and `scope request`. A requirement changed after approval gates the tasks citing it and sends the first gated one to replan once (not in unattended runs, `HEXAGON_NO_CHECKPOINT=1`, which keep the plain gate).
+
+## Checkpoint after the first merge
+
+In a graph of two or more tasks the run pauses after the first task merges (`[run].checkpoint_after_first`, default on): look at `/changes`, then `/resume`, or change course with `/respec`, `/add`, `/rm`, `/link`. Resumed runs and `HEXAGON_NO_CHECKPOINT=1` skip it.
+
+## Parallel tasks and shared interfaces
+
+Two tasks that run in parallel and share an interface (one exports what the other imports) need a contract task both wait for: the plan check warns without one. A task that lists acceptance criteria needs a verify command that names a test file or selector; a bare `npm test` does not show a criterion is met (skipped for single-task mode).
 
 ## Modes: single-task or graph
 
