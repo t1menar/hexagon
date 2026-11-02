@@ -32,7 +32,7 @@ const USAGE = `${c.bold("hexagon")} ${VERSION} — run several coding agents on 
 ${c.bold("Start")}
   hexagon init ["what you're building"]   set up .hexagon/ and let an agent write HEXAGON.md
   hexagon                                 open the dashboard: chat with the assistant; /sdd for parallel agents
-  hexagon sdd "<goal>"                    spec-driven: the analyst writes spec + task graph (alias: new)
+  hexagon sdd [--mode single-task|dag] "<goal>"   spec-driven: the analyst writes the spec, then one checked task (default) or a task graph (alias: new)
   hexagon chat "<message>"                talk to the Hexagon Assistant
   hexagon run [plan.json] [-j N] [--agent X] [--follow]   run the approved draft (or a plan file)
 
@@ -518,18 +518,20 @@ async function init(args: string[]): Promise<void> {
 }
 
 async function newGoal(args: string[]): Promise<void> {
-  const goal = args.join(" ").trim();
+  const a = [...args];
+  const mode = one(a, "--mode");
+  const goal = a.join(" ").trim();
   if (!goal) throw new Error('usage: hexagon sdd "<what you want built>"');
   const r = root();
   const client = await HexClient.connect(r);
   if (process.stdout.isTTY && process.stdin.isTTY) {
-    await client.call("goal.new", { goal });
+    await client.call("goal.new", { goal, mode });
     const { App } = await import("./tui/app.js");
     await new App(client, r, "planner").start();
     return;
   }
   await client.subscribe();
-  await client.call("goal.new", { goal });
+  await client.call("goal.new", { goal, mode });
   const draft = new Promise<Draft>((resolve) => client.on("push", (p: Push) => { if (p.event === "draft" && p.data) resolve(p.data); }));
   const st = await followSession(client, "planner");
   if (st.state !== "done") { client.close(); process.exitCode = 1; return; }

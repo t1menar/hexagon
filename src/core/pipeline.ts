@@ -40,6 +40,41 @@ function missingSections(text: string, required: string[], file: string): string
   return errors;
 }
 
+/**
+ * How much machinery a request deserves.
+ *  solo        one small, well-understood edit: just ask the assistant.
+ *  single-task one agent, one worktree, no file masks, but the full checks (verify, mutation evidence, review, integrity).
+ *  dag         several independent slices that really run in parallel.
+ */
+export type Mode = "solo" | "single-task" | "dag";
+export const MODES: readonly Mode[] = ["solo", "single-task", "dag"];
+
+/** The mode the analyst wrote under `## Mode` (first word of the section), if any. */
+export function parseMode(analysis: string): { mode: Mode; reason: string } | null {
+  const body = sections(analysis).get("mode");
+  const m = body ? /\b(solo|single-task|single task|dag)\b/i.exec(body) : null;
+  if (!m) return null;
+  const mode = m[1]!.toLowerCase().replace(" ", "-") as Mode;
+  return { mode, reason: body!.replace(m[0], "").replace(/^[\s:\-—,.]+/, "").trim() };
+}
+
+/**
+ * Heuristic used when the analyst did not choose. It reads what analysis.md already says: how many modules the change
+ * touches, whether it names independent slices, and whether the cause is known. Small or unclear work gets
+ * single-task (one agent with every check); only clearly parallel work gets a graph.
+ */
+export function recommendMode(analysis: string): { mode: Mode; reason: string } {
+  const s = sections(analysis);
+  const impacted = s.get("impacted areas") ?? "";
+  const paths = [...new Set([...impacted.matchAll(/[\w.-]+(?:\/[\w.*-]+)+/g)].map((m) => m[0]))];
+  const modules = new Set(paths.map((p) => p.split("/").slice(0, 2).join("/")));
+  const slices = (impacted.match(/\bindependent(?:ly)?\b|\bin parallel\b|\bseparate (?:module|service|package|slice)/gi) ?? []).length;
+  const knownCause = /\broot cause\b|\bthe (?:bug|defect|problem) is\b/i.test(s.get("current state") ?? "");
+  if (paths.length <= 1 && knownCause) return { mode: "solo", reason: `one file${paths[0] ? ` (${paths[0]})` : ""} and a known cause` };
+  if (modules.size >= 3 && slices >= 2) return { mode: "dag", reason: `${modules.size} modules with ${slices} independent slices` };
+  return { mode: "single-task", reason: modules.size ? `${modules.size} module(s), ${slices} independent slice(s): one agent with full checks is enough` : "scope unclear: one agent with full checks is the safe default" };
+}
+
 export const checkAnalysis = (text: string): string[] => missingSections(text, ANALYSIS_SECTIONS, "analysis.md");
 export const checkDesign = (text: string): string[] => missingSections(text, DESIGN_SECTIONS, "design.md");
 
