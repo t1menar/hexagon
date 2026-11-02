@@ -4,14 +4,15 @@ import net from "node:net";
 import type { Effort } from "../contracts/types.js";
 import type { ApiOp } from "../core/registry.js";
 import { atomicWriteJson, nowIso } from "../util/fsx.js";
+import { ensureUserToken, METHOD_SCOPES, sameToken } from "./auth.js";
 import { Orchestrator, type Push } from "./orchestrator.js";
 
 export const PROTOCOL_VERSION = 2;
 const BUILD = buildId();
 
-interface Request { id: number; method: string; params?: Record<string, unknown> }
+interface Request { id: number; method: string; params?: Record<string, unknown>; token?: string }
 
-type Handler = (p: Record<string, unknown>, conn: Conn) => unknown | Promise<unknown>;
+type Handler = (p: Record<string, unknown>, conn: Conn, caller?: string) => unknown | Promise<unknown>;
 
 class Conn {
   subscribed = false;
@@ -32,6 +33,7 @@ export class DaemonServer {
   private conns = new Set<Conn>();
   readonly orch: Orchestrator;
   private handlers: Record<string, Handler>;
+  private userToken = "";
 
   constructor(readonly root: string) {
     this.orch = new Orchestrator(root);
@@ -43,7 +45,8 @@ export class DaemonServer {
       ping: () => ({ pid: process.pid, protocol: PROTOCOL_VERSION, build: BUILD, busy: o.busy(), root, run_id: o.current?.runId ?? null }),
       subscribe: (_p, conn) => { conn.subscribed = true; return { ok: true }; },
       "ui.snapshot": () => o.snapshot(),
-      "agent.api": (p) => o.agentApi((p.agent as string) || null, (p.cwd as string) || null, str(p.op, "op") as ApiOp, (p.args as Record<string, unknown>) ?? {}),
+      // The caller's identity is its token's: an agent cannot speak as another agent.
+      "agent.api": (p, _c, caller) => o.agentApi(caller ?? ((p.agent as string) || null), (p.cwd as string) || null, str(p.op, "op") as ApiOp, (p.args as Record<string, unknown>) ?? {}),
       "init.start": (p) => o.startInit((p.description as string) || null),
       "goal.new": (p) => o.newGoal(str(p.goal, "goal")),
       "chat.send": (p) => { o.chat(str(p.text, "text")); return { ok: true }; },
@@ -124,11 +127,13 @@ export class DaemonServer {
       if (alive) throw new Error("a Hexagon daemon is already running for this project");
       fs.rmSync(sock, { force: true });
     }
+    this.userToken = ensureUserToken(this.root);
     this.server = net.createServer((s) => this.onConnection(s));
     await new Promise<void>((resolve, reject) => {
       this.server!.once("error", reject);
       this.server!.listen(sock, () => resolve());
     });
+    fs.chmodSync(sock, 0o600);
     atomicWriteJson(this.orch.paths.daemonInfo, { pid: process.pid, protocol: PROTOCOL_VERSION, socket: sock, started_at: nowIso(), root: this.root });
     // Runs that were waiting for a provider limit when the previous daemon stopped continue on their own.
     this.orch.recoverRuns().catch((e) => console.error("recoverRuns:", e));
@@ -165,8 +170,15 @@ export class DaemonServer {
       conn.send({ id: req.id, error: { message: `unknown method ${req.method}` } });
       return;
     }
+    const scope = METHOD_SCOPES[req.method];
+    const isUser = sameToken(req.token, this.userToken);
+    const agent = isUser ? undefined : this.orch.tokens.agentOf(req.token);
+    if (scope !== "open") {
+      if (!isUser && !agent) { conn.send({ id: req.id, error: { message: "not authenticated: this client has no valid Hexagon token" } }); return; }
+      if (agent && scope !== "any") { conn.send({ id: req.id, error: { message: `${req.method} is not allowed for agents: it needs the user` } }); return; }
+    }
     try {
-      conn.send({ id: req.id, result: (await h(req.params ?? {}, conn)) ?? null });
+      conn.send({ id: req.id, result: (await h(req.params ?? {}, conn, agent)) ?? null });
     } catch (e) {
       conn.send({ id: req.id, error: { message: e instanceof Error ? e.message : String(e) } });
     }

@@ -1,2 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { defineConfig } from "vitest/config";
-export default defineConfig({ test: { include: ["test/**/*.test.ts"], testTimeout: 30000 } });
+// Tests never touch the real user token directory.
+export default defineConfig({ test: { include: ["test/**/*.test.ts"], testTimeout: 30000, env: { HEXAGON_STATE_DIR: path.join(os.tmpdir(), "hexagon-test-state") } } });

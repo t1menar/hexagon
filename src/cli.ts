@@ -227,6 +227,7 @@ async function main(argv: string[]): Promise<void> {
     // Used by the chat agent: start the planner and return at once.
     const goal = rest.join(" ").trim();
     if (!goal) throw new Error('usage: hexagon plan "<goal>"');
+    if (process.env.HEXAGON_TOKEN) return agentOp("goal", [goal]);
     const client = await HexClient.connect(process.env.HEXAGON_ROOT ?? root());
     try {
       await client.call("goal.new", { goal });
@@ -549,6 +550,7 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
     }
     case "note": params = { body: a.join(" ") }; break;
     case "command": params = JSON.parse(a[0] ?? "{}") as Record<string, unknown>; break;
+    case "goal": params = { goal: a.join(" ") }; break;
     case "bus": {
       const action = a.shift();
       if (action === "send") {
