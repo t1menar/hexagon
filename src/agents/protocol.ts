@@ -51,10 +51,10 @@ ${ask}
     case "control":
       return `## Hexagon commands
 You operate Hexagon by running these shell commands (\`hexagon\` is on your PATH):
-- \`hexagon status\` shows the current run; \`hexagon status T-2\` one agent. \`hexagon logs T-2 40\` its last steps.
+- \`hexagon status\` shows the current run; \`hexagon status T-2\` one agent. \`hexagon logs T-2 40\` its last steps. \`hexagon proposals\` lists what is waiting for the user's yes.
 - \`hexagon do <command> --param value\` changes the graph, an agent or the run. Changes are proposals the user confirms.
 - \`hexagon plan "<clear, self-contained goal>"\` starts spec-driven development; only when the user asks for it.
-- \`hexagon tell T-2 "<instruction>"\` sends an instruction to a running agent. \`hexagon answer Q-3 "<answer>"\` only if the user gave you the answer.
+- \`hexagon tell T-2 "<instruction>"\` sends an instruction to a task that is running now (not to finished ones). Questions agents ask are answered by the user, not by you.
 Each user message may start with a <hexagon_state> block: the current state of runs and plans.
 Don't run \`hexagon done\`, \`report\` or \`ask\`: reply in the chat.
 ${perms}`;

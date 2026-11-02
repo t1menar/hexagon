@@ -378,7 +378,31 @@ export class Orchestrator extends EventEmitter {
     if (op === "exec" || op === "install" || op === "sudo") return this.brokerCall(id, cwd, op, args);
     if (op === "command") return this.agentCommand(id, args);
     if (op === "goal") return this.agentGoal(id, args);
+    if (op === "logs" || op === "proposals" || op === "tell") return this.assistantRead(id, op, args);
     return this.registry.call(id, op, args);
+  }
+
+  /**
+   * The Assistant's narrow routes: read an agent's recent steps, list the proposals waiting for the user, and send an
+   * instruction to a task that is running right now. Everything else (answering, approving, continuing finished work)
+   * stays with the user, whose token the RPC methods behind these require.
+   */
+  private assistantRead(agent: string, op: "logs" | "proposals" | "tell", args: Record<string, unknown>): Reply {
+    if (agent !== "control") return { ok: false, message: `\`hexagon ${op}\` is only for the Hexagon Assistant.` };
+    try {
+      if (op === "proposals") return { ok: true, message: JSON.stringify(this.control.list()) };
+      const task = String(args.task ?? "").trim().toUpperCase();
+      if (op === "logs") return { ok: true, message: JSON.stringify(this.agentEvents(task, Math.min(Number(args.limit) || 40, 200))) };
+      const body = String(args.body ?? "").trim();
+      if (!/^T-\d+$/.test(task) || !body) return { ok: false, message: 'usage: hexagon tell <T-n> "<instruction>"' };
+      const s = this.requireRun().store.byTask(task);
+      if (!s) return { ok: false, message: `unknown task ${task}` };
+      if (TERMINAL_STATES.has(s.state)) return { ok: false, message: `${task} is ${s.state}, not running: tell works only on running tasks. Propose a retry with \`hexagon do\` or ask the user.` };
+      void this.send(task, body);
+      return { ok: true, message: `sent to ${task}` };
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
   }
 
   /** `hexagon plan "<goal>"` from the assistant: starts the analyst; the user still approves the spec and the plan. */
