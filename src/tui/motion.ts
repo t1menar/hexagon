@@ -180,6 +180,8 @@ export interface ManagerOptions {
   manual?: boolean;
 }
 
+const MIN_FRAME_MS = 16;
+
 export class AnimationManager {
   readonly clock: Clock;
   readonly particles = new ParticleSystem();
@@ -191,6 +193,9 @@ export class AnimationManager {
   private nextId = 1;
   private timer: NodeJS.Timeout | undefined;
   private disposed = false;
+  private lastStep = -Infinity;
+  /** When the armed timer fires (clock ms). */
+  private dueAt = Infinity;
   private pending = false;
   /** Continuous effects (e.g. a perimeter highlight on a working agent): keep the loop alive at their own frame rate. */
   private holds = new Map<string, number>();
@@ -198,7 +203,7 @@ export class AnimationManager {
   constructor(private o: ManagerOptions = {}) {
     this.clock = o.clock ?? systemClock;
     this.motion = o.motion ?? "full";
-    this.fps = o.fps ?? (this.motion === "full" ? 24 : this.motion === "reduced" ? 8 : 0);
+    this.fps = o.fps ?? (this.motion === "full" ? 15 : this.motion === "reduced" ? 8 : 0);
   }
 
   get enabled() { return this.motion !== "off" && !this.disposed; }
@@ -275,7 +280,11 @@ export class AnimationManager {
   /** Ask for a redraw at the next frame without any animation (demand-driven rendering). */
   invalidate(): void {
     this.pending = true;
-    this.wake();
+    // Input must not wait for a slow ambient/hold frame: pull an armed timer forward to the next ~16 ms slot.
+    if (this.timer && !this.o.manual && !this.disposed) {
+      const due = Math.max(this.clock.now(), this.lastStep + MIN_FRAME_MS);
+      if (this.dueAt - due > MIN_FRAME_MS) { this.stop(); this.arm(due - this.clock.now()); }
+    } else this.wake();
   }
 
   /** Advance everything to `now` (or the clock). Returns true when a redraw is needed. */
@@ -295,13 +304,20 @@ export class AnimationManager {
 
   private wake(): void {
     if (this.o.manual || this.timer || this.disposed) return;
+    this.arm(0);
+  }
+
+  private arm(ms: number): void {
     const loop = () => {
       this.timer = undefined;
+      this.dueAt = Infinity;
       if (this.disposed) return;
+      this.lastStep = this.clock.now();
       this.step();
-      if (this.busy || this.pending) { this.timer = setTimeout(loop, this.delay()); this.timer.unref?.(); }
+      if (this.busy || this.pending) this.arm(this.delay());
     };
-    this.timer = setTimeout(loop, 0);
+    this.dueAt = this.clock.now() + ms;
+    this.timer = setTimeout(loop, Math.max(0, ms));
     this.timer.unref?.();
   }
 

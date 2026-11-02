@@ -97,7 +97,7 @@ export const DEFAULT_CONFIG: HexagonConfig = {
     ],
     command_timeout_s: 600,
   },
-  ui: { open_with: "auto", animation: "auto", startup_animation: true, inspector: true, ambient: true, mouse: true },
+  ui: { open_with: "auto", animation: "auto", startup_animation: true, inspector: true, ambient: false, mouse: true },
 };
 
 /** Read-only probes every agent may always run (checking what's installed, looking around). */

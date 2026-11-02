@@ -227,7 +227,7 @@ describe("dashboard (real App, fake daemon)", () => {
   });
 
   it("ambient hexagons: only in full motion, never over content, and they stop when motion is off", async () => {
-    const { app, exit } = await boot({ "T-1": "done", "T-2": "working" }, 160, 45, { HEXAGON_AMBIENT: undefined });
+    const { app, exit } = await boot({ "T-1": "done", "T-2": "working" }, 160, 45, { HEXAGON_AMBIENT: "on" });
     const level = () => (app as never as { ambientLevel(): number }).ambientLevel();
     expect(level()).toBe(1);
     await settle(400);
@@ -242,7 +242,7 @@ describe("dashboard (real App, fake daemon)", () => {
     exit();
   });
   it("ambient is reduced after 60 s of inactivity and gone after 5 min", async () => {
-    const { app, exit } = await boot({ "T-1": "done" }, 160, 45, { HEXAGON_AMBIENT: undefined });
+    const { app, exit } = await boot({ "T-1": "done" }, 160, 45, { HEXAGON_AMBIENT: "on" });
     const a = app as never as { ambientLevel(): number; lastInput: number };
     a.lastInput = Date.now() - 90_000;
     expect(a.ambientLevel()).toBeLessThan(1);
