@@ -353,7 +353,7 @@ async function main(argv: string[]): Promise<void> {
         break;
       }
       case "inbox": console.log(JSON.stringify(await client.call("inbox.list"), null, 2)); break;
-      case "merge": console.log((await client.call<{ text: string }>("merge.base")).text); break;
+      case "merge": console.log((await client.call<{ text: string }>("merge.base", { override: one(rest, "--override") })).text); break;
       case "close": await client.call("run.close"); console.log("run closed"); break;
       case "model": case "models": {
         type M = { role: string; agent: string; model: string; effort: string }[];

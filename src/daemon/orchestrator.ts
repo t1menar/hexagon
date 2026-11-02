@@ -6,7 +6,8 @@ import { contextFile, identityHash, loadSkills, projectContext, systemPrompt } f
 import type { AgentAdapter, Reply } from "../agents/types.js";
 import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
-import { atomicWriteJson, nowIso, readJson, readJsonl } from "../util/fsx.js";
+import { appendJsonl, atomicWriteJson, nowIso, readJson, readJsonl } from "../util/fsx.js";
+import { runShell } from "../util/shell.js";
 import { selfCommand } from "../util/resources.js";
 import { describeResult, isAllowed, quoteArgv, runCommand, shq, sudoScript, waitForCode, type Decision } from "./broker.js";
 import { openTerminal } from "../shell/open.js";
@@ -25,6 +26,7 @@ import { formatTrace, trace, type TaskEvidence } from "../core/trace.js";
 import { WaitStore } from "../core/recovery.js";
 import { AgentBus, type BusActivity, type Envelope } from "../core/bus.js";
 import { commandDocs } from "../core/commands.js";
+import { Mutex } from "../util/mutex.js";
 import { reviewerWarnings } from "../core/security.js";
 import { AgentTokens } from "./auth.js";
 import { ControlService, type Proposal } from "./control.js";
@@ -821,7 +823,7 @@ export class Orchestrator extends EventEmitter {
     store.runExtra = () => ({ bus: bus.summary() });
     const rc: RunContext = {
       root: this.root, paths: this.paths, run, runId, cfg: this.cfg, store, router, registry: this.registry, specs,
-      skills: loadSkills(this.paths), context: projectContext(this.root), integration,
+      skills: loadSkills(this.paths), context: projectContext(this.root), integration, integrationLock: new Mutex(),
       adapterFor: (role, override) => this.adapterFor(role, override),
       gate: (task) => this.approvals.check(task, plan.specs),
       waits,
@@ -1395,7 +1397,14 @@ export class Orchestrator extends EventEmitter {
     };
   }
 
-  async mergeToBase(): Promise<string> {
+  /** Commands that must pass on the integration branch before it reaches the user's branch. */
+  finalVerifyCommands(plan: Plan): { commands: string[]; derived: boolean } {
+    const set = this.cfg.run.final_verify;
+    if (set.length) return { commands: set, derived: false };
+    return { commands: [...new Set(plan.tasks.flatMap((t) => t.verify))], derived: true };
+  }
+
+  async mergeToBase(opts: { override?: string } = {}): Promise<string> {
     const r = this.requireRun();
     const active = r.scheduler.activeRuns().length;
     if (active) throw new Error(`${active} agent(s) still active; wait for the run to finish or /abort`);
@@ -1403,6 +1412,24 @@ export class Orchestrator extends EventEmitter {
     if (cur !== r.base) throw new Error(`check out ${r.base} first (currently on ${cur})`);
     // Hexagon's own config (e.g. commands you approved) doesn't conflict with the merge.
     if (!(await g.isClean(this.root, [".hexagon"]))) throw new Error(`working tree of ${r.base} has uncommitted changes; commit or stash them first`);
+    // The run gate: the whole integration branch passes the project's checks, or the user says, on the record, to merge anyway.
+    const gate = this.finalVerifyCommands(r.plan);
+    const failed = await r.rc.integrationLock.run(async () => {
+      for (const cmd of gate.commands) {
+        const x = await runShell(cmd, r.rc.integration.worktree, this.cfg.sandbox.command_timeout_s);
+        if (x.code !== 0) return { cmd, code: x.code, output: x.output };
+      }
+      return null;
+    });
+    atomicWriteJson(path.join(r.run.dir, "final-gate.json"), { at: nowIso(), commands: gate.commands, derived: gate.derived, passed: !failed, failed: failed ? { cmd: failed.cmd, code: failed.code } : null, override: opts.override ?? null });
+    if (failed && !opts.override) {
+      const tail = failed.output.trim().split("\n").slice(-8).join("\n");
+      throw new Error(`the integration branch fails its final check, so it was not merged:\n$ ${failed.cmd} (exit ${failed.code})\n${tail}\nFix it (ask the task's agent, or /retry), or merge anyway and have that recorded: hexagon merge --override "<reason>"`);
+    }
+    if (failed && opts.override) {
+      appendJsonl(path.join(r.run.dir, "overrides.jsonl"), { at: nowIso(), what: "merge with a failing final check", command: failed.cmd, exit: failed.code, reason: opts.override, by: "user" });
+      this.notice("attention", `Merged although \`${failed.cmd}\` fails on the integration branch. Recorded: "${opts.override}".`);
+    }
     const m = await g.merge(this.root, r.rc.integration.branch, `Merge Hexagon run ${r.runId}`);
     if (!m.ok) throw new Error(m.conflict ? "merge conflict — resolve manually: git merge " + r.rc.integration.branch : m.output);
     this.closeRun("merged");
