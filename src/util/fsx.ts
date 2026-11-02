@@ -39,6 +39,36 @@ export function readJsonl<T>(file: string): T[] {
   return out;
 }
 
+/** The last `limit` records of a JSONL file, read from the end in blocks so a long log costs what it returns, not what it holds. */
+export function readJsonlTail<T>(file: string, limit: number, block = 64 * 1024): T[] {
+  if (limit <= 0 || !fs.existsSync(file)) return [];
+  const fd = fs.openSync(file, "r");
+  try {
+    let pos = fs.fstatSync(fd).size;
+    let buf = Buffer.alloc(0);
+    let lines = 0;
+    while (pos > 0 && lines <= limit) {
+      const n = Math.min(block, pos);
+      pos -= n;
+      const chunk = Buffer.alloc(n);
+      fs.readSync(fd, chunk, 0, n, pos);
+      buf = Buffer.concat([chunk, buf]);
+      lines = 0;
+      for (const b of buf) if (b === 10) lines += 1;
+    }
+    let text = buf.toString("utf8");
+    if (pos > 0) text = text.slice(text.indexOf("\n") + 1); // first line is cut off: drop it
+    const out: T[] = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try { out.push(JSON.parse(line) as T); } catch { /* torn line */ }
+    }
+    return out.slice(-limit);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export function readJson<T>(file: string): T | undefined {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8")) as T;

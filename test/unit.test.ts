@@ -12,7 +12,7 @@ import { MessageRouter } from "../src/core/router.js";
 import { overlaps, escalate } from "../src/core/scheduler.js";
 import { lintSpec, parseSpec } from "../src/core/spec.js";
 import { StatusStore } from "../src/core/status.js";
-import { confinePath, globToRegExp, matchesAny, readJsonl } from "../src/util/fsx.js";
+import { confinePath, globToRegExp, matchesAny, readJsonl, readJsonlTail } from "../src/util/fsx.js";
 import { tokenize } from "../src/tui/app.js";
 import { renderDag } from "../src/tui/dag.js";
 import { chatLines, itemsFromEvents } from "../src/tui/chat.js";
@@ -353,5 +353,36 @@ describe("status persistence is coalesced", () => {
     expect(after.hydrate().get(s.agent_run_id)!.state).toBe("verifying");
     expect(validateStatus(JSON.parse(fs.readFileSync(rp.agentStatus(s.agent_run_id), "utf8"))).errors).toEqual([]);
     store.stop();
+  });
+});
+
+describe("readJsonlTail", () => {
+  const write = (n: number) => {
+    const f = path.join(tmp(), "e.jsonl");
+    fs.writeFileSync(f, Array.from({ length: n }, (_, i) => JSON.stringify({ i, pad: "x".repeat(i % 50) })).join("\n") + "\n");
+    return f;
+  };
+  it("returns the same records as reading the whole file, for any limit and block size", () => {
+    const f = write(500);
+    const all = readJsonl<{ i: number }>(f);
+    for (const limit of [1, 7, 200, 500, 900]) for (const block of [16, 100, 65536]) {
+      expect(readJsonlTail<{ i: number }>(f, limit, block)).toEqual(all.slice(-limit));
+    }
+  });
+  it("tolerates a torn last line and a missing file", () => {
+    const f = write(10);
+    fs.appendFileSync(f, '{"i": 99, "tru');
+    expect(readJsonlTail<{ i: number }>(f, 3).map((r) => r.i)).toEqual([7, 8, 9]);
+    expect(readJsonlTail(path.join(tmp(), "none.jsonl"), 3)).toEqual([]);
+  });
+  it("reads a block, not the file", () => {
+    const f = write(20000);
+    const t0 = process.hrtime.bigint();
+    readJsonlTail(f, 200);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    const t1 = process.hrtime.bigint();
+    readJsonl(f);
+    const full = Number(process.hrtime.bigint() - t1) / 1e6;
+    expect(ms).toBeLessThan(full);
   });
 });

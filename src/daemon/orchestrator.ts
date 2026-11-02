@@ -6,7 +6,7 @@ import { contextFile, identityHash, loadSkills, projectContext, repositoryOvervi
 import type { AgentAdapter, Reply } from "../agents/types.js";
 import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
-import { appendJsonl, atomicWriteJson, nowIso, readJson, readJsonl } from "../util/fsx.js";
+import { appendJsonl, atomicWriteJson, nowIso, readJson, readJsonl, readJsonlTail } from "../util/fsx.js";
 import { runShell } from "../util/shell.js";
 import { selfCommand } from "../util/resources.js";
 import { describeResult, isAllowed, quoteArgv, runCommand, shq, sudoScript, waitForCode, type Decision } from "./broker.js";
@@ -911,9 +911,11 @@ export class Orchestrator extends EventEmitter {
   agentEvents(taskId: string, limit = 200): StampedEvent[] {
     const r = this.requireRun();
     const s = this.agentStatus(taskId);
-    const all: StampedEvent[] = [];
-    for (let a = 1; a <= s.attempt; a++) all.push(...readJsonl<StampedEvent>(r.run.agentEvents(`${s.task_id}-a${a}`)));
-    return all.slice(-limit);
+    const out: StampedEvent[] = [];
+    for (let a = s.attempt; a >= 1 && out.length < limit; a--) {
+      out.unshift(...readJsonlTail<StampedEvent>(r.run.agentEvents(`${s.task_id}-a${a}`), limit - out.length));
+    }
+    return out;
   }
 
   private latestRunDir(): string | null {
