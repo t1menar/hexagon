@@ -6,6 +6,7 @@ max_attempts = 2        # attempts per task (a retry escalates effort one level)
 fix_loops = 2           # how many times an agent may hand work back to another task
 max_fix_cycles = 3      # verify/review repair cycles per task; 0 = unlimited (stops early on identical repeated failures)
 release_on_conflict = true   # a merge conflict goes to the release engineer once (conflicted files only, verified), then blocks
+integration_verify = "merged"  # after each merge, re-run this task's verify + those of tasks already merged ("task" = only this task's, "full" = also final_verify)
 final_verify = []        # must pass on the integration branch before /merge (empty = every task's verify commands); `hexagon init` fills it from HEXAGON.md
 task_budget_tokens = 3000000   # one task stops and asks after this many tokens (input + cache reads + output); 0 = no cap
 max_identical_failures = 3  # same failure this many times in a row = no progress, escalate to you
