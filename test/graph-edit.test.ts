@@ -100,3 +100,43 @@ describe("editing a running graph", () => {
     await finish();
   }, 90000);
 });
+
+describe("hexagon scope request", () => {
+  const open: { s: DaemonServer; c: HexClient }[] = [];
+  afterEach(() => { for (const o of open.splice(0)) { o.c.close(); o.s.orch.shutdown(); } });
+
+  it("grants lockfiles at once, refuses what a running task holds, and asks the user for the rest", async () => {
+    const root = project();
+    // Both tasks hold still on a question, so both are running while the requests come in.
+    const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [], tasks: [task("T-1", [], "@ask: go on?"), task("T-2", [], "@ask: go on?")] };
+    fs.writeFileSync(path.join(root, "plan.json"), JSON.stringify(p));
+    const s = new DaemonServer(root); await s.listen();
+    const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });
+    await c.call("run.start", { plan_path: "plan.json" });
+    for (const t of ["T-1", "T-2"]) await until(async () => (await c.call<AgentStatus>("agent.status", { task: t })).state === "waiting_input");
+    const api = (args: Record<string, unknown>) => s.orch.agentApi("T-1", null, "scope", args) as Promise<{ ok: boolean; message: string }>;
+
+    expect(await api({ globs: ["package-lock.json"] })).toMatchObject({ ok: false, message: expect.stringMatching(/usage/) }); // no reason given
+    const lock = await api({ globs: ["package-lock.json"], why: "added a dependency" });
+    expect(lock.ok).toBe(true);
+    const plan = (await c.call<{ plan: Plan }>("ui.snapshot")).plan;
+    expect(plan.tasks.find((t) => t.id === "T-1")!.files.write).toContain("package-lock.json");
+
+    const held = await api({ globs: ["src/T-2.txt"], why: "needs the other task's file" });
+    expect(held).toMatchObject({ ok: false, message: expect.stringMatching(/T-2 is running/) });
+
+    s.orch.cfg.run.shared_files = ["src/registry.ts"];
+    expect(await api({ globs: ["src/registry.ts"], why: "register" })).toMatchObject({ ok: false, message: expect.stringMatching(/owned by the integration/) });
+
+    // Anything else is the user's call: the request waits for an answer in the approval box.
+    const pending = api({ globs: ["docs/guide.md"], why: "document the flag" });
+    const perm = await until(async () => (await c.call<{ permissions: { id: string; action?: string }[] }>("ui.snapshot")).permissions.find((x) => x.action === "scope"));
+    await c.call("question.answer", { question_id: perm.id, answer: "n" });
+    expect(await pending).toMatchObject({ ok: false, message: expect.stringMatching(/denied/) });
+    expect(((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks.find((t) => t.id === "T-1")!.files.write)).not.toContain("docs/guide.md");
+    const pending2 = api({ globs: ["docs/guide.md"], why: "document the flag" });
+    const perm2 = await until(async () => (await c.call<{ permissions: { id: string; action?: string }[] }>("ui.snapshot")).permissions.find((x) => x.action === "scope"));
+    await c.call("question.answer", { question_id: perm2.id, answer: "1" });
+    expect((await pending2).ok).toBe(true);
+  }, 60000);
+});
