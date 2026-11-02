@@ -110,6 +110,26 @@ export class Scheduler extends EventEmitter {
     return { ready: true };
   }
 
+  /**
+   * Give a running task more write scope for as long as it runs. The lease is the scope itself: other tasks are held
+   * back by `leaseConflict` while this one is active, so a grant is refused while another active task's scope overlaps.
+   */
+  grantScope(taskId: string, globs: string[]): { ok: true } | { ok: false; heldBy: string } {
+    const mine = this.active.get(taskId)?.task ?? this.tasks.find((t) => t.id === taskId);
+    if (!mine) return { ok: false, heldBy: "(unknown task)" };
+    const holder = this.scopeHolder(taskId, globs);
+    if (holder) return { ok: false, heldBy: holder };
+    for (const gl of globs) if (!mine.files.write.includes(gl)) mine.files.write.push(gl);
+    this.persistGraph();
+    return { ok: true };
+  }
+
+  /** The running task (other than `taskId`) whose write scope overlaps `globs`, if any. */
+  scopeHolder(taskId: string, globs: string[]): string | null {
+    for (const r of this.active.values()) if (r.task.id !== taskId && overlaps(globs, r.task.files.write)) return r.task.id;
+    return null;
+  }
+
   private leaseConflict(t: Task): string | null {
     for (const r of this.active.values()) {
       if (overlaps(t.files.write, r.task.files.write)) return r.task.id;

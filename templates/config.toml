@@ -6,6 +6,7 @@ max_attempts = 2        # attempts per task (a retry escalates effort one level)
 fix_loops = 2           # how many times an agent may hand work back to another task
 max_fix_cycles = 3      # verify/review repair cycles per task; 0 = unlimited (stops early on identical repeated failures)
 release_on_conflict = true   # a merge conflict goes to the release engineer once (conflicted files only, verified), then blocks
+shared_files = []         # paths no task may be granted through `hexagon scope request` (e.g. a generated registry); the integration owns them
 test_command = ""         # runs one test to prove it fails without the change, e.g. "npx vitest run {file} -t {name}" or "go test ./... -run {name}"; empty = re-run the task's verify commands
 integration_verify = "merged"  # after each merge, re-run this task's verify + those of tasks already merged ("task" = only this task's, "full" = also final_verify)
 final_verify = []        # must pass on the integration branch before /merge (empty = every task's verify commands); `hexagon init` fills it from HEXAGON.md

@@ -34,7 +34,7 @@ import { ControlService, type Proposal } from "./control.js";
 import { Approvals, ARTIFACT, checkStage, isUntraced, specHash, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
-import { Scheduler, type PriorTask } from "../core/scheduler.js";
+import { overlaps, Scheduler, type PriorTask } from "../core/scheduler.js";
 import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
 import { SoloSession, sessionPush, type SessionStatus } from "../core/solo.js";
 import { StatusStore } from "../core/status.js";
@@ -142,7 +142,7 @@ export interface PermissionRequest {
   prefix: string | null;
   asked_at: string;
   /** Set for requests that came through `hexagon exec|install|sudo` (the agent's call is waiting); absent for refused native tool calls. */
-  action?: "exec" | "install" | "sudo";
+  action?: "exec" | "install" | "sudo" | "scope";
   /** Why the agent wants it, in its own words. */
   reason?: string;
   /** What the user can answer. `key` is the shortcut in the dashboard. */
@@ -162,6 +162,9 @@ export function commandPrefix(command: string): string | null {
 const PLANNER_COMMANDS = ["ls", "cat", "find", "grep", "rg", "head", "wc", "git log", "git status", "git ls-files", "mkdir"];
 
 /** Owns the project state inside the daemon. All mutations go through here. */
+/** Files a task may be granted without asking: lockfiles and registration/index files, named exactly. */
+const SAFE_SCOPE = /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum|Cargo\.lock|poetry\.lock|Gemfile\.lock|composer\.lock|index\.(?:ts|js|mjs|tsx|jsx)|__init__\.py|mod\.rs)$/;
+
 export class Orchestrator extends EventEmitter {
   readonly paths: ProjectPaths;
   /** Tokens that identify agent processes to the RPC server. */
@@ -378,8 +381,38 @@ export class Orchestrator extends EventEmitter {
     if (op === "exec" || op === "install" || op === "sudo") return this.brokerCall(id, cwd, op, args);
     if (op === "command") return this.agentCommand(id, args);
     if (op === "goal") return this.agentGoal(id, args);
+    if (op === "scope") return this.scopeRequest(id, args);
     if (op === "logs" || op === "proposals" || op === "tell") return this.assistantRead(id, op, args);
     return this.registry.call(id, op, args);
+  }
+
+  /**
+   * `hexagon scope request <glob…> --why "…"`: a task asks to write outside its mask. Refused when another running task
+   * holds an overlapping scope or the path is owned by the integration ([run].shared_files). Lockfiles and registration
+   * files are granted at once; anything else is the user's call, like `hexagon exec`.
+   */
+  private async scopeRequest(agent: string, args: Record<string, unknown>): Promise<Reply> {
+    const globs = (Array.isArray(args.globs) ? (args.globs as unknown[]).map(String) : []).map((x) => x.trim()).filter(Boolean);
+    const why = typeof args.why === "string" ? args.why.trim() : "";
+    if (!globs.length || !why) return { ok: false, message: 'usage: hexagon scope request <glob…> --why "<what needs it and why the plan did not include it>"' };
+    const run = this.current;
+    const st = run?.store.byTask(agent);
+    if (!run || !st || TERMINAL_STATES.has(st.state)) return { ok: false, message: "`hexagon scope request` is for a running task." };
+    if (globs.some((x) => x.startsWith("/") || x.includes(".."))) return { ok: false, message: "scope globs are paths inside the project (no absolute paths, no `..`)." };
+    const shared = this.cfg.run.shared_files;
+    const owned = globs.find((x) => overlaps([x], shared));
+    if (owned) return { ok: false, message: `${owned} is owned by the integration ([run].shared_files). Don't change it: say in your \`hexagon done\` summary what it needs and the integration step will apply it.` };
+    const probe = run.scheduler.scopeHolder(agent, globs);
+    if (probe) return { ok: false, message: `${probe} is running and holds a write scope that overlaps ${globs.join(", ")}. Wait for it, or finish with what you can and report the rest via \`hexagon done --status needs_spec_change\`.` };
+    const safe = globs.every((x) => !/[*?{]/.test(x) && SAFE_SCOPE.test(x));
+    if (!safe) {
+      const d = await this.askUser(agent, "scope", `write ${globs.join(", ")}`, why);
+      if (d === "deny") return { ok: false, message: "The user denied the scope request. Don't write those paths; carry on without them and say what is left undone." };
+    }
+    const g2 = run.scheduler.grantScope(agent, globs);
+    if (!g2.ok) return { ok: false, message: `${g2.heldBy} took an overlapping scope while you waited. Try again later or report it.` };
+    this.agentNote(agent, `scope: +${globs.join(", ")} (${safe ? "auto-approved" : "approved by the user"}): ${why}`);
+    return { ok: true, message: `Granted: you may now write ${globs.join(", ")} for as long as this task runs. Hexagon records it in the plan.` };
   }
 
   /**
@@ -1081,12 +1114,13 @@ export class Orchestrator extends EventEmitter {
     if (st) this.current!.store.apply(st.agent_run_id, { type: "chat", from: "hexagon", text });
   }
 
-  private askUser(agent: string, action: "exec" | "install" | "sudo", command: string, reason?: string): Promise<Decision> {
+  private askUser(agent: string, action: "exec" | "install" | "sudo" | "scope", command: string, reason?: string): Promise<Decision> {
     const kind: PermissionRequest["kind"] = this.sessions.has(agent) ? "session" : "task";
     const prefix = action === "exec" ? commandPrefix(command) : null;
     const choices: NonNullable<PermissionRequest["choices"]> =
       action === "sudo" ? [{ id: "terminal", label: "run it in a terminal (you type the password)", key: "t" }, { id: "deny", label: "deny", key: "n" }]
       : action === "install" ? [{ id: "once", label: "install it", key: "y" }, { id: "deny", label: "deny", key: "n" }]
+      : action === "scope" ? [{ id: "once", label: "grant it to this task while it runs", key: "y" }, { id: "deny", label: "deny", key: "n" }]
       : [
         { id: "once", label: "run it this once", key: "y" },
         ...(prefix ? [{ id: "always" as const, label: `always allow \`${prefix}\``, key: "a" }] : []),

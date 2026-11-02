@@ -1172,7 +1172,7 @@ export class App {
     const inner = w - 4;
     const a = this.full.get(p.agent);
     const who = a ? `${p.agent} · ${a.role} · ${a.agent.provider} ${a.agent.adapter ?? ""}`.trim() : p.agent === HEX ? "Hexagon Assistant" : p.agent;
-    const what = p.action === "install" ? "install a tool" : p.action === "sudo" ? "run as ROOT (sudo)" : "run a command";
+    const what = p.action === "install" ? "install a tool" : p.action === "scope" ? "write outside its scope" : p.action === "sudo" ? "run as ROOT (sudo)" : "run a command";
     const rows: { k: string; v: string; style: string }[] = [
       { k: "Agent", v: who, style: this.tk("text") },
       { k: "Wants to", v: what, style: this.tk("warning", S.bold) },

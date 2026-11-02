@@ -67,6 +67,7 @@ ${report}
     default:
       return `${head}
 - Write only to files matching the task's write scope; Hexagon reverts anything else. Don't commit; Hexagon commits for you.
+- Need a file outside your scope (a lockfile, an index that registers your module)? \`hexagon scope request <path…> --why "<reason>"\` before you edit it. Lockfiles and registration files are granted at once if no running task holds them; otherwise the user decides.
 ${report}
 ${ask}
 ${note}

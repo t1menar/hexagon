@@ -59,12 +59,13 @@ ${c.bold("Agent protocol")} (run by agents inside their sessions)
   hexagon ask "<question>" [--option "…" …] [--default "…"]
   hexagon note "<fact for other agents>"
   hexagon return <T-n> "<defect in that task's code, with evidence>"
+  hexagon scope request <glob…> --why "…"   ask for write scope outside your mask (lockfiles/index files at once; else the user decides)
   hexagon done --summary "…" [--evidence "AC-1: …" …] [--status completed|blocked|failed|needs_spec_change]
                [--issue "…" …] [--assume "…" …] [--allow <cmd> …]
   hexagon review approve|changes --summary "…" [--finding "high: file:line issue -> fix" …]
   hexagon plan-check`;
 
-const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "stage-check", "return", "bus", "exec", "install", "sudo"]);
+const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "stage-check", "return", "bus", "exec", "install", "sudo", "scope"]);
 const TASK_RE = /^t-?\d+$/i;
 const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
@@ -646,6 +647,12 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
       const tool = a.find((x) => !x.startsWith("--"));
       if (!tool) { console.error('usage: hexagon install <go|node|java|maven> [--reason "why"]'); process.exit(2); }
       params = { tool, reason };
+      break;
+    }
+    case "scope": {
+      if (a.shift() !== "request") { console.error('usage: hexagon scope request <glob…> --why "<reason>"'); process.exit(2); }
+      const why = one(a, "--why");
+      params = { globs: a.filter((x) => !x.startsWith("--")), why };
       break;
     }
     case "logs": {
