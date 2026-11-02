@@ -1352,7 +1352,7 @@ export class Orchestrator extends EventEmitter {
     return {
       run: this.current?.store.ledger() ?? null,
       agents: this.agentSessions.all().map((r) => ({
-        agent: r.agentId, role: r.role, turns: r.turns, ctx_tokens: r.contextTokens, ctx_pct: Math.min(1, r.contextTokens / this.cfg.context.assumed_window_tokens),
+        agent: r.agentId, role: r.role, turns: r.turns, ctx_tokens: r.contextTokens, ctx_pct: Math.min(1, r.contextTokens / (r.windowTokens ?? this.cfg.context.assumed_window_tokens)), window_tokens: r.windowTokens ?? this.cfg.context.assumed_window_tokens, window_assumed: !r.windowTokens,
         compactions: r.compactions, created_at: r.createdAt, ledger: r.ledger,
       })),
     };

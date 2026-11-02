@@ -353,14 +353,14 @@ async function main(argv: string[]): Promise<void> {
           for (const w of rep.warnings) console.log(c.orange(`! ${w}`));
           break;
         }
-        const st = await client.call<{ run: Record<string, { input: number; cache_read: number; output: number }> | null; agents: { agent: string; turns: number; ctx_tokens: number; ctx_pct: number; compactions: number; ledger: Record<string, { input: number; cache_read: number; output: number }> }[] }>("stats.get");
+        const st = await client.call<{ run: Record<string, { input: number; cache_read: number; output: number }> | null; agents: { agent: string; turns: number; window_assumed?: boolean; ctx_tokens: number; ctx_pct: number; compactions: number; ledger: Record<string, { input: number; cache_read: number; output: number }> }[] }>("stats.get");
         if (bool(rest, "--json")) { console.log(JSON.stringify(st, null, 2)); break; }
         const line = (n: string, l: { input: number; cache_read: number; output: number }) => `  ${n.padEnd(12)} ${String(l.input).padStart(9)} in  ${String(l.cache_read).padStart(9)} cached  ${String(l.output).padStart(8)} out`;
         console.log(c.bold("This run, by cause"));
         for (const [k, v] of Object.entries(st.run ?? {})) console.log(line(k, v));
         console.log(c.bold("Agents (whole project)"));
         for (const a of st.agents) {
-          console.log(`  ${a.agent}: ${a.turns} turns · ctx ${Math.round(a.ctx_pct * 100)}%${a.compactions ? ` ▸ compacted ×${a.compactions}` : ""}`);
+          console.log(`  ${a.agent}: ${a.turns} turns · ctx ${Math.round(a.ctx_pct * 100)}%${a.window_assumed ? " (assumed window)" : ""}${a.compactions ? ` ▸ compacted ×${a.compactions}` : ""}`);
           for (const [k, v] of Object.entries(a.ledger)) console.log(line(`  ${k}`, v));
         }
         break;
