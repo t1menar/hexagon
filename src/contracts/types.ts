@@ -140,7 +140,7 @@ export interface RunStatus {
     task_id: string; agent_run_id: string; role: Role; agent: string; state: AgentState;
     activity: string | null; needs_input: boolean; progress: AgentStatus["progress"] | null; cost_usd: number; tokens: number;
   }[];
-  attention: { kind: "question" | "failure" | "blocked" | "budget" | "stale"; task_id: string | null; text: string; ref?: string }[];
+  attention: { kind: "question" | "failure" | "blocked" | "budget" | "stale" | "checkpoint"; task_id: string | null; text: string; ref?: string }[];
 }
 
 export type PartyKind = "user" | "agent" | "role" | "orchestrator" | "blackboard" | "broadcast" | "lead";
