@@ -34,6 +34,8 @@ export class Scheduler extends EventEmitter {
   private returns = new Map<string, number>();
   /** Tasks held back by the spec gate; they start by themselves once the spec is approved again. */
   private gated = new Set<string>();
+  /** Tasks already sent to replan because the approved spec changed under them (once each). */
+  private respecced = new Set<string>();
   private tasks: Task[];
   paused = false;
   aborted = false;
@@ -172,6 +174,12 @@ export class Scheduler extends EventEmitter {
         this.rc.store.apply(id, { type: "state", state: "blocked", reason: why });
         this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `${t.id} did not start. ${why}. Review and approve the spec (hexagon approve-spec <file>); the task then starts by itself.` });
         this.gated.add(t.id);
+        // A requirement changed after approval: the tasks that cite it, and what depends on them, have not started. Re-plan them
+        // (a proposal the user confirms) instead of leaving them gated for good. Unattended runs keep the plain gate.
+        if (gate.changed.length && !this.respecced.has(t.id) && process.env.HEXAGON_NO_CHECKPOINT !== "1") {
+          this.respecced.add(t.id);
+          this.rc.replan?.(t, `the spec changed after approval: ${gate.problems[0]}`, []);
+        }
         this.outcome.set(t.id, "blocked");
         changed = true;
         continue;
