@@ -185,3 +185,11 @@ Messages on the agent bus travel the dependency edge between the two tasks as pa
 ## Cost
 
 A 40-task frame renders in ~1.8 ms; an unchanged frame writes ~140 bytes (only changed lines are sent). Session pushes carry only the new feed lines: 42.5 KB → 0.4 KB per event.
+
+## Style: minimal (default) or classic
+
+`[ui].style = "minimal" | "classic"` (or `HEXAGON_UI_STYLE`). Minimal draws the dashboard as one grid of solid rules with rounded corners and real junctions: neighbouring panels share a rule, titles are dim text inside it, focus changes the title colour only. The input is `› text`, a rule and one dim status line; the full key list is behind `?` / F1. Cards use one rounded solid border for every state; edge activity recolors the line (it never draws a glyph over it). Feed lines are unboxed (`⏺ what happened`, `  ⎿ tool call`). Classic keeps the framed panels, the bar input and the dashed queued cards.
+
+## Input latency
+
+A key press repaints at the next ~16 ms slot, not at the animation rate. While you type (text in the box, or a key in the last 1.5 s) ambient effects and the continuous "working" effect release their timers and come back afterwards. Full motion is capped at 15 fps (8 fps for the working effect), frames are skipped while stdout has not drained, and ambient hexagons are off unless `ui.ambient = true` or `HEXAGON_AMBIENT=on`. Measured in `test/input-latency.test.ts`: an invalidate under a 4 fps hold took ~190 ms before, under 60 ms now (timer-level, not end-to-end terminal latency).
