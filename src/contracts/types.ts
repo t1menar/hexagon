@@ -58,6 +58,9 @@ export interface SessionInfo {
   ctx_tokens: number;
   /** Share of the model window in use (0..1). */
   ctx_pct: number;
+  window_tokens: number;
+  /** The window is the configured assumption, not something the CLI reported. */
+  window_assumed: boolean;
   compactions: number;
 }
 
@@ -226,7 +229,7 @@ export type AgentEvent =
   | { type: "tool_call"; name: string; summary: string }
   | { type: "tool_result"; name: string; ok: boolean; summary: string }
   /** Token usage. `step`: one model call (counts as a turn); otherwise a correction (e.g. cost only). */
-  | { type: "usage"; input: number; output: number; cache_read: number; cache_write: number; cost_usd: number; step?: boolean; cause?: TokenCause }
+  | { type: "usage"; input: number; output: number; cache_read: number; cache_write: number; cost_usd: number; step?: boolean; cause?: TokenCause; /** the model's context window, when the CLI reports it */ window?: number }
   /** The session this attempt runs in: created, resumed, or compacted. Emitted only when something really happened. */
   | { type: "session"; info: SessionInfo }
   | { type: "question"; question: NeedsInput }

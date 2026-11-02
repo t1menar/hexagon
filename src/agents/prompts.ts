@@ -94,6 +94,15 @@ export function projectContext(root: string): string {
   const ctx = contextFile(root);
   let notes = ctx ? fs.readFileSync(ctx, "utf8").trim() : "";
   if (notes.length > NOTES_BUDGET) notes = `${notes.slice(0, NOTES_BUDGET)}\n… (HEXAGON.md continues; read ${path.basename(ctx!)} for the rest)`;
+  return `# Project\n${notes ? `\n${notes}\n` : ""}`;
+}
+
+/**
+ * What the repository looks like right now (file and directory counts). It changes whenever a file is added, so it is
+ * sent in the first user message of a new session and never in the system prompt, which has to stay byte-identical
+ * between runs for the provider's prompt cache to hit.
+ */
+export function repositoryOverview(root: string): string {
   const files = listProjectFiles(root, 5000);
   const dirs = new Map<string, number>();
   for (const f of files) {
@@ -103,7 +112,7 @@ export function projectContext(root: string): string {
   }
   const shown = [...dirs.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(0, 30).map(([d, n]) => `${d} (${n})`);
   const tree = files.length ? `${files.length >= 5000 ? "5000+" : files.length} files. Directories: ${shown.join(", ")}${dirs.size > 30 ? ", …" : ""}. Use your search tools (glob/grep) to find files.` : "(empty repository)";
-  return `# Project\n${notes ? `\n${notes}\n` : ""}\n## Repository\n${tree}`;
+  return `## Repository\n${tree}`;
 }
 
 /**

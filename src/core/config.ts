@@ -36,6 +36,10 @@ export interface ContextConfig {
   min_turns_between: number;
   /** Window size used when the runtime reports none. */
   assumed_window_tokens: number;
+  /** project: one session per agent identity for the whole project · task: a new session for every task (kept across its fix loops). */
+  session_scope: "project" | "task";
+  /** project scope, new task in a reused session: note = say that the task changed · compact = summarise the session first. */
+  task_boundary: "note" | "compact";
 }
 
 export interface ControlConfig {
@@ -63,6 +67,8 @@ export interface HexagonConfig {
   recovery: RecoveryConfig;
   review: { mode: "agent" | "off" };
   context: ContextConfig;
+  /** `hexagon bench` / `hexagon eval` spend real tokens; they stop when the reported cost reaches this. */
+  bench: { max_cost_usd: number };
   control: ControlConfig;
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
   sandbox: { allow_commands: string[]; command_timeout_s: number };
@@ -75,7 +81,8 @@ export const DEFAULT_CONFIG: HexagonConfig = {
   agents: defaultAgents(),
   recovery: DEFAULT_RECOVERY,
   review: { mode: "agent" },
-  context: { mode: "auto", compact_at: 0.7, min_turns_between: 3, assumed_window_tokens: 200_000 },
+  context: { mode: "auto", compact_at: 0.7, min_turns_between: 3, assumed_window_tokens: 200_000, session_scope: "project", task_boundary: "note" },
+  bench: { max_cost_usd: 5 },
   control: { auto_apply: false },
   messaging: { max_outbound_per_run: 10, max_blocking_questions: 2 },
   sandbox: {

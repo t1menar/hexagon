@@ -21,10 +21,10 @@ export interface CompactDecision { compact: boolean; why: string }
  * Should this session be compacted before its next turn? Pure, so it is unit-tested without an adapter.
  * `requested` is the user's /compact; it overrides the threshold (but not mode "off" for automatic runs).
  */
-export function shouldCompact(cx: ContextConfig, rec: Pick<SessionRecord, "contextTokens" | "turns" | "lastCompactionTurn">, requested: boolean): CompactDecision {
+export function shouldCompact(cx: ContextConfig, rec: Pick<SessionRecord, "contextTokens" | "turns" | "lastCompactionTurn" | "windowTokens">, requested: boolean): CompactDecision {
   if (requested) return { compact: true, why: "requested with /compact" };
   if (cx.mode !== "auto") return { compact: false, why: `mode is ${cx.mode}` };
-  const pct = rec.contextTokens / cx.assumed_window_tokens;
+  const pct = rec.contextTokens / (rec.windowTokens ?? cx.assumed_window_tokens);
   if (pct < cx.compact_at) return { compact: false, why: "below the threshold" };
   if (rec.turns - rec.lastCompactionTurn < cx.min_turns_between) return { compact: false, why: "compacted recently" };
   return { compact: true, why: `context at ${Math.round(pct * 100)}% (limit ${Math.round(cx.compact_at * 100)}%)` };

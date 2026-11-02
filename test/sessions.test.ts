@@ -211,3 +211,45 @@ describe("one session per agent identity (mock agent)", () => {
     expect(t[0]!.text).toContain("(mock) kept the module layout");
   }, 90000);
 });
+
+describe("worktree hazard and session scope", () => {
+  const open: { server?: DaemonServer; client?: HexClient }[] = [];
+  afterEach(() => { for (const o of open.splice(0)) { o.client?.close(); o.server?.orch.shutdown(); } });
+  async function boot(root: string) {
+    const server = new DaemonServer(root);
+    await server.listen();
+    const client = await HexClient.connect(root, { autostart: false });
+    open.push({ server, client });
+    return { server, client };
+  }
+  const finished = (client: HexClient) => until(async () => { const r = await client.call<RunStatus>("run.status"); return r.state === "done" ? r : null; });
+
+  it("a resumed session is told its directory changed and that earlier paths are stale", async () => {
+    const root = project();
+    const { client } = await boot(root);
+    MockAdapter.turns.length = 0;
+    await client.call("run.start", { plan_path: chain(root, 2) });
+    await finished(client);
+    const t2 = MockAdapter.turns.find((t) => t.resume && /T-2/.test(t.text));
+    expect(t2?.text).toMatch(/now working on a different task, in \/.*T-2-a1/);
+    expect(t2?.text).toMatch(/stale/);
+  }, 90000);
+
+  it("session_scope = task creates a new session for every task, session_scope = project keeps one", async () => {
+    const root = project('\n[context]\nsession_scope = "task"\n');
+    const { client, server } = await boot(root);
+    await client.call("run.start", { plan_path: chain(root, 3) });
+    await finished(client);
+    const dev = server.orch.agentSessions.events().filter((e) => e.agent === "developer-1").map((e) => e.kind);
+    expect(dev.filter((k) => k === "created")).toHaveLength(3);
+    expect(dev).not.toContain("resumed");
+  }, 90000);
+
+  it("task_boundary = compact summarises the session when a new task starts in it", async () => {
+    const root = project('\n[context]\ntask_boundary = "compact"\n');
+    const { client, server } = await boot(root);
+    await client.call("run.start", { plan_path: chain(root, 2) });
+    await finished(client);
+    expect(server.orch.agentSessions.get("developer-1")?.compactions).toBeGreaterThanOrEqual(1);
+  }, 90000);
+});

@@ -104,6 +104,11 @@ mode = "auto"                   # "auto" | "manual" | "off"
 compact_at = 0.70               # fraction of the model's context window
 min_turns_between = 3
 assumed_window_tokens = 200000  # used when the CLI reports no window
+session_scope = "project"       # "project": one session per agent for the whole project · "task": a fresh session per task
+task_boundary = "note"          # project scope, new task in a reused session: "note" | "compact"
+
+[bench]
+max_cost_usd = 5               # `hexagon bench` and `hexagon eval` run real agents; they stop when the cost the CLI reports reaches this
 
 # The control agent (chat) changes the graph, agents and runs only through typed commands. Each change is shown
 # as a diff and waits for your confirmation; destructive ones (remove, cancel) always do.
