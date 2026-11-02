@@ -140,3 +140,34 @@ describe("hexagon scope request", () => {
     expect((await pending2).ok).toBe(true);
   }, 60000);
 });
+
+describe("a blocked task", () => {
+  const open: { s: DaemonServer; c: HexClient }[] = [];
+  afterEach(() => { for (const o of open.splice(0)) { o.c.close(); o.s.orch.shutdown(); } });
+
+  async function blocked(reason: string) {
+    const root = project();
+    const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [], tasks: [task("T-1", [], `@block: ${reason}`), task("T-2", ["T-1"])] };
+    fs.writeFileSync(path.join(root, "plan.json"), JSON.stringify(p));
+    const s = new DaemonServer(root); await s.listen();
+    const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });
+    const asked: string[] = [];
+    s.orch.chat = (t: string) => { asked.push(t); };
+    await c.call("run.start", { plan_path: "plan.json" });
+    await until(async () => (await c.call<AgentStatus>("agent.status", { task: "T-1" })).state === "blocked");
+    await sleep(200);
+    return asked;
+  }
+
+  it("is re-planned only when the plan is the problem: the Assistant is asked about the tasks after it", async () => {
+    const asked = await blocked("REQ-A contradicts REQ-B about the retry limit");
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatch(/replan request/i);
+    expect(asked[0]).toContain("REQ-A contradicts REQ-B");
+    expect(asked[0]).toMatch(/not started and can still be edited[^.]*: T-2/);
+  }, 60000);
+
+  it("a missing tool is not a plan problem: no re-plan", async () => {
+    expect(await blocked("go is not installed")).toEqual([]);
+  }, 60000);
+});

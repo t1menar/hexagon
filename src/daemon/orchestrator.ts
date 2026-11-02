@@ -4,7 +4,7 @@ import path from "node:path";
 import { createAdapter } from "../agents/registry.js";
 import { contextFile, identityHash, loadSkills, projectContext, repositoryOverview, systemPrompt } from "../agents/prompts.js";
 import type { AgentAdapter, Reply } from "../agents/types.js";
-import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent } from "../contracts/types.js";
+import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent, Task } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
 import { costReport } from "../core/cost.js";
 import { appendJsonl, atomicWriteJson, nowIso, readJson, readJsonl, readJsonlTail } from "../util/fsx.js";
@@ -34,6 +34,7 @@ import { ControlService, type Proposal } from "./control.js";
 import { Approvals, ARTIFACT, checkStage, isUntraced, specHash, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
+import { replanRequest } from "../core/replan.js";
 import { overlaps, Scheduler, type PriorTask } from "../core/scheduler.js";
 import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
 import { SoloSession, sessionPush, type SessionStatus } from "../core/solo.js";
@@ -888,6 +889,7 @@ export class Orchestrator extends EventEmitter {
       sessions: this.agentSessions, pool: this.pool, bus,
       agentEnv: (id) => this.agentEnv(id),
       preapprove: (task, commands, why) => this.preapprove(task, commands, why),
+      replan: (task, why, changed) => this.replan(task, why, changed),
       tasks: plan.tasks,
       returnTask: (from, to, issue) => scheduler.returnTask(from, to, issue),
     };
@@ -1345,6 +1347,20 @@ export class Orchestrator extends EventEmitter {
    * answers questions about the code and the run, and starts planning (`hexagon plan`) when
    * you ask for something to be built.
    */
+  /** A task is blocked by the plan itself: the Assistant proposes edits to what has not started; the user confirms them. */
+  private replan(task: Task, why: string, changed: string[]): void {
+    const run = this.current;
+    if (!run) return;
+    const after = new Set<string>();
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const t of run.plan.tasks) if (!after.has(t.id) && t.depends_on.some((d) => d === task.id || after.has(d))) { after.add(t.id); grew = true; }
+    }
+    const tail = [...after].filter((id) => run.scheduler.editable(id));
+    this.notice("attention", `${task.id} is blocked by the plan (${why.slice(0, 120)}). The Assistant is asked for a change to the tasks after it; you confirm with /apply.`);
+    this.chat(replanRequest(task, why, changed, tail, ""));
+  }
+
   chat(text: string): void {
     if (!text.trim()) return;
     // The state block is sent only when it differs from what the session was last told.
