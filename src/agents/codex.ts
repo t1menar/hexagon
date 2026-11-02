@@ -58,6 +58,13 @@ export class CodexAdapter extends OneShotAdapter implements AgentAdapter {
       this.threads.set(ctx.sessionId, e.thread_id);
       ctx.host.emit({ type: "session_handle", handle: e.thread_id });
     }
+    // Documented shape of `turn.completed` (NOT verified against a real codex: none was available). Missing or odd
+    // numbers produce no usage event, so the run is reported as "usage unknown", never as zero.
+    const u = e.type === "turn.completed" ? (e.usage as Record<string, unknown> | undefined) : undefined;
+    if (u && Number.isFinite(Number(u.input_tokens)) && Number.isFinite(Number(u.output_tokens))) {
+      const cached = Math.max(0, Number(u.cached_input_tokens ?? 0) || 0);
+      ctx.host.emit({ type: "usage", input: Math.max(0, Number(u.input_tokens) - cached), output: Number(u.output_tokens), cache_read: cached, cache_write: 0, cost_usd: 0, step: true });
+    }
     const item = e.item as Record<string, any> | undefined;
     if (e.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") ctx.host.emit({ type: "chat", from: "agent", text: item.text.slice(0, 8000) });
     else if (e.type === "item.started" && item?.type === "command_execution") ctx.host.emit({ type: "tool_call", name: "shell", summary: `$ ${String(item.command ?? "").split("\n")[0]!.slice(0, 140)}` });
