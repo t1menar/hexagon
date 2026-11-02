@@ -78,6 +78,12 @@ export interface GateResult {
   changed: string[];
 }
 
+/** A task that cites no requirement is outside what the spec covers; the user has to say it may run. */
+export const taskHash = (t: Pick<Task, "title" | "description" | "files" | "acceptance" | "verify">): string =>
+  sha(JSON.stringify([t.title, t.description ?? "", t.files.write, t.acceptance, t.verify]));
+
+export const isUntraced = (t: Pick<Task, "requirements">, specPaths: string[]): boolean => specPaths.length > 0 && t.requirements.length === 0;
+
 /** .hexagon/approvals.json: spec file (project-relative) → what the user approved. */
 export class Approvals {
   constructor(private file: string, private root: string) {}
@@ -107,9 +113,28 @@ export class Approvals {
     return a;
   }
 
-  /** Is this task allowed to start? Tasks that cite no requirement have nothing to approve. */
-  check(task: Pick<Task, "id" | "requirements">, specPaths: string[]): GateResult {
-    if (!task.requirements.length) return { ok: true, problems: [], changed: [] };
+  /** The user lets a task run that the spec does not cover. Content-addressed: changing the task voids it. */
+  approveTask(task: Pick<Task, "id" | "title" | "description" | "files" | "acceptance" | "verify">, by = "user"): void {
+    const all = this.load() as Record<string, unknown>;
+    const tasks = (all["@tasks"] ?? {}) as Record<string, { task: string; approved_at: string; by: string }>;
+    tasks[taskHash(task)] = { task: task.id, approved_at: nowIso(), by };
+    all["@tasks"] = tasks;
+    atomicWriteJson(this.file, all);
+  }
+
+  private taskApproved(task: Pick<Task, "title" | "description" | "files" | "acceptance" | "verify">): boolean {
+    const tasks = ((this.load() as Record<string, unknown>)["@tasks"] ?? {}) as Record<string, unknown>;
+    return taskHash(task) in tasks;
+  }
+
+  /** Is this task allowed to start? A task that cites no requirement needs the user's recorded approval. */
+  check(task: Pick<Task, "id" | "requirements" | "title" | "description" | "files" | "acceptance" | "verify">, specPaths: string[]): GateResult {
+    if (!task.requirements.length) {
+      if (isUntraced(task, specPaths) && !this.taskApproved(task)) {
+        return { ok: false, problems: [`${task.id} cites no requirement, so the approved spec does not cover it, and it has not been approved to run outside the spec`], changed: [] };
+      }
+      return { ok: true, problems: [], changed: [] };
+    }
     const problems: string[] = [];
     const changed: string[] = [];
     const specs: { rel: string; spec: Spec }[] = [];
@@ -119,7 +144,7 @@ export class Approvals {
     for (const req of task.requirements) {
       const found = specs.find((s) => s.spec.requirements.some((r) => r.id === req));
       if (!found) { problems.push(`${task.id} cites ${req}, which is in no spec of this plan`); continue; }
-      const a = this.load()[found.rel];
+      const a = this.load()[found.rel] as Approval | undefined;
       if (!a) { problems.push(`${found.rel} is not approved (hexagon approve-spec ${found.rel})`); continue; }
       const r = found.spec.requirements.find((x) => x.id === req)!;
       if (a.requirements[req] === undefined) { problems.push(`${req} was added after the approval of ${found.rel}`); changed.push(req); }

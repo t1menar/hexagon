@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Plan } from "../contracts/types.js";
+import { isUntraced } from "../core/pipeline.js";
 import { applyGraph, commandDef, edgesOf, fromTask, graphDiff, parseArgs, type CommandDef } from "../core/commands.js";
 import { canonicalRole } from "../core/roles.js";
 import { nowIso } from "../util/fsx.js";
@@ -95,7 +96,10 @@ export class ControlService {
       const before = this.draftPlan();
       const live = this.liveRun();
       if (live) this.checkLive(live.scheduler, def.name, a);
-      const d = graphDiff(before, applyGraph(before, def.name, a));
+      const after = applyGraph(before, def.name, a);
+      const d = graphDiff(before, after);
+      // Applying approves a task that the spec does not cover: say so in the diff the user confirms.
+      for (const t of after.tasks) if (isUntraced(t, after.specs) && !before.tasks.some((b) => b.id === t.id && isUntraced(b, before.specs))) d.push(`! ${t.id} cites no requirement: applying this lets it run outside the approved spec`);
       return d.length ? d : ["no change"];
     }
     switch (def.name) {
@@ -120,11 +124,13 @@ export class ControlService {
       const live = this.liveRun();
       if (live) {
         live.scheduler.editGraph(def.name as Parameters<typeof live.scheduler.editGraph>[0], a);
+        o.approveUntraced(live.plan, "by this edit");
         return { tasks: live.plan.tasks.length, live: true };
       }
       const d = o.draft;
       const next = applyGraph(this.draftPlan(), def.name, a);
       fs.writeFileSync(d!.plan_path, JSON.stringify(next, null, 2));
+      o.approveUntraced(next, "by this edit");
       return { tasks: o.reloadDraft().plan.tasks.length };
     }
     switch (def.name) {
