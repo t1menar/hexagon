@@ -689,6 +689,7 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
         blockers: status === "blocked" ? multi(a, "--blocker").concat(multi(a, "--issue")) : multi(a, "--blocker"),
         assumptions: multi(a, "--assume").map((text) => ({ text })),
         follow_ups: multi(a, "--follow-up"),
+        block_kind: one(a, "--kind"),
         allow: multi(a, "--allow"),
       };
       break;
