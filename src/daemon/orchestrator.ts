@@ -34,6 +34,7 @@ import { ControlService, type Proposal } from "./control.js";
 import { Approvals, ARTIFACT, checkStage, isUntraced, MODES, parseMode, recommendMode, specHash, type Mode, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
+import { formatCard, planCard, specCard, type Card } from "../core/card.js";
 import { checkReplan, replanRequest, type ReplanBundle } from "../core/replan.js";
 import { overlaps, Scheduler, type PriorTask } from "../core/scheduler.js";
 import { lintSpec, listProjectFiles, parseSpec, type Spec } from "../core/spec.js";
@@ -71,6 +72,8 @@ export interface SpecReview {
   requirements: { id: string; title: string; acceptance: number }[];
   warnings: string[];
   summary: string;
+  /** What the human reads before approving: what changes, how it is verified, what looks wrong. */
+  card?: Card;
 }
 
 /** A plan proposed by the analyst, waiting for the user to approve, revise or discard it. */
@@ -83,6 +86,7 @@ export interface Draft {
   plan: Plan;
   check: PlanCheck;
   summary: string;
+  card?: Card;
 }
 
 export type Push =
@@ -717,6 +721,7 @@ export class Orchestrator extends EventEmitter {
     return {
       id, goal, out_dir: out, spec_path: specPath, analysis_path: path.join(out, "analysis.md"), design_path: fs.existsSync(design) ? design : null,
       requirements: spec.requirements.map((r) => ({ id: r.id, title: r.title, acceptance: r.acceptance.length })), warnings, summary,
+      card: specCard(spec, [specPath, ...(fs.existsSync(design) ? [design] : [])].map((f) => path.relative(this.root, f))),
     };
   }
 
@@ -766,7 +771,7 @@ export class Orchestrator extends EventEmitter {
     const plan = applyMode(normalizePlan(readJson(path.join(out, "plan.json")), { id, specs: [path.relative(this.root, specPath)] }), readMode(out));
     const planPath = path.join(this.paths.plans, `${id}.json`);
     atomicWriteJson(planPath, plan);
-    return { id, goal, out_dir: out, spec_path: specPath, plan_path: planPath, plan, check: this.withAdvice(checkPlan(plan, [parseSpec(specPath)])), summary };
+    return { id, goal, out_dir: out, spec_path: specPath, plan_path: planPath, plan, check: this.withAdvice(checkPlan(plan, [parseSpec(specPath)])), summary, card: planCard(plan, [path.relative(this.root, specPath), path.relative(this.root, planPath)]) };
   }
 
   private saveDraft() {
@@ -780,7 +785,7 @@ export class Orchestrator extends EventEmitter {
     const d = this.draft;
     if (!d) throw new Error("no draft");
     const plan = applyMode(normalizePlan(readJson(d.plan_path), { id: d.id, specs: [path.relative(this.root, d.spec_path)] }), readMode(d.out_dir));
-    this.draft = { ...d, plan, check: this.withAdvice(checkPlan(plan, [parseSpec(d.spec_path)])) };
+    this.draft = { ...d, plan, check: this.withAdvice(checkPlan(plan, [parseSpec(d.spec_path)])), card: planCard(plan, [path.relative(this.root, d.spec_path), path.relative(this.root, d.plan_path)]) };
     this.saveDraft();
     this.push({ event: "draft", data: this.draft });
     return this.draft;

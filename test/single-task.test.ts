@@ -51,12 +51,20 @@ describe("single-task mode runs end to end", () => {
     const s = new DaemonServer(root); await s.listen();
     const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });
     await c.subscribe();
-    const reviewed = new Promise((resolve) => c.on("push", (p) => { if (p.event === "spec_review" && p.data) resolve(p.data); }));
+    const reviewed = new Promise<{ spec_path: string; card?: { changes: string[]; verify: string[]; files: string[] } }>((resolve) => c.on("push", (p) => { if (p.event === "spec_review" && p.data) resolve(p.data); }));
     const drafted = new Promise<Draft>((resolve) => c.on("push", (p) => { if (p.event === "draft" && p.data) resolve(p.data); }));
     await c.call("goal.new", { goal: "Greeting and farewell @single-task" });
-    await reviewed;
+    const review = await reviewed;
+    // The gate shows a short card, derived from the spec, and nothing is approved until the human says so.
+    expect(review.card!.changes.length).toBeGreaterThan(0);
+    expect(review.card!.changes.length).toBeLessThanOrEqual(5);
+    expect(review.card!.verify.some((v) => /AC-1/.test(v))).toBe(true);
+    expect(review.card!.files.some((f) => /\.spec\.md$/.test(f))).toBe(true);
+    expect(s.orch.approvals.get(review.spec_path)).toBeUndefined();
     await c.call("spec.approve", {});
+    expect(s.orch.approvals.get(review.spec_path)).toBeTruthy();
     const draft = await drafted;
+    expect((draft as unknown as { card: { changes: string[]; verify: string[] } }).card.verify).toContain("test -f hexagon-mock/t-1.md");
     expect(draft.plan.tasks).toHaveLength(1);
     expect(draft.plan.tasks[0]!.files.write).toEqual(["**"]);
     expect(draft.plan.tasks[0]!.requirements.length).toBe(2);
