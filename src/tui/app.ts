@@ -169,6 +169,9 @@ export class App {
   private changesAt = 0;
   private ambient = new AmbientField();
   private ambientOn = false;
+  /** "minimal" (default): shared solid rules, no boxes. "classic": the framed panels. */
+  private style: "minimal" | "classic" = "minimal";
+  private get minimal(): boolean { return this.style === "minimal"; }
   private lastInput = Date.now();
   private drainWait = false;
   private ambientLevelShown = -1;
@@ -216,6 +219,8 @@ export class App {
     this.caps = detectCaps(process.env, Boolean(process.stdout.isTTY), { animation: ui.animation, startup: ui.startup_animation });
     this.inspectorOn = ui.inspector;
     this.mouseOn = (ui as { mouse?: boolean }).mouse !== false && process.env.HEXAGON_MOUSE !== "off";
+    const wantStyle = (process.env.HEXAGON_UI_STYLE ?? (ui as { style?: string }).style ?? "minimal").toLowerCase();
+    this.style = wantStyle === "classic" ? "classic" : "minimal";
     this.ambientOn = process.env.HEXAGON_AMBIENT === "on" || (ui.ambient && process.env.HEXAGON_AMBIENT !== "off");
     this.mgr = new AnimationManager({ motion: this.caps.motion, fps: this.caps.fps || undefined, onFrame: () => this.render() });
     this.director = new Director(this.mgr);
@@ -738,6 +743,7 @@ export class App {
         return;
       case "delete": this.input = this.input.slice(0, this.cursor) + this.input.slice(this.cursor + 1); return;
     }
+    if (s === "?" && !this.input && !this.pasting && !k?.ctrl) return void this.command("/help"); // full key help lives behind ? / F1
     if (s && !k?.meta && s >= " ") this.insert(s);
   }
 
@@ -1261,7 +1267,7 @@ export class App {
   }
 
   private dashboard(cv: Canvas, W: number, H: number) {
-    const L = computeLayout(W, H, { inspector: this.inspectorOn, inputRows: this.inputView(W).rows.length });
+    const L = computeLayout(W, H, { inspector: this.inspectorOn, inputRows: this.inputView(W).rows.length, shared: this.minimal });
     this.layoutMode = L.mode;
     this.hits = [];
     this.header(cv, W);
@@ -1275,9 +1281,9 @@ export class App {
   }
 
   private header(cv: Canvas, W: number) {
-    cv.fill(0, 0, W, 1, S.bgBar);
-    const bar = (s: string) => st(s, S.bgBar);
-    const logo = this.caps.unicode ? (this.anyActive() && this.mgr.enabled && Math.floor(this.now / 700) % 2 ? "⬢" : "⬡") : "H";
+    if (!this.minimal) cv.fill(0, 0, W, 1, S.bgBar);
+    const bar = (s: string) => (this.minimal ? s : st(s, S.bgBar));
+    const logo = this.minimal ? (this.caps.unicode ? "●" : "H") : this.caps.unicode ? (this.anyActive() && this.mgr.enabled && Math.floor(this.now / 700) % 2 ? "⬢" : "⬡") : "H";
     let x = cv.text(1, 0, `${logo} HEXAGON`, bar(this.tk("brand", S.bold)));
     x = cv.text(x + 2, 0, path.basename(this.root), bar(this.tk("text")));
     if (this.branch) x = cv.text(x + 1, 0, ` ⎇ ${this.branch}`.replace("⎇", this.caps.unicode ? "⎇" : "@"), bar(this.tk("muted")));
@@ -1349,8 +1355,26 @@ export class App {
   }
 
   private panelBox(cv: Canvas, r: Region, title: string, right = "", focus = false) {
-    cv.box(r.x, r.y, r.w, r.h, focus ? this.tk("brand") : this.tk("border"), title, this.tk("text", S.bold));
-    if (right) cv.text(r.x + r.w - 2 - [...right].length, r.y, right, this.tk("muted"), r.x + r.w - 1);
+    if (!this.minimal) {
+      cv.box(r.x, r.y, r.w, r.h, focus ? this.tk("brand") : this.tk("border"), title, this.tk("text", S.bold));
+      if (right) cv.text(r.x + r.w - 2 - [...right].length, r.y, right, this.tk("muted"), r.x + r.w - 1);
+      return;
+    }
+    this.rules(cv, r);
+    // The title is dim text inside the top rule; focus changes its colour, never the line.
+    const t = ` ${title} `;
+    const end = cv.text(r.x + 2, r.y, t, focus ? this.tk("brand", S.bold) : this.tk("muted"), r.x + r.w - 2);
+    void end;
+    if (right) cv.text(r.x + r.w - 3 - [...right].length, r.y, ` ${right} `, this.tk("muted"), r.x + r.w - 1);
+  }
+
+  /** One border family and one colour for all chrome. Regions share their edge cells, so the junctions come out right. The screen edge has no vertical rule. */
+  private rules(cv: Canvas, r: Region) {
+    const b = this.tk("border");
+    cv.hrule(r.x, r.y, r.w, b);
+    cv.hrule(r.x, r.y + r.h - 1, r.w, b);
+    if (r.x > 0) cv.vrule(r.x, r.y, r.h, b);
+    if (r.x + r.w < cv.w) cv.vrule(r.x + r.w - 1, r.y, r.h, b);
   }
 
   private networkPanel(cv: Canvas, r: Region) {
@@ -1361,7 +1385,7 @@ export class App {
     const nodes = this.dagNodes(this.plan());
     if (!nodes.length) { this.director.setGeometry(null); this.placeholder2(cv, r); return; }
     const reserve = d && draft ? 3 : 0;
-    const opts = { maxW: r.w - 2, maxH: r.h - 2 - reserve, caps: this.caps, now: this.now, selected: this.selected, still: !this.mgr.enabled, fx: this.director.fx };
+    const opts = { maxW: r.w - 2, maxH: r.h - 2 - reserve, caps: this.caps, now: this.now, selected: this.selected, still: !this.mgr.enabled, fx: this.director.fx, style: this.style };
     const geom = renderNetwork(nodes, opts); // the true geometry: particles, effects and the next morph start from it
     this.director.setGeometry(geom);
     const ox = r.x + 1 + Math.max(0, Math.floor((r.w - 2 - geom.canvas.w) / 2));
@@ -1380,7 +1404,7 @@ export class App {
     for (const [id, q] of geom.nodes) if (this.full.has(id) || this.plan()?.tasks.some((t) => t.id === id)) this.hits.push({ x: q.x + ox, y: q.y + oy, w: q.w, h: q.h, select: id });
     this.netEdges = new Set(geom.edges.map((e) => `${e.from}>${e.to}`));
     const shown = this.morph && this.morph.k < 1 ? renderNetwork(nodes, { ...opts, morph: this.morph }) : geom;
-    if (this.mgr.enabled) this.mgr.particles.draw(shown.canvas, this.now, { depth: this.caps.color, unicode: this.caps.unicode });
+    if (this.mgr.enabled) this.mgr.particles.draw(shown.canvas, this.now, { depth: this.caps.color, unicode: this.caps.unicode, onLines: this.minimal ? "recolor" : "glyph" });
     cv.blit(shown.canvas, ox, oy, 0, 0, Math.min(shown.canvas.w, r.w - 2), Math.min(shown.canvas.h, r.h - 2 - reserve));
     // Ambient hexagons only in the empty area around the graph (never over it, never over the draft hint).
     const lvl = this.ambientLevel();
@@ -1694,13 +1718,13 @@ export class App {
       const q = this.permissionQuestion(perm);
       head.push([`⚠ ${perm.id} ${q.prompt}`, st(S.orange, S.bold)], [`   ${q.options.map((o) => `${o.id}) ${o.label}`).join("   ")}`, S.orange]);
     }
-    cv.box(x, y, w, h, S.gray, clip(title, w - 6), st(S.bold, S.white));
+    this.panelBox(cv, { x, y, w, h }, clip(title, w - 6));
     let yy = y + 1;
     for (const [t, sty] of head) {
       if (yy >= y + h - 1) break;
       cv.text(x + 2, yy++, clip(t, inner), sty);
     }
-    if (head.length) { for (let i = x + 1; i < x + w - 1; i++) cv.set(i, yy, "─", S.gray); yy++; }
+    if (head.length) { if (this.minimal) cv.hrule(x, yy, w, this.tk("border")); else for (let i = x + 1; i < x + w - 1; i++) cv.set(i, yy, "─", S.gray); yy++; }
     const avail = y + h - 1 - yy;
     if (avail <= 0) return;
     const lines: { text: string; style: string }[] = chat ?? [];
@@ -1724,6 +1748,7 @@ export class App {
 
   /** Column where the typed text starts (after the recipient chip and the prompt mark). */
   private inputLeft(): number {
+    if (this.minimal) return 3; // "› " then the text; the recipient moves to the status line
     return 1 + [` ${this.recipient().label} `].join("").length + 3;
   }
 
@@ -1731,7 +1756,46 @@ export class App {
     return layoutInput(this.input, this.cursor, Math.max(10, W - this.inputLeft() - 1));
   }
 
+  /** Minimal input: `› text`, a rule, one dim status line. No bars, no inverse chip. */
+  private bottomMinimal(cv: Canvas, y: number, W: number) {
+    const ix = this.inputLeft();
+    const view = this.inputView(W);
+    const { rows, top } = windowRows(view, MAX_INPUT_ROWS);
+    for (let i = 0; i < rows.length; i++) cv.text(1, y + i, top + i === 0 ? "›" : "·", top + i === 0 ? this.tk("brand", S.bold) : this.tk("muted"));
+    if (!this.input) {
+      cv.set(ix, y, " ", st(S.inverse));
+      cv.text(ix + 1, y, clip(this.placeholder(), W - ix - 2), this.tk("muted"));
+    } else {
+      rows.forEach((row, i) => cv.text(ix, y + i, row, this.tk("text"), W - 1));
+      const cy = y + view.cursorRow - top, cx = ix + view.cursorCol;
+      const comp = this.menuOpen() ? this.completions() : null;
+      const pick = comp?.items[Math.min(this.menuIdx, comp.items.length - 1)];
+      if (pick && pick.value.toLowerCase().startsWith(comp!.token.toLowerCase())) cv.text(cx, cy, pick.value.slice(comp!.token.length), this.tk("muted"), W - 1);
+      const under = [...(rows[view.cursorRow - top] ?? "")][view.cursorCol];
+      cv.set(cx, cy, under ?? pick?.value.slice(comp!.token.length)[0] ?? " ", st(S.inverse));
+    }
+    const ry = y + rows.length;
+    cv.hrule(0, ry, W, this.tk("border"));
+    // Status line: what Enter will do, or the thing that needs saying (command help, notice, open question).
+    const q = this.openQuestion();
+    const sy = ry + 1;
+    if (this.input.startsWith("/") && !this.menuOpen()) {
+      const word = this.input.split(/\s/)[0]!;
+      const m = COMMANDS.find(([u]) => u.split(" ")[0] === word);
+      cv.text(1, sy, clip(m ? `${m[0]} — ${m[1]}` : "unknown command — /help", W - 2), this.tk("muted"));
+    } else if (this.notice) {
+      cv.text(1, sy, clip(this.notice.text, W - 2), this.notice.level === "error" ? this.tk("error") : this.notice.level === "attention" ? this.tk("warning") : this.tk("info"));
+    } else if (q) {
+      cv.text(1, sy, clip(`? ${q.from} asks (${q.id}): ${q.prompt}${q.options.length ? "  " + q.options.map((o) => `${o.id}) ${o.label}`).join("  ") : ""}`, W - 2), this.tk("warning", S.bold));
+    } else {
+      const hint = this.menuOpen() ? "Tab complete · ↑↓ choose · Enter accept · Esc close" : `${this.recipient().label === "chat" ? "chat" : `@${this.selected}`} · ? shortcuts · F1 help`;
+      cv.text(1, sy, clip(hint, W - 2), this.tk("muted"));
+    }
+    if (this.menuOpen()) this.menu(cv, y, W);
+  }
+
   private bottom(cv: Canvas, y: number, W: number) {
+    if (this.minimal) return this.bottomMinimal(cv, y, W);
     // Line 1: question / notice / command completion.
     const q = this.openQuestion();
     if (this.input.startsWith("/") && !this.menuOpen()) {

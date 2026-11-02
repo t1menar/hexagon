@@ -76,7 +76,7 @@ export interface HexagonConfig {
   control: ControlConfig;
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
   sandbox: { allow_commands: string[]; command_timeout_s: number };
-  ui: { open_with: "auto" | "tmux" | "iterm" | "terminal" | "print"; /** auto | full | reduced | off */ animation: string; startup_animation: boolean; inspector: boolean; /** faint ambient hexagons behind the network (full motion only) */ ambient: boolean; /** wheel scrolling and clicking agents; Shift-drag still selects text in most terminals */ mouse: boolean };
+  ui: { open_with: "auto" | "tmux" | "iterm" | "terminal" | "print"; /** auto | full | reduced | off */ animation: string; startup_animation: boolean; inspector: boolean; /** "minimal" (default): shared solid rules, no boxes, quiet input; "classic": the earlier framed look */ style: "minimal" | "classic"; /** faint ambient hexagons behind the network (full motion only) */ ambient: boolean; /** wheel scrolling and clicking agents; Shift-drag still selects text in most terminals */ mouse: boolean };
 }
 
 export const DEFAULT_CONFIG: HexagonConfig = {
@@ -97,7 +97,7 @@ export const DEFAULT_CONFIG: HexagonConfig = {
     ],
     command_timeout_s: 600,
   },
-  ui: { open_with: "auto", animation: "auto", startup_animation: true, inspector: true, ambient: false, mouse: true },
+  ui: { open_with: "auto", animation: "auto", startup_animation: true, inspector: true, style: "minimal", ambient: false, mouse: true },
 };
 
 /** Read-only probes every agent may always run (checking what's installed, looking around). */

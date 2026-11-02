@@ -60,11 +60,11 @@ export type ParticleKind = "information" | "execution" | "review" | "completion"
 
 interface KindLook { token: Token; glyph: [string, string]; ascii: string; priority: number; size: 1 | 2 }
 const KIND: Record<ParticleKind, KindLook> = {
-  information: { token: "info", glyph: ["⬢", "⬡"], ascii: "O", priority: 3, size: 2 },
+  information: { token: "info", glyph: ["●", "○"], ascii: "O", priority: 3, size: 2 },
   execution: { token: "active", glyph: ["⬡", "·"], ascii: "o", priority: 2, size: 1 },
-  review: { token: "warning", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
-  completion: { token: "success", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
-  recovery: { token: "brand", glyph: ["⬢", "⬡"], ascii: "O", priority: 4, size: 2 },
+  review: { token: "warning", glyph: ["●", "○"], ascii: "O", priority: 4, size: 2 },
+  completion: { token: "success", glyph: ["●", "○"], ascii: "O", priority: 4, size: 2 },
+  recovery: { token: "brand", glyph: ["●", "○"], ascii: "O", priority: 4, size: 2 },
   ambient: { token: "border", glyph: ["·", "·"], ascii: ".", priority: 0, size: 1 },
 };
 
@@ -139,26 +139,34 @@ export class ParticleSystem {
    * Draw onto a canvas without ever hiding information: a particle may only land on blank cells or on connection
    * line characters, never on text, node outlines or other widgets.
    */
-  draw(c: Canvas, now: number, o: { depth: ColorDepth; unicode: boolean; bg?: Rgb; reduced?: boolean }): void {
+  draw(c: Canvas, now: number, o: { depth: ColorDepth; unicode: boolean; bg?: Rgb; reduced?: boolean; /** Over a line cell: "recolor" keeps the line's glyph and only tints it (the line stays continuous); "glyph" (classic) draws the particle. */ onLines?: "glyph" | "recolor" }): void {
     const bg = o.bg ?? TOKENS.surface2;
     for (const v of this.visible(now)) {
       const look = KIND[v.kind];
       const under = c.chars[v.y]?.[v.x];
       if (under === undefined || !(under === " " || LINE_CELLS.has(under))) continue;
       const col = mix(bg, TOKENS[look.token], 0.35 + 0.65 * v.alpha);
+      if (o.onLines === "recolor") {
+        // Edge activity on a minimal canvas: the connection itself lights up, nothing is drawn over it.
+        if (under !== " ") {
+          c.styles[v.y]![v.x] = st(sgr(col, o.depth), v.alpha > 0.7 && v.kind !== "ambient" ? "1" : "");
+          for (const [tx, ty] of v.trail) { const u3 = c.chars[ty]?.[tx]; if (u3 !== undefined && LINE_CELLS.has(u3)) c.styles[ty]![tx] = st(sgr(mix(bg, TOKENS[look.token], 0.35 + 0.35 * v.alpha), o.depth)); }
+          continue;
+        }
+      }
       const glyph = !o.unicode ? look.ascii : look.glyph[v.alpha > 0.55 ? 0 : 1];
       v.trail.forEach(([tx, ty], i) => {
         if ((tx === v.x && ty === v.y) || (i === 1 && tx === v.trail[0]![0] && ty === v.trail[0]![1])) return;
         const u2 = c.chars[ty]?.[tx];
         if (u2 === undefined || !(u2 === " " || LINE_CELLS.has(u2))) return;
         const tcol = mix(bg, TOKENS[look.token], (0.5 - 0.2 * i) * v.alpha + 0.1);
-        c.set(tx, ty, !o.unicode ? "." : i === 0 ? "⬡" : "·", st(sgr(tcol, o.depth)));
+        c.set(tx, ty, !o.unicode ? "." : i === 0 ? "○" : "·", st(sgr(tcol, o.depth)));
       });
       c.set(v.x, v.y, glyph, st(sgr(col, o.depth), v.alpha > 0.7 && v.kind !== "ambient" ? "1" : ""));
     }
   }
 }
-const LINE_CELLS = new Set("╎─│╭╮╰╯├┤┬┴┼═║╔╗╚╝╠╣╦╩╬▸·•-|+>".split(""));
+export const LINE_CELLS = new Set("╎─│╭╮╰╯├┤┬┴┼═║╔╗╚╝╠╣╦╩╬▸·•-|+>".split(""));
 
 // ───────────── tweens, timelines, scheduler ─────────────
 
