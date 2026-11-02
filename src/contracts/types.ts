@@ -62,6 +62,8 @@ export interface SessionInfo {
   /** The window is the configured assumption, not something the CLI reported. */
   window_assumed: boolean;
   compactions: number;
+  /** Times the CLI compacted this session on its own. */
+  cli_compactions?: number;
 }
 
 export interface AgentStatus {

@@ -160,7 +160,8 @@
         "ctx_pct": { "type": "number", "minimum": 0, "maximum": 1 },
         "window_tokens": { "type": "number" },
         "window_assumed": { "type": "boolean" },
-        "compactions": { "type": "integer", "minimum": 0 }
+        "compactions": { "type": "integer", "minimum": 0 },
+        "cli_compactions": { "type": "integer", "minimum": 0 }
       }
     },
 
