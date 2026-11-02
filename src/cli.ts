@@ -54,6 +54,7 @@ ${c.bold("Watch & steer")}
   hexagon allow <cmd…> | all       let agents run these commands (e.g. allow brew curl) or everything
   hexagon model [role model|default]  show/set a model override per role (default = the CLI's own)
   hexagon agents [list|doctor|models <agent>|configure|add]   providers, CLI versions, auth, capabilities, discovered models
+  hexagon agents scaffold|record|conformance <id>   build, capture and check a third-party adapter (docs/ADAPTERS.md)
   hexagon install [go|node|java|maven]   install a toolchain for agents (official release, no Homebrew)
 
 ${c.bold("Agent protocol")} (run by agents inside their sessions)
@@ -115,6 +116,7 @@ async function main(argv: string[]): Promise<void> {
     process.exitCode = found.some((f) => f.level === "error") ? 1 : 0;
     return;
   }
+  if (cmd === "agents" && ["scaffold", "record", "conformance"].includes(rest[0] ?? "")) return void (await (await import("./shell/adapter-tools.js")).adapterTool(rest[0]!, rest.slice(1), root()));
   if (cmd === "commands") return void console.log(commandDocs());
   if (cmd === "bench") {
     // Real agents, real tokens: needs --real, and stops at [bench] max_cost_usd.

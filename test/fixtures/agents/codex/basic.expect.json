@@ -1,0 +1,1 @@
+{"emits":["chat","tool_call","session_handle","usage"],"handle":"th-fixture","usage":"some"}

@@ -6,4 +6,4 @@ import "./exec.js";
 import "./grok.js";
 import "./mock.js";
 
-export { adapterClis, adapterNames, realRunOf, createAdapter, defaultAgents, migrateAgentEntry, primaryAgentId, registerAdapter, type AdapterFactory, type AdapterMeta } from "./adapter-registry.js";
+export { adapterClis, adapterNames, realRunOf, recordVerified, verifiedFile, createAdapter, defaultAgents, migrateAgentEntry, primaryAgentId, registerAdapter, type AdapterFactory, type AdapterMeta } from "./adapter-registry.js";
