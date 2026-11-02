@@ -9,6 +9,7 @@ import { ensureRepo, isRepo } from "./core/git.js";
 import { argsFromFlags, commandDef, commandDocs, parseArgs } from "./core/commands.js";
 import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
+import { adapterClis } from "./agents/registry.js";
 import { whichExecutable } from "./agents/contracts/adapter.js";
 import { loadConfig } from "./core/config.js";
 import type { CostReport, CostRow } from "./core/cost.js";
@@ -31,7 +32,7 @@ const USAGE = `${c.bold("hexagon")} ${VERSION} — run several coding agents on 
 ${c.bold("Start")}
   hexagon init ["what you're building"]   set up .hexagon/ and let an agent write HEXAGON.md
   hexagon                                 open the dashboard: chat with the assistant; /sdd for parallel agents
-  hexagon sdd "<goal>"                    spec-driven: the analyst writes spec + task graph (alias: new)
+  hexagon sdd [--mode single-task|dag] "<goal>"   spec-driven: the analyst writes the spec, then one checked task (default) or a task graph (alias: new)
   hexagon chat "<message>"                talk to the Hexagon Assistant
   hexagon run [plan.json] [-j N] [--agent X] [--follow]   run the approved draft (or a plan file)
 
@@ -58,12 +59,13 @@ ${c.bold("Agent protocol")} (run by agents inside their sessions)
   hexagon ask "<question>" [--option "…" …] [--default "…"]
   hexagon note "<fact for other agents>"
   hexagon return <T-n> "<defect in that task's code, with evidence>"
+  hexagon scope request <glob…> --why "…"   ask for write scope outside your mask (lockfiles/index files at once; else the user decides)
   hexagon done --summary "…" [--evidence "AC-1: …" …] [--status completed|blocked|failed|needs_spec_change]
                [--issue "…" …] [--assume "…" …] [--allow <cmd> …]
   hexagon review approve|changes --summary "…" [--finding "high: file:line issue -> fix" …]
   hexagon plan-check`;
 
-const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "stage-check", "return", "bus", "exec", "install", "sudo"]);
+const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "stage-check", "return", "bus", "exec", "install", "sudo", "scope"]);
 const TASK_RE = /^t-?\d+$/i;
 const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
@@ -101,6 +103,8 @@ async function main(argv: string[]): Promise<void> {
   if (cmd === "--version" || cmd === "-v") return void console.log(VERSION);
   if (cmd === "--help" || cmd === "-h" || cmd === "help") return void console.log(USAGE);
   if (cmd && AGENT_OPS.has(cmd)) return agentOp(cmd, rest);
+  // Inside the Assistant's session these three use its narrow routes; for the user they are the full commands below.
+  if (process.env.HEXAGON_AGENT && (cmd === "logs" || cmd === "proposals" || cmd === "tell")) return agentOp(cmd, rest);
   if (cmd === "prompts") {
     if (rest[0] !== "lint") { console.error("usage: hexagon prompts lint [--json]"); process.exit(2); }
     const { lintPrompts, formatLint } = await import("./core/promptlint.js");
@@ -453,14 +457,14 @@ async function main(argv: string[]): Promise<void> {
 
 /** Say which agent CLIs are installed, and warn when the configured default is not one of them. Never edits the config. */
 async function reportCliDetection(dir: string): Promise<void> {
-  const known = [["claude", "claude-code"], ["codex", "codex"], ["grok", "grok"]] as const;
+  const known = adapterClis();
   const found: string[] = [];
-  for (const [bin] of known) if (await whichExecutable(bin)) found.push(bin);
-  console.log(found.length ? `${c.blue("✔")} agent CLIs found: ${found.join(", ")}` : c.orange("! no agent CLI found on PATH (claude, codex, grok): install one before running agents"));
+  for (const { cli } of known) if (await whichExecutable(cli)) found.push(cli);
+  console.log(found.length ? `${c.blue("✔")} agent CLIs found: ${found.join(", ")}` : c.orange(`! no agent CLI found on PATH (${known.map((k) => k.cli).join(", ")}): install one before running agents`));
   try {
     const cfg = loadConfig(path.join(dir, ".hexagon", "config.toml"));
     const wanted = cfg.roles.developer?.agent ? cfg.agents[cfg.roles.developer.agent] : undefined;
-    const bin = wanted?.command?.[0] ?? (wanted?.adapter === "claude-code" ? "claude" : wanted?.adapter);
+    const bin = wanted?.command?.[0] ?? (known.find((k) => k.adapter === wanted?.adapter)?.cli ?? wanted?.adapter);
     if (bin && wanted?.adapter !== "mock" && !(await whichExecutable(bin))) {
       console.log(c.orange(`! the developer role uses "${cfg.roles.developer!.agent}" (${bin}), which is not installed${found.length ? `; installed instead: ${found.join(", ")}. Switch with \`hexagon agents configure\`` : ""}`));
     }
@@ -514,18 +518,20 @@ async function init(args: string[]): Promise<void> {
 }
 
 async function newGoal(args: string[]): Promise<void> {
-  const goal = args.join(" ").trim();
+  const a = [...args];
+  const mode = one(a, "--mode");
+  const goal = a.join(" ").trim();
   if (!goal) throw new Error('usage: hexagon sdd "<what you want built>"');
   const r = root();
   const client = await HexClient.connect(r);
   if (process.stdout.isTTY && process.stdin.isTTY) {
-    await client.call("goal.new", { goal });
+    await client.call("goal.new", { goal, mode });
     const { App } = await import("./tui/app.js");
     await new App(client, r, "planner").start();
     return;
   }
   await client.subscribe();
-  await client.call("goal.new", { goal });
+  await client.call("goal.new", { goal, mode });
   const draft = new Promise<Draft>((resolve) => client.on("push", (p: Push) => { if (p.event === "draft" && p.data) resolve(p.data); }));
   const st = await followSession(client, "planner");
   if (st.state !== "done") { client.close(); process.exitCode = 1; return; }
@@ -645,6 +651,23 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
       params = { tool, reason };
       break;
     }
+    case "scope": {
+      if (a.shift() !== "request") { console.error('usage: hexagon scope request <glob…> --why "<reason>"'); process.exit(2); }
+      const why = one(a, "--why");
+      params = { globs: a.filter((x) => !x.startsWith("--")), why };
+      break;
+    }
+    case "logs": {
+      if (!a[0]) { console.error("usage: hexagon logs <T-n> [N]"); process.exit(2); }
+      params = { task: normTask(a[0]), limit: Number(a[1] ?? 40) };
+      break;
+    }
+    case "tell": {
+      const [to, ...body] = a;
+      if (!to || !body.length) { console.error('usage: hexagon tell <T-n> "<instruction>"'); process.exit(2); }
+      params = { task: normTask(to), body: body.join(" ") };
+      break;
+    }
     case "return": {
       const task = a.shift();
       if (!task || !a.length) { console.error('usage: hexagon return <T-n> "<what is wrong, with evidence>"'); process.exit(2); }
@@ -670,7 +693,8 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
     }
     case "review": {
       const verdict = a.shift();
-      if (verdict !== "approve" && verdict !== "changes") { console.error("usage: hexagon review approve|changes --summary \"…\" [--finding \"high: file:line issue -> fix\"]"); process.exit(2); }
+      if (verdict !== "approve" && verdict !== "changes" && verdict !== "question") { console.error("usage: hexagon review approve|changes|question --summary \"…\" [--finding \"high: file:line issue -> fix\"] [--option \"…\"]"); process.exit(2); }
+      const options = multi(a, "--option");
       const summary = one(a, "--summary") ?? a.join(" ");
       const findings = multi(a, "--finding").map((f) => {
         const m = /^\s*(high|medium|low)\s*:\s*(?:([^\s:]+\.[\w]+)(?::(\d+))?\s+)?([\s\S]*?)(?:\s*->\s*([\s\S]*))?$/i.exec(f);
@@ -678,7 +702,7 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
           ? { severity: m[1]!.toLowerCase(), ...(m[2] ? { file: m[2] } : {}), ...(m[3] ? { line: Number(m[3]) } : {}), issue: m[4]!.trim(), ...(m[5] ? { suggestion: m[5].trim() } : {}) }
           : { severity: "medium", issue: f };
       });
-      params = { verdict, summary, findings };
+      params = { verdict, summary, findings, options };
       op = "review";
       break;
     }
@@ -692,7 +716,12 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
   }
   try {
     const reply = await client.call<Reply>("agent.api", { agent: process.env.HEXAGON_AGENT ?? null, cwd: process.cwd(), op, args: params });
-    (reply.ok ? console.log : console.error)(reply.message);
+    if (reply.ok && cmd === "logs") {
+      for (const e of JSON.parse(reply.message) as Parameters<typeof formatEvent>[0][]) { const l = formatEvent(e, true); if (l) console.log(l); }
+    } else if (reply.ok && cmd === "proposals") {
+      const list = JSON.parse(reply.message) as { id: string; command: string; destructive: boolean; diff: string[] }[];
+      console.log(list.length ? list.map((p) => `${p.id}${p.destructive ? " (destructive)" : ""}  ${p.command}\n${p.diff.map((d) => `    ${d}`).join("\n")}`).join("\n") : "no proposals waiting");
+    } else (reply.ok ? console.log : console.error)(reply.message);
     process.exitCode = reply.ok ? 0 : 1;
   } finally {
     client.close();

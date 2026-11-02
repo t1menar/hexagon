@@ -33,7 +33,7 @@ import { chatLines, itemsFromEvents, itemsFromSession, type ChatItem } from "./c
 interface FeedLine { ts: string; text: string; style: string }
 
 const COMMANDS: [string, string][] = [
-  ["/sdd <goal>", "spec-driven development: spec + task graph → parallel agents (optional)"],
+  ["/sdd [--mode dag|single-task] <goal>", "spec-driven development; by default one checked task, --mode dag for a parallel graph"],
   ["/run [-j N] [--agent X]", "approve the draft plan and start the agents"],
   ["/discard", "throw away the draft plan"],
   ["/spec", "open the spec in $EDITOR"],
@@ -46,7 +46,7 @@ const COMMANDS: [string, string][] = [
   ["/resume [T-n]", "resume"],
   ["/cancel [T-n]", "cancel an agent"],
   ["/retry [T-n] [--agent X] [--effort E]", "start a new attempt"],
-  ["/add <role> <title> [after T-1,T-2]", "add a task to the draft or the running graph"],
+  ["/add <role> <title> in <globs> verify <cmd> [after T-1]", "add a task (scope and check required) to the draft or running graph"],
   ["/rm <T-n>", "remove a task that has not started (asks for your yes)"],
   ["/link <T-a> <T-b>", "make T-b wait for T-a"],
   ["/unlink <T-a> <T-b>", "remove that ordering (asks for your yes)"],
@@ -875,8 +875,10 @@ export class App {
     await this.client.call("chat.send", { text });
   }
 
-  private async newGoal(goal: string) {
-    await this.client.call("goal.new", { goal });
+  private async newGoal(text: string) {
+    const mm = /^--mode[= ](\S+)\s+/.exec(text);
+    const goal = mm ? text.slice(mm[0].length) : text;
+    await this.client.call("goal.new", { goal, ...(mm ? { mode: mm[1] } : {}) });
     this.log(`› goal: ${goal}`, st(S.white, S.bold));
     this.sessions.set("planner", blankSession("planner", "analyst"));
     this.select("planner");
@@ -1012,10 +1014,20 @@ export class App {
         }
         case "/cancel": { const t = this.target(args); await c.call("agent.cancel", { task: t }); this.flash(`${t} cancelled`); return; }
         case "/add": {
-          const m = /^(\S+)\s+(.+?)(?:\s+after\s+([\w,\s-]+))?$/i.exec(args.join(" "));
-          if (!m) throw new Error("usage: /add <role> <title> [after T-1,T-2]");
-          const deps = m[3] ? m[3].split(/[,\s]+/).filter(Boolean).map(normTask) : undefined;
-          return await this.graphEdit("graph.addNode", { role: m[1]!.toLowerCase(), title: m[2]!, ...(deps ? { depends_on: deps } : {}) });
+          // /add <role> <title> in <glob,glob> (verify <command> | exempt <reason>) [after T-1,T-2]
+          const usage = "usage: /add <role> <title> in <glob,glob> verify <command> [after T-1,T-2]   (or `exempt <reason>` instead of verify)";
+          let rest = args.join(" ");
+          const after = /\s+after\s+([\w,\s-]+)$/i.exec(rest);
+          if (after) rest = rest.slice(0, after.index);
+          const ver = /\s+(verify|exempt)\s+(.+)$/i.exec(rest);
+          if (ver) rest = rest.slice(0, ver.index);
+          const m = /^(\S+)\s+(.+?)\s+in\s+(\S+)$/i.exec(rest);
+          if (!m || !ver) throw new Error(usage);
+          const deps = after ? after[1]!.split(/[,\s]+/).filter(Boolean).map(normTask) : undefined;
+          return await this.graphEdit("graph.addNode", {
+            role: m[1]!.toLowerCase(), title: m[2]!, write: m[3]!.split(","),
+            ...(ver[1]!.toLowerCase() === "verify" ? { verify: [ver[2]!] } : { verify_exempt: ver[2]! }), ...(deps ? { depends_on: deps } : {}),
+          });
         }
         case "/rm": {
           if (!args[0]) throw new Error("usage: /rm <T-n>");
@@ -1162,7 +1174,7 @@ export class App {
     const inner = w - 4;
     const a = this.full.get(p.agent);
     const who = a ? `${p.agent} · ${a.role} · ${a.agent.provider} ${a.agent.adapter ?? ""}`.trim() : p.agent === HEX ? "Hexagon Assistant" : p.agent;
-    const what = p.action === "install" ? "install a tool" : p.action === "sudo" ? "run as ROOT (sudo)" : "run a command";
+    const what = p.action === "install" ? "install a tool" : p.action === "scope" ? "write outside its scope" : p.action === "sudo" ? "run as ROOT (sudo)" : "run a command";
     const rows: { k: string; v: string; style: string }[] = [
       { k: "Agent", v: who, style: this.tk("text") },
       { k: "Wants to", v: what, style: this.tk("warning", S.bold) },

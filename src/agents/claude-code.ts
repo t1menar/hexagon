@@ -348,6 +348,8 @@ const cmd = (c: AgentConfig, dflt: string) => (c.command?.length ? c.command : [
 registerAdapter("claude-code", (id, c, o) => new ClaudeCodeAdapter(id, { command: cmd(c, "claude"), model: null, selection: selectionFrom(o || c.model), args: c.args ?? [] }), {
   agentId: "claude",
   primary: true,
+  cli: "claude",
+  realRun: { version: "2.1.316", date: "2026-11-02", covered: "conformance suite (resume remembers, usage reported), bench, window size" },
   defaultAgent: { adapter: "claude-code", provider: "anthropic", command: ["claude"] },
   // v0.1 configs used an API adapter called "claude" with a full model id; it maps onto this CLI wrapper.
   aliases: ["claude"],

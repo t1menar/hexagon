@@ -130,6 +130,12 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         const rj = /@reject:\s*(\d+|always)/.exec(ctx.task?.description ?? "");
         const n = (MockAdapter.reviews.get(ctx.task?.id ?? "") ?? 0) + 1;
         MockAdapter.reviews.set(ctx.task?.id ?? "", n);
+        // `@review-question: <text>`: ask the user instead of judging, on the first review turn only (test hook).
+        const rq = /@review-question:\s*(.+)$/m.exec(ctx.task?.description ?? "");
+        if (rq && n === 1) {
+          api.review({ verdict: "question", summary: rq[1]!.trim(), findings: [], options: ["Yes", "No"] } as never);
+          return { kind: "finished" };
+        }
         if (rj && (rj[1] === "always" || n <= Number(rj[1]))) {
           const same = /@reject-same/.test(ctx.task?.description ?? "");
           api.review({ verdict: "request_changes", summary: same ? "Mock review: not good enough." : `Mock review #${n}: please improve.`, findings: [{ severity: "high", issue: same ? "still wrong" : `issue ${n}`, file: same ? "src/a.txt" : `src/a-${n}.txt` }] });
@@ -223,7 +229,8 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
       const r = api.done({
         status: "completed",
         summary: `Mock implementation of ${task.title}${instructions.length ? ` (applied ${instructions.length} message(s))` : ""}.`,
-        acceptance_evidence: /@no-evidence/.test(task.description ?? "") ? [] : task.acceptance.map((ac) => ({ ac, evidence: "mock agent (no real verification)", verified: false })),
+        // `@evidence: <file>::<test name>` claims that test for every criterion (test hook for the mutation check).
+        acceptance_evidence: /@no-evidence/.test(task.description ?? "") ? [] : task.acceptance.map((ac) => ({ ac, evidence: /@evidence:\s*(\S+::[^\n]+)/.exec(task.description ?? "")?.[1] ? `test:${/@evidence:\s*(\S+::[^\n]+)/.exec(task.description ?? "")![1]!.trim()}` : "mock agent (no real verification)", verified: false })),
       });
       if (!r.ok) return { kind: "error", error: { kind: "invalid_output", message: r.message, retryable: false } };
       return { kind: "finished" };
@@ -245,7 +252,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     ctx.api.report({ phase: "planning", activity: `Stage: ${stage}` });
     if (stage === "analyze") {
       await step("Reading the codebase");
-      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", "none", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
+      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", "none", "", "## Mode", /@single-task/.test(goal) ? "single-task: mock goal asked for it" : "dag: mock goal splits into parallel parts", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
     } else if (stage === "specify") {
       await step("Writing the spec");
       fs.writeFileSync(path.join(out, "spec.md"), [
@@ -255,7 +262,13 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     } else {
       await step("Drafting tasks");
       const spec = parseSpec(path.join(out, "spec.md"));
-      const plan = {
+      const single = fs.existsSync(path.join(out, "mode.txt")) && /^single-task/.test(fs.readFileSync(path.join(out, "mode.txt"), "utf8"));
+      const plan = single ? {
+        tasks: [{
+          id: "T-1", title: goal.slice(0, 60), role: "developer", requirements: spec.requirements.map((r) => r.id), acceptance: spec.requirements.map((r) => `${r.id}/AC-1`),
+          depends_on: [], files: { write: spec.requirements.flatMap((r) => r.touches) }, verify: ["test -f hexagon-mock/t-1.md"], // with a whole-repository scope the mock writes its default file
+        }],
+      } : {
         tasks: spec.requirements.map((r, i) => ({
           id: `T-${i + 1}`, title: r.title, role: "developer", requirements: [r.id], acceptance: ["AC-1"],
           depends_on: i > 0 ? [`T-${i}`] : [], files: { write: r.touches }, verify: [`test -f ${r.touches[0]}`],

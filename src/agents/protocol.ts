@@ -41,7 +41,8 @@ from the person you work for — apply them (if one conflicts with the spec, fol
       return `${head}
 - \`hexagon review approve --summary "<one or two sentences>"\`, or
 - \`hexagon review changes --summary "<…>" --finding "high: <file:line> <issue> -> <fix>" [--finding "medium: …"]\`
-  exactly once, as your last action. You must not modify files.`;
+  exactly once, as your last action. You must not modify files.
+- Only when a product decision you cannot infer from the spec decides the verdict: \`hexagon review question --summary "<the decision you need>" [--option "…" …]\`, then END YOUR TURN. The user's answer arrives as your next message and you finish with approve or changes. At most two questions per review.`;
     case "analyst":
       return `${head}
 ${report}
@@ -51,10 +52,10 @@ ${ask}
     case "control":
       return `## Hexagon commands
 You operate Hexagon by running these shell commands (\`hexagon\` is on your PATH):
-- \`hexagon status\` shows the current run; \`hexagon status T-2\` one agent. \`hexagon logs T-2 40\` its last steps.
+- \`hexagon status\` shows the current run; \`hexagon status T-2\` one agent. \`hexagon logs T-2 40\` its last steps. \`hexagon proposals\` lists what is waiting for the user's yes.
 - \`hexagon do <command> --param value\` changes the graph, an agent or the run. Changes are proposals the user confirms.
 - \`hexagon plan "<clear, self-contained goal>"\` starts spec-driven development; only when the user asks for it.
-- \`hexagon tell T-2 "<instruction>"\` sends an instruction to a running agent. \`hexagon answer Q-3 "<answer>"\` only if the user gave you the answer.
+- \`hexagon tell T-2 "<instruction>"\` sends an instruction to a task that is running now (not to finished ones). Questions agents ask are answered by the user, not by you.
 Each user message may start with a <hexagon_state> block: the current state of runs and plans.
 Don't run \`hexagon done\`, \`report\` or \`ask\`: reply in the chat.
 ${perms}`;
@@ -67,6 +68,7 @@ ${report}
     default:
       return `${head}
 - Write only to files matching the task's write scope; Hexagon reverts anything else. Don't commit; Hexagon commits for you.
+- Need a file outside your scope (a lockfile, an index that registers your module)? \`hexagon scope request <path…> --why "<reason>"\` before you edit it. Lockfiles and registration files are granted at once if no running task holds them; otherwise the user decides.
 ${report}
 ${ask}
 ${note}

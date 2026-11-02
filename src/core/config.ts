@@ -63,7 +63,7 @@ export interface RoleConfig {
 export interface PriceRow { input_per_mtok?: number; cache_read_per_mtok?: number; output_per_mtok?: number }
 
 export interface HexagonConfig {
-  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** tokens one task may use (input + cache reads + output) before it stops and asks; 0 = no cap */ task_budget_tokens: number; /** commands that must pass on the integration branch before /merge; empty = every task's verify commands */ final_verify: string[]; /** a merge conflict goes to the release engineer once before the task blocks */ release_on_conflict: boolean; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null; /** run the task's verify commands once before work starts, to know what was already red */ baseline: boolean; /** files that count as tests for the test-integrity check; empty = per-language defaults */ test_globs: string[] };
+  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** tokens one task may use (input + cache reads + output) before it stops and asks; 0 = no cap */ task_budget_tokens: number; /** paths only the integration may change (lockfiles, registries): a task cannot be granted them through `hexagon scope request` */ shared_files: string[]; /** runs ONE test for the mutation check; {file} and {name} are shell-quoted placeholders (e.g. `npx vitest run {file} -t {name}`). Empty = re-run the task's verify commands instead */ test_command: string; /** which verify commands run on the integration branch after each merge: this task's ("task"), plus those of tasks already merged ("merged"), plus final_verify ("full") */ integration_verify: "task" | "merged" | "full"; /** commands that must pass on the integration branch before /merge; empty = every task's verify commands */ final_verify: string[]; /** a merge conflict goes to the release engineer once before the task blocks */ release_on_conflict: boolean; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null; /** run the task's verify commands once before work starts, to know what was already red */ baseline: boolean; /** files that count as tests for the test-integrity check; empty = per-language defaults */ test_globs: string[] };
   roles: Record<Role, RoleConfig>;
   agents: Record<string, AgentConfig>;
   recovery: RecoveryConfig;
@@ -80,7 +80,7 @@ export interface HexagonConfig {
 }
 
 export const DEFAULT_CONFIG: HexagonConfig = {
-  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 3, task_budget_tokens: 3_000_000, final_verify: [], release_on_conflict: true, max_identical_failures: 3, budget_tokens: null, base_branch: null, baseline: true, test_globs: [] },
+  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 3, task_budget_tokens: 3_000_000, shared_files: [], test_command: "", integration_verify: "merged", final_verify: [], release_on_conflict: true, max_identical_failures: 3, budget_tokens: null, base_branch: null, baseline: true, test_globs: [] },
   roles: Object.fromEntries(BUILTIN_ROLES.map((r) => [r.id, { agent: primaryAgentId(), effort: r.effort }])),
   agents: defaultAgents(),
   recovery: DEFAULT_RECOVERY,
@@ -179,6 +179,7 @@ export function loadConfig(file: string): HexagonConfig {
   // fix_loops was the only knob before max_fix_cycles existed: honour it when the new one is not set.
   const rawRun = (raw.run ?? {}) as Record<string, unknown>;
   if ("fix_loops" in rawRun && !("max_fix_cycles" in rawRun)) cfg.run.max_fix_cycles = cfg.run.fix_loops;
+  if (!["task", "merged", "full"].includes(cfg.run.integration_verify)) throw new Error(`[run].integration_verify must be "task", "merged" or "full" (got "${cfg.run.integration_verify}")`);
   cfg.run.task_budget_tokens = Math.max(0, Math.floor(cfg.run.task_budget_tokens));
   delete (cfg.run as Record<string, unknown>).budget_usd; // v0.1 setting; budgets are in tokens now
   if (cfg.run.budget_tokens !== null && cfg.run.budget_tokens <= 0) cfg.run.budget_tokens = null;

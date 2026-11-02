@@ -9,7 +9,7 @@ summary: How to inspect and change the agent graph and runs through typed comman
 2. Propose one coherent change with `hexagon do <command> --param value`. Repeat a flag or use commas for lists
    (`--depends_on T-1,T-2`).
 3. A proposal returns an id (P-n) and a diff. Nothing is applied. Tell the user what it changes and that they confirm
-   with `/apply P-n` (or `hexagon apply`), or drop it with `/reject P-n`.
+   it in the dashboard with `/apply P-n`, or drop it with `/reject P-n`. You cannot apply it yourself.
 4. After they confirm, check the result with `graph.show` before saying it is done.
 
 ## Notes
