@@ -7,7 +7,7 @@ import { atomicWriteJson, nowIso } from "../util/fsx.js";
 import { ensureUserToken, METHOD_SCOPES, sameToken } from "./auth.js";
 import { Orchestrator, type Push } from "./orchestrator.js";
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 const BUILD = buildId();
 
 interface Request { id: number; method: string; params?: Record<string, unknown>; token?: string }

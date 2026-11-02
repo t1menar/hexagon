@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { evaluateEvidence, missingEvidence } from "./evidence.js";
 import { failureSignature, reviewSignature } from "./signature.js";
 import { DEFAULT_TEST_GLOBS, describeFlags, testIntegrity, type IntegrityFlag } from "./integrity.js";
@@ -470,6 +471,73 @@ export class AgentRun {
   }
 
   /**
+   * A merge conflict goes to the Release Engineer once: in a dedicated worktree, limited to the conflicted files, and the
+   * result is verified before the integration branch moves. Anything else it touches is thrown away.
+   */
+  private async resolveConflict(integrationWt: string, message: string): Promise<{ ok: boolean; detail: string }> {
+    const relBranch = `${this.branch}-release`;
+    const relWt = `${this.worktree}-release`;
+    const fail = async (detail: string) => { await g.removeWorktree(this.rc.root, relWt).catch(() => undefined); await g.git(this.rc.root, ["branch", "-D", relBranch]); return { ok: false, detail }; };
+    try {
+      const adapter = this.rc.adapterFor("release");
+      await g.addWorktree(this.rc.root, relWt, relBranch, this.rc.integration.branch);
+      const merged = await g.git(relWt, ["-c", "user.name=Hexagon", "-c", "user.email=hexagon@localhost", "merge", "--no-ff", "--no-commit", this.branch]);
+      const conflicted = (await g.git(relWt, ["diff", "--name-only", "--diff-filter=U"])).stdout.split("\n").filter(Boolean);
+      if (merged.ok || !conflicted.length) return fail(`could not reproduce the conflict: ${merged.stdout}${merged.stderr}`.trim());
+      this.ev({ type: "progress", text: `merge conflict in ${conflicted.join(", ")}: the release engineer resolves it` });
+      let done: ResultEnvelope | undefined;
+      const id = `${this.agentRunId}.release`;
+      const api: AgentApi = {
+        report: (r) => { this.ev({ type: "progress", text: `release: ${r.activity ?? ""}` }); return ok("ok"); },
+        ask: () => ({ ok: false, message: "Nobody can answer now. If you need a product decision, finish with `hexagon done --status blocked --blocker \"<the decision>\"`." }),
+        note: () => ok("ok"),
+        done: (d) => { done = { task_id: this.task.id, status: d.status ?? "completed", summary: d.summary ?? "", files_changed: [], acceptance_evidence: [], commands_run: [], blockers: d.blockers ?? [], spec_issues: [], assumptions: [], follow_ups: [] }; return ok("Recorded. End your turn now."); },
+        review: () => ({ ok: false, message: "Only the reviewer can run `hexagon review`." }),
+      };
+      const unregister = this.rc.registry.register(id, api);
+      const prevSink = this.sink, prevCause = this.cause;
+      this.sink = { identity: id, cause: "prompt" };
+      try {
+        this.abort = new AbortController();
+        const prompt = [
+          taskCard(this.task, this.rc.specs, "", []),
+          `<conflicts note="merging ${this.branch} into the integration branch stopped on these files; the markers are in the files">\n${conflicted.join("\n")}\n</conflicts>`,
+          `Resolve only these files. Keep the intent of both sides. Do not touch anything else, and do not commit: Hexagon commits and verifies. Then finish with \`hexagon done\`. If it needs a product decision, finish with \`hexagon done --status blocked --blocker "<decision and options>"\`.`,
+        ].join("\n\n");
+        const out = await adapter.run(this.ctx({
+          role: "release", sessionId: randomUUID(), resume: false, freshTask: true, prompt, cwd: relWt,
+          system: systemPrompt(this.rc.paths, "release", this.rc.skills, this.rc.context, this.rc.cfg.roles.release),
+          readOnly: false, api, agentId: id,
+          host: { emit: (e) => { if (e.type !== "usage" || e.step) this.ev(e.type === "progress" ? { ...e, text: `release: ${e.text}` } : e); }, drainInbox: () => [], onInbox: () => () => undefined, received: () => undefined, isFinished: () => done !== undefined, hasBlockingQuestion: () => false },
+        }));
+        if (out.kind === "error") this.ev({ type: "error", ...out.error! });
+      } finally { this.sink = prevSink; this.cause = prevCause; unregister(); }
+      if (!done || done.status !== "completed") return fail(`the release engineer did not resolve it${done?.blockers.length ? `: ${done.blockers.join("; ")}` : ""} (conflict in ${conflicted.join(", ")})`);
+      // Only the conflicted files may differ from the merge result.
+      const touched = (await g.uncommittedFiles(relWt)).filter((f) => !conflicted.includes(f));
+      const staged = (await g.git(relWt, ["diff", "--name-only", "--cached"])).stdout.split("\n").filter(Boolean);
+      for (const f of touched.filter((f) => !staged.includes(f))) {
+        if ((await g.git(relWt, ["ls-files", "--error-unmatch", f])).ok) await g.git(relWt, ["checkout", "--", f]);
+        else fs.rmSync(path.join(relWt, f), { recursive: true, force: true });
+      }
+      const left = (await g.git(relWt, ["grep", "-lE", "^(<<<<<<<|>>>>>>>) ", "--", ...conflicted])).stdout.split("\n").filter(Boolean);
+      if (left.length) return fail(`conflict markers remain in ${left.join(", ")}`);
+      await g.must(relWt, ["add", "-A"]);
+      await g.must(relWt, ["-c", "user.name=Hexagon", "-c", "user.email=hexagon@localhost", "commit", "-q", "-m", `${message}\n\nHexagon-Release: conflict in ${conflicted.join(", ")} resolved by the release engineer`]);
+      const v = await this.verify(relWt);
+      if (!v.ok) return fail(`verification failed after resolving the conflict: ${v.cmd} (exit ${v.code})`);
+      const ff = await g.git(integrationWt, ["merge", "--ff-only", relBranch]);
+      if (!ff.ok) return fail(`could not move the integration branch: ${ff.stderr}`);
+      await g.removeWorktree(this.rc.root, relWt).catch(() => undefined);
+      await g.git(this.rc.root, ["branch", "-D", relBranch]);
+      this.ev({ type: "progress", text: `release engineer resolved ${conflicted.join(", ")}; verified; merged` });
+      return { ok: true, detail: "" };
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  }
+
+  /**
    * Merge this task into the integration branch and run its verify commands there. Two tasks that are green on their own
    * can break each other; if the merged result fails, the merge is undone (the integration branch never holds a red
    * state) and the failure goes back to this task, with the integration branch merged into its worktree to reproduce it.
@@ -483,7 +551,12 @@ export class AgentRun {
       const wt = this.rc.integration.worktree;
       const pre = await g.revParse(wt, "HEAD");
       const message = `Merge ${this.task.id}: ${this.task.title}\n\nHexagon-Task: ${this.task.id}\nRefs: ${refs(this.task)}`;
-      const m = await g.merge(wt, this.branch, message);
+      let m = await g.merge(wt, this.branch, message);
+      if (!m.ok && m.conflict && this.rc.cfg.run.release_on_conflict) {
+        const rel = await this.resolveConflict(wt, message);
+        if (rel.ok) m = { ok: true, conflict: false, output: "" };
+        else m = { ok: false, conflict: true, output: rel.detail };
+      }
       if (!m.ok) {
         return { kind: "blocked" as const, short: m.conflict ? "merge conflict with integration branch" : "merge failed", detail: m.output,
           reason: m.conflict ? "merge conflict with the integration branch — resolve manually or /retry" : `merge failed: ${m.output}` };
@@ -891,13 +964,13 @@ export class AgentRun {
     ].filter(Boolean).join("\n\n");
   }
 
-  private ctx(o: { role: Role; sessionId: string; resume: boolean; followUp?: string; freshTask?: boolean; prompt: string; system: string; readOnly: boolean; api: AgentApi; host: AgentHost; agentId: string }): AgentRunContext {
+  private ctx(o: { role: Role; sessionId: string; resume: boolean; followUp?: string; freshTask?: boolean; prompt: string; system: string; readOnly: boolean; api: AgentApi; host: AgentHost; agentId: string; cwd?: string }): AgentRunContext {
     return {
       agentRunId: o.agentId,
       role: o.role,
       task: this.task,
       effort: o.role === "reviewer" ? roleConfig(this.rc.cfg, "reviewer").effort : this.effort,
-      cwd: this.worktree,
+      cwd: o.cwd ?? this.worktree,
       system: o.system,
       prompt: o.prompt,
       followUp: o.followUp,
