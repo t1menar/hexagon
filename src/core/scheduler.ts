@@ -1,8 +1,9 @@
 import { EventEmitter } from "node:events";
 import type { AgentState, Effort, Plan, Task } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
-import { atomicWriteJson, globToRegExp } from "../util/fsx.js";
+import { atomicWriteJson } from "../util/fsx.js";
 import { applyGraph } from "./commands.js";
+import { overlaps } from "./plan.js";
 import { roleConfig } from "./config.js";
 import { AgentRun, type RunContext } from "./supervisor.js";
 
@@ -444,17 +445,4 @@ export class Scheduler extends EventEmitter {
   }
 }
 
-/** Two write-scopes overlap if a glob of one matches a glob (as a path) of the other. */
-export function overlaps(a: string[], b: string[]): boolean {
-  for (const x of a) {
-    for (const y of b) {
-      if (x === y) return true;
-      if (globToRegExp(x).test(y) || globToRegExp(y).test(x)) return true;
-      // Both are patterns: overlap when their literal prefixes nest (src/** vs src/auth/*.ts).
-      const lx = x.replace(/[*?{].*$/, "");
-      const ly = y.replace(/[*?{].*$/, "");
-      if (lx !== x && ly !== y && (lx.startsWith(ly) || ly.startsWith(lx))) return true;
-    }
-  }
-  return false;
-}
+export { overlaps } from "./plan.js";

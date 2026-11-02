@@ -12,6 +12,7 @@ import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
 import { adapterClis } from "./agents/registry.js";
 import { whichExecutable } from "./agents/contracts/adapter.js";
 import { loadConfig } from "./core/config.js";
+import { formatCard } from "./core/card.js";
 import type { CostReport, CostRow } from "./core/cost.js";
 import { parseEvidenceFlag } from "./core/evidence.js";
 import { securitySummary } from "./core/security.js";
@@ -537,6 +538,7 @@ async function newGoal(args: string[]): Promise<void> {
   if (st.state !== "done") { client.close(); process.exitCode = 1; return; }
   const d = await draft;
   console.log(`\n${c.bold("Plan")} ${d.id} · spec ${path.relative(r, d.spec_path)}\n${planTree(d.plan)}`);
+  if (d.card) console.log(`\n${formatCard(d.card, c.bold("Before you approve:"))}`);
   for (const e of d.check.errors) console.log(c.orange(`✖ ${e}`));
   for (const w of d.check.warnings) console.log(`! ${w}`);
   console.log(`\nApprove with ${c.cyan("hexagon run")}, or open ${c.cyan("hexagon")} to revise it.`);

@@ -1,3 +1,4 @@
+import { formatCard } from "../core/card.js";
 import { BUILTIN_ROLES } from "../core/roles.js";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -418,8 +419,9 @@ export class App {
       case "spec_review":
         this.snap.spec_review = p.data;
         if (p.data) {
-          this.log(`Spec ready: ${p.data.requirements.map((r) => `${r.id} ${r.title} (${r.acceptance} AC)`).join(" · ")}`, S.cyan);
-          this.log(`Read ${p.data.spec_path}${p.data.design_path ? ` and ${p.data.design_path}` : ""}. Enter approves it; type what to change instead.`, S.cyan);
+          if (p.data.card) for (const l of formatCard(p.data.card, "Spec ready — what you are approving:").split("\n")) this.log(l, S.cyan);
+          else this.log(`Spec ready: ${p.data.requirements.map((r) => `${r.id} ${r.title} (${r.acceptance} AC)`).join(" · ")}`, S.cyan);
+          this.log("Enter approves it; type what to change instead.", S.cyan);
           this.flash("Spec ready — read it, then press Enter to approve (or type what to change)", "attention");
           this.select("planner");
         }
@@ -428,7 +430,8 @@ export class App {
       case "draft":
         this.snap.draft = p.data;
         if (p.data) {
-          this.log(`Plan ready: ${p.data.plan.tasks.length} task(s). ${p.data.summary}`, S.cyan);
+          if (p.data.card) for (const l of formatCard(p.data.card, `Plan ready — ${p.data.plan.tasks.length} task(s):`).split("\n")) this.log(l, S.cyan);
+          else this.log(`Plan ready: ${p.data.plan.tasks.length} task(s). ${p.data.summary}`, S.cyan);
           this.flash("Plan ready — press Enter to run it, or type what to change", "attention");
           if (this.selected === "planner") this.selected = HEX;
         }
