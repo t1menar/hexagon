@@ -9,6 +9,8 @@ import { appendJsonl, atomicWriteJson, nowIso, readJson } from "../util/fsx.js";
 import type { RunPaths } from "./project.js";
 
 export const HEARTBEAT_MS = 5_000;
+/** Non-state updates reach the disk at most this often (see StatusStore.flush). */
+export const AGENT_WRITE_MS = 250;
 export const STALE_MS = 30_000;
 
 const emptyUsage = (): Usage => ({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cost_usd: 0, wall_ms: 0, turns: 0 });
@@ -49,6 +51,24 @@ export class StatusStore extends EventEmitter {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.flush();
+  }
+
+  /**
+   * Disk writes are batched: a state change or a result is written (and fsynced) at once, everything else (usage, progress,
+   * heartbeats) at most every AGENT_WRITE_MS per agent and RUN_WRITE_MS for the run file, without fsync. After a crash the
+   * state is always right; the counters may lag by a fraction of a second. In-memory listeners are told immediately.
+   */
+  private dirty = new Set<string>();
+  private runDirty = false;
+  private flushTimer: NodeJS.Timeout | undefined;
+
+  flush(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+    for (const id of this.dirty) { const s = this.agents.get(id); if (s) atomicWriteJson(this.paths.agentStatus(id), s, false); }
+    this.dirty.clear();
+    if (this.runDirty) { this.runDirty = false; atomicWriteJson(this.paths.status, this.runStatus(), false); }
   }
 
   create(n: NewAgentRun): AgentStatus {
@@ -236,7 +256,7 @@ export class StatusStore extends EventEmitter {
     const stamped: StampedEvent = { ts: now, run_id: this.runId, agent_run_id: agentRunId, task_id: s.task_id, event };
     appendJsonl(this.paths.events, stamped);
     appendJsonl(this.paths.agentEvents(agentRunId), stamped);
-    this.write(s);
+    this.write(s, event.type === "state" || event.type === "result" || event.type === "recovery" || event.type === "error");
     this.emit("event", stamped);
     return s;
   }
@@ -312,6 +332,7 @@ export class StatusStore extends EventEmitter {
   }
 
   writeRun(): void {
+    this.runDirty = false;
     atomicWriteJson(this.paths.status, this.runStatus());
   }
 
@@ -320,16 +341,24 @@ export class StatusStore extends EventEmitter {
     for (const s of this.agents.values()) {
       if (TERMINAL_STATES.has(s.state) || s.state === "queued") continue;
       s.heartbeat_at = now;
-      this.write(s);
+      this.write(s, false);
     }
   }
 
-  private write(s: AgentStatus): void {
+  private write(s: AgentStatus, durable = true): void {
     s.seq += 1;
     s.updated_at = nowIso();
     s.heartbeat_at = s.updated_at;
-    atomicWriteJson(this.paths.agentStatus(s.agent_run_id), s);
-    this.writeRun();
+    if (durable) {
+      this.dirty.delete(s.agent_run_id);
+      atomicWriteJson(this.paths.agentStatus(s.agent_run_id), s);
+      this.writeRun();
+    } else {
+      this.dirty.add(s.agent_run_id);
+      this.runDirty = true;
+      this.flushTimer ??= setTimeout(() => this.flush(), AGENT_WRITE_MS);
+      this.flushTimer.unref?.();
+    }
     this.emit("status", s);
   }
 

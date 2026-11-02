@@ -96,6 +96,7 @@ describe("status store", () => {
     store.apply(s.agent_run_id, { type: "state", state: "working" });
     store.apply(s.agent_run_id, { type: "status_report", phase: "editing", activity: "Writing", checklist: [{ id: "AC-1", status: "done" }] });
     store.apply(s.agent_run_id, { type: "usage", input: 100, output: 10, cache_read: 50, cache_write: 0, cost_usd: 0.01 });
+    store.flush();
     const onDisk = JSON.parse(fs.readFileSync(rp.agentStatus("T-1-a1"), "utf8"));
     const v = validateStatus(onDisk);
     expect(v.errors).toEqual([]);
@@ -302,5 +303,55 @@ describe("allow list", () => {
     expect(loadConfig(f).sandbox.allow_commands).toEqual(expect.arrayContaining(["go", "which", "command -v", "go version"]));
     allowCommands(f, ["brew"]);
     expect(fs.readFileSync(f, "utf8")).toContain('allow_commands = ["brew", "go"]');
+  });
+});
+
+describe("status persistence is coalesced", () => {
+  const meta = { plan_path: "p.json", integration_branch: "i", base_branch: "main", budget_usd: null };
+  const usage = (n = 1) => ({ type: "usage" as const, input: n, output: 1, cache_read: 0, cache_write: 0, cost_usd: 0 });
+  const mk = () => {
+    const rp = new RunPaths(tmp());
+    const store = new StatusStore(rp, "r-1", meta);
+    const s = store.create({ task: task(), attempt: 1, role: "developer", agent: { id: "mock", provider: "mock" }, supportsLiveInput: true });
+    return { rp, store, s };
+  };
+
+  it("a state change is on disk at once; usage events are batched, then flushed", () => {
+    const { rp, store, s } = mk();
+    const disk = () => JSON.parse(fs.readFileSync(rp.agentStatus(s.agent_run_id), "utf8"));
+    store.apply(s.agent_run_id, { type: "state", state: "working" });
+    expect(disk().state).toBe("working");
+    const seq = disk().seq;
+    for (let i = 0; i < 200; i++) store.apply(s.agent_run_id, usage(10));
+    expect(disk().seq).toBe(seq);
+    expect(store.get(s.agent_run_id)!.usage.input_tokens).toBe(2000);
+    store.flush();
+    expect(disk().usage.input_tokens).toBe(2000);
+    expect(validateStatus(disk()).errors).toEqual([]);
+    store.stop();
+  });
+
+  it("200 usage events cause far fewer than 400 writes", async () => {
+    const { rp, store, s } = mk();
+    store.apply(s.agent_run_id, { type: "state", state: "working" });
+    let writes = 0;
+    const watch = fs.watch(path.dirname(rp.agentStatus(s.agent_run_id)), () => { writes += 1; });
+    for (let i = 0; i < 200; i++) store.apply(s.agent_run_id, usage());
+    await new Promise((r) => setTimeout(r, 700));
+    watch.close();
+    expect(JSON.parse(fs.readFileSync(rp.agentStatus(s.agent_run_id), "utf8")).usage.input_tokens).toBe(200);
+    expect(writes).toBeLessThan(40);
+    store.stop();
+  });
+
+  it("a crash between flushes loses counters only; state survives and files stay valid", () => {
+    const { rp, store, s } = mk();
+    store.apply(s.agent_run_id, { type: "state", state: "working" });
+    store.apply(s.agent_run_id, { type: "state", state: "verifying" });
+    for (let i = 0; i < 50; i++) store.apply(s.agent_run_id, usage(10));
+    const after = new StatusStore(rp, "r-1", meta);
+    expect(after.hydrate().get(s.agent_run_id)!.state).toBe("verifying");
+    expect(validateStatus(JSON.parse(fs.readFileSync(rp.agentStatus(s.agent_run_id), "utf8"))).errors).toEqual([]);
+    store.stop();
   });
 });

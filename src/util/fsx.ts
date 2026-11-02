@@ -7,13 +7,13 @@ export function ensureDir(dir: string): void {
 }
 
 /** Write JSON atomically: tmp file + fsync + rename, so readers never see a partial file. */
-export function atomicWriteJson(file: string, data: unknown): void {
+export function atomicWriteJson(file: string, data: unknown, durable = true): void {
   ensureDir(path.dirname(file));
   const tmp = `${file}.${process.pid}.tmp`;
   const fd = fs.openSync(tmp, "w");
   try {
     fs.writeSync(fd, JSON.stringify(redactDeep(data), null, 2) + "\n");
-    fs.fsyncSync(fd);
+    if (durable) fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
   }
