@@ -10,10 +10,10 @@ import { lintSpec, parseSpec, type Spec } from "./spec.js";
  * only when that file validates. The spec additionally needs the user's approval before a plan is derived from it,
  * and no task that cites requirements runs unless the approved spec still matches the file on disk.
  */
-export type Stage = "analyze" | "specify" | "plan";
+export type Stage = "analyze" | "specify" | "plan" | "replan";
 export const STAGES: readonly Stage[] = ["analyze", "specify", "plan"];
 
-export const ARTIFACT: Record<Stage, string> = { analyze: "analysis.md", specify: "spec.md", plan: "plan.json" };
+export const ARTIFACT: Record<Stage, string> = { analyze: "analysis.md", specify: "spec.md", plan: "plan.json", replan: "replan.json" };
 
 const ANALYSIS_SECTIONS = ["current state", "constraints", "risks", "open questions", "impacted areas"];
 const DESIGN_SECTIONS = ["interfaces", "data flow", "trade-offs"];
@@ -79,7 +79,7 @@ export const checkAnalysis = (text: string): string[] => missingSections(text, A
 export const checkDesign = (text: string): string[] => missingSections(text, DESIGN_SECTIONS, "design.md");
 
 /** Validate the artifact of a stage that is not the plan (the plan is checked by plan-check with its coverage rules). */
-export function checkStage(stage: "analyze" | "specify", dir: string, projectFiles?: string[]): { errors: string[]; warnings: string[] } {
+export function checkStage(stage: "analyze" | "specify" | "replan", dir: string, projectFiles?: string[]): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
   const file = path.join(dir, ARTIFACT[stage]);
