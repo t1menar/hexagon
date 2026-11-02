@@ -57,7 +57,7 @@ export interface RoleConfig {
 }
 
 export interface HexagonConfig {
-  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null; /** run the task's verify commands once before work starts, to know what was already red */ baseline: boolean; /** files that count as tests for the test-integrity check; empty = per-language defaults */ test_globs: string[] };
+  run: { max_parallel: number; max_attempts: number; fix_loops: number; /** quality repair cycles; 0 = unlimited (safeguards still apply) */ max_fix_cycles: number; /** tokens one task may use (input + cache reads + output) before it stops and asks; 0 = no cap */ task_budget_tokens: number; /** identical failures in a row before escalating to the user */ max_identical_failures: number; budget_tokens: number | null; base_branch: string | null; /** run the task's verify commands once before work starts, to know what was already red */ baseline: boolean; /** files that count as tests for the test-integrity check; empty = per-language defaults */ test_globs: string[] };
   roles: Record<Role, RoleConfig>;
   agents: Record<string, AgentConfig>;
   recovery: RecoveryConfig;
@@ -70,7 +70,7 @@ export interface HexagonConfig {
 }
 
 export const DEFAULT_CONFIG: HexagonConfig = {
-  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 0, max_identical_failures: 3, budget_tokens: null, base_branch: null, baseline: true, test_globs: [] },
+  run: { max_parallel: 4, max_attempts: 2, fix_loops: 2, max_fix_cycles: 3, task_budget_tokens: 3_000_000, max_identical_failures: 3, budget_tokens: null, base_branch: null, baseline: true, test_globs: [] },
   roles: Object.fromEntries(BUILTIN_ROLES.map((r) => [r.id, { agent: primaryAgentId(), effort: r.effort }])),
   agents: defaultAgents(),
   recovery: DEFAULT_RECOVERY,
@@ -167,6 +167,7 @@ export function loadConfig(file: string): HexagonConfig {
   // fix_loops was the only knob before max_fix_cycles existed: honour it when the new one is not set.
   const rawRun = (raw.run ?? {}) as Record<string, unknown>;
   if ("fix_loops" in rawRun && !("max_fix_cycles" in rawRun)) cfg.run.max_fix_cycles = cfg.run.fix_loops;
+  cfg.run.task_budget_tokens = Math.max(0, Math.floor(cfg.run.task_budget_tokens));
   delete (cfg.run as Record<string, unknown>).budget_usd; // v0.1 setting; budgets are in tokens now
   if (cfg.run.budget_tokens !== null && cfg.run.budget_tokens <= 0) cfg.run.budget_tokens = null;
   // Approvals the user gave while working live in .hexagon/local.toml: personal, never committed.

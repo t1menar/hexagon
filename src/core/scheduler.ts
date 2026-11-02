@@ -43,6 +43,10 @@ export class Scheduler extends EventEmitter {
     super();
     this.tasks = opts.only?.length ? plan.tasks.filter((t) => opts.only!.includes(t.id)) : plan.tasks;
     this.finished = new Promise((r) => (this.done = r));
+    // Not only on the next tick: an agent in the middle of a long segment is stopped at its next model call.
+    this.rc.store.on("event", (e: { event: { type: string; step?: boolean } }) => {
+      if (e.event.type === "usage" && e.event.step) queueMicrotask(() => this.enforceBudget());
+    });
   }
 
   start(): void {
@@ -113,16 +117,20 @@ export class Scheduler extends EventEmitter {
     return null;
   }
 
+  /** The run budget, checked at every model call of every agent as well as on each tick: agents in flight stop at their next step. */
+  enforceBudget(): void {
+    const budget = this.rc.cfg.run.budget_tokens;
+    if (budget === null || this.paused || this.aborted) return;
+    const t = this.rc.store.totals();
+    if (t.input_tokens + t.cache_read_tokens + t.output_tokens < budget) return;
+    this.pauseAll();
+    this.rc.store.setAttention([{ kind: "budget", task_id: null, text: `token budget of ${budget} reached — /resume to continue or raise [run].budget_tokens` }]);
+    this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `Token budget ${budget} reached; running agents paused at their next step.` });
+  }
+
   tick(): void {
     if (this.aborted) return;
-    const budget = this.rc.cfg.run.budget_tokens;
-    const t = this.rc.store.totals();
-    if (budget !== null && t.input_tokens + t.cache_read_tokens + t.output_tokens >= budget && !this.paused) {
-      this.paused = true;
-      this.rc.store.runState = "paused";
-      this.rc.store.setAttention([{ kind: "budget", task_id: null, text: `token budget of ${budget} reached — /resume to continue or raise [run].budget_tokens` }]);
-      this.rc.router.send({ from: { kind: "orchestrator" }, to: { kind: "user" }, type: "notify", body: `Token budget ${budget} reached; scheduling paused.` });
-    }
+    this.enforceBudget();
     let changed = false;
     for (const t of this.tasks) {
       if (this.outcome.has(t.id) || this.active.has(t.id)) continue;

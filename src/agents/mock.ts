@@ -119,7 +119,7 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         MockAdapter.reviews.set(ctx.task?.id ?? "", n);
         if (rj && (rj[1] === "always" || n <= Number(rj[1]))) {
           const same = /@reject-same/.test(ctx.task?.description ?? "");
-          api.review({ verdict: "request_changes", summary: same ? "Mock review: not good enough." : `Mock review #${n}: please improve.`, findings: [{ severity: "high", issue: same ? "still wrong" : `issue ${n}`, file: "src/a.txt" }] });
+          api.review({ verdict: "request_changes", summary: same ? "Mock review: not good enough." : `Mock review #${n}: please improve.`, findings: [{ severity: "high", issue: same ? "still wrong" : `issue ${n}`, file: same ? "src/a.txt" : `src/a-${n}.txt` }] });
           return { kind: "finished" };
         }
         api.review({ verdict: "approve", summary: "Mock review: scope and evidence look fine.", findings: [] });
