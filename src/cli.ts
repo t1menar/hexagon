@@ -102,6 +102,8 @@ async function main(argv: string[]): Promise<void> {
   if (cmd === "--version" || cmd === "-v") return void console.log(VERSION);
   if (cmd === "--help" || cmd === "-h" || cmd === "help") return void console.log(USAGE);
   if (cmd && AGENT_OPS.has(cmd)) return agentOp(cmd, rest);
+  // Inside the Assistant's session these three use its narrow routes; for the user they are the full commands below.
+  if (process.env.HEXAGON_AGENT && (cmd === "logs" || cmd === "proposals" || cmd === "tell")) return agentOp(cmd, rest);
   if (cmd === "prompts") {
     if (rest[0] !== "lint") { console.error("usage: hexagon prompts lint [--json]"); process.exit(2); }
     const { lintPrompts, formatLint } = await import("./core/promptlint.js");
@@ -646,6 +648,17 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
       params = { tool, reason };
       break;
     }
+    case "logs": {
+      if (!a[0]) { console.error("usage: hexagon logs <T-n> [N]"); process.exit(2); }
+      params = { task: normTask(a[0]), limit: Number(a[1] ?? 40) };
+      break;
+    }
+    case "tell": {
+      const [to, ...body] = a;
+      if (!to || !body.length) { console.error('usage: hexagon tell <T-n> "<instruction>"'); process.exit(2); }
+      params = { task: normTask(to), body: body.join(" ") };
+      break;
+    }
     case "return": {
       const task = a.shift();
       if (!task || !a.length) { console.error('usage: hexagon return <T-n> "<what is wrong, with evidence>"'); process.exit(2); }
@@ -693,7 +706,12 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
   }
   try {
     const reply = await client.call<Reply>("agent.api", { agent: process.env.HEXAGON_AGENT ?? null, cwd: process.cwd(), op, args: params });
-    (reply.ok ? console.log : console.error)(reply.message);
+    if (reply.ok && cmd === "logs") {
+      for (const e of JSON.parse(reply.message) as Parameters<typeof formatEvent>[0][]) { const l = formatEvent(e, true); if (l) console.log(l); }
+    } else if (reply.ok && cmd === "proposals") {
+      const list = JSON.parse(reply.message) as { id: string; command: string; destructive: boolean; diff: string[] }[];
+      console.log(list.length ? list.map((p) => `${p.id}${p.destructive ? " (destructive)" : ""}  ${p.command}\n${p.diff.map((d) => `    ${d}`).join("\n")}`).join("\n") : "no proposals waiting");
+    } else (reply.ok ? console.log : console.error)(reply.message);
     process.exitCode = reply.ok ? 0 : 1;
   } finally {
     client.close();
