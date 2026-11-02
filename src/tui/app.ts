@@ -1731,8 +1731,12 @@ export class App {
     const stamped = chat === null;
     for (const f of chat ? [] : feed) {
       const prefix = `${time(f.ts)} `;
-      const wrapped = wrap(f.text, Math.max(10, inner - prefix.length));
-      wrapped.forEach((wl, i) => lines.push({ text: (i === 0 ? prefix : " ".repeat(prefix.length)) + wl, style: f.style }));
+      // Minimal: unboxed markers: ⏺ for what happened, ⎿ under it for a tool call.
+      const tool = this.minimal && f.text.startsWith("▸ ");
+      const body = !this.minimal ? f.text : tool ? f.text.slice(2) : f.text;
+      const mark = !this.minimal ? "" : tool ? "  ⎿ " : "⏺ ";
+      const wrapped = wrap(body, Math.max(10, inner - prefix.length - mark.length));
+      wrapped.forEach((wl, i) => lines.push({ text: (i === 0 ? prefix + mark : " ".repeat(prefix.length + mark.length)) + wl, style: f.style }));
     }
     const maxScroll = Math.max(0, lines.length - avail);
     if (this.scroll > maxScroll) this.scroll = maxScroll;
