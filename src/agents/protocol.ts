@@ -41,7 +41,8 @@ from the person you work for — apply them (if one conflicts with the spec, fol
       return `${head}
 - \`hexagon review approve --summary "<one or two sentences>"\`, or
 - \`hexagon review changes --summary "<…>" --finding "high: <file:line> <issue> -> <fix>" [--finding "medium: …"]\`
-  exactly once, as your last action. You must not modify files.`;
+  exactly once, as your last action. You must not modify files.
+- Only when a product decision you cannot infer from the spec decides the verdict: \`hexagon review question --summary "<the decision you need>" [--option "…" …]\`, then END YOUR TURN. The user's answer arrives as your next message and you finish with approve or changes. At most two questions per review.`;
     case "analyst":
       return `${head}
 ${report}

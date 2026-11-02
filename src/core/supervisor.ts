@@ -1183,12 +1183,21 @@ export class AgentRun {
     }
     const id = `${this.agentRunId}.review`;
     let verdict: ReviewVerdict | undefined;
+    let asked: { prompt: string; options: string[] } | undefined;
+    let reviewQuestions = 0;
     const api: AgentApi = {
       report: (r) => { this.ev({ type: "progress", text: `review: ${r.activity ?? ""}` }); return ok("ok"); },
       ask: () => ({ ok: false, message: "Reviewers can't ask the user; put open points in your findings." }),
       note: () => ok("ok"),
       done: () => ({ ok: false, message: "Reviewers finish with `hexagon review approve|changes`." }),
       review: (v) => {
+        if ((v.verdict as string) === "question") {
+          if (asked) return { ok: false, message: "You already asked a question; end your turn and wait for the answer." };
+          if (!v.summary?.trim()) return { ok: false, message: 'usage: hexagon review question --summary "<the decision you need>" [--option "…"]' };
+          if (reviewQuestions >= this.rc.cfg.messaging.max_blocking_questions) return { ok: false, message: "Question limit reached for this review. Decide with what you have: approve, or request changes and say what is unclear." };
+          asked = { prompt: v.summary.trim(), options: ((v as { options?: string[] }).options ?? []) };
+          return ok("Question sent to the user. End your turn now; the answer arrives as your next message and you then finish with approve or changes.");
+        }
         const verdictName = (v.verdict as string) === "changes" ? "request_changes" : v.verdict;
         verdict = { verdict: verdictName as ReviewVerdict["verdict"], summary: v.summary ?? "", findings: v.findings ?? [] };
         return ok("Review recorded. End your turn now.");
@@ -1230,15 +1239,17 @@ export class AgentRun {
         `<developer_claim unverified="true" note="what the developer says; nothing in it is checked unless marked above">\n${JSON.stringify(compactReport(this.result))}\n</developer_claim>`,
         `Review task ${this.task.id}. You may read files and run the verify commands. Finish with \`hexagon review\`.`,
       ].filter(Boolean).join("\n\n");
+      let turn = prompt;
+      for (;;) {
       this.abort = new AbortController();
       const out = await reviewer.run(this.ctx({
         role: "reviewer",
         sessionId: res.sessionId,
         resume: res.resume,
         handle: res.record.nativeHandle ?? null,
-        followUp: res.resume ? prompt : undefined,
+        followUp: res.resume ? turn : undefined,
         freshTask: true,
-        prompt,
+        prompt: turn,
         system: systemPrompt(this.rc.paths, "reviewer", this.rc.skills, this.rc.context, this.rc.cfg.roles.reviewer),
         readOnly: true,
         api,
@@ -1252,12 +1263,26 @@ export class AgentRun {
           drainInbox: () => [],
           onInbox: () => () => undefined,
           received: () => undefined,
-          isFinished: () => verdict !== undefined,
+          isFinished: () => verdict !== undefined || asked !== undefined,
           hasBlockingQuestion: () => false,
         },
       }));
       if (out.kind !== "error") this.rc.sessions.confirm(lease.agentId);
-      if (out.kind === "error") this.ev({ type: "error", ...out.error! });
+      if (out.kind === "error") { this.ev({ type: "error", ...out.error! }); break; }
+      // The reviewer asked instead of judging: the question goes to the user, the answer comes back into this same review session.
+      if (!asked || verdict || this.cancelled) break;
+      const q = asked;
+      asked = undefined;
+      reviewQuestions++;
+      const answer = await this.askForReview(q.prompt, q.options);
+      if (answer === null) break;
+      res = this.rc.sessions.resolve({
+        agentId: lease.agentId, role: "reviewer", adapterId: reviewer.adapterId, model: reviewer.model,
+        promptHash: identityHash(this.rc.paths, "reviewer", this.rc.skills, this.rc.cfg.roles.reviewer), cwd: this.worktree,
+        resumeAcrossCwd: cap.resumeAcrossCwd, supportsResume: cap.supportsSessionResume,
+      });
+      turn = `The user answered your question ("${q.prompt}"): ${answer}\n\nContinue the review of ${this.task.id} and finish with \`hexagon review approve|changes\`.`;
+      }
     } finally {
       this.sink = prevSink;
       this.cause = prevCause;
@@ -1423,6 +1448,23 @@ export class AgentRun {
     };
   }
 
+  /** Open question ids raised by the reviewer: the answer resolves the waiting review instead of reaching the developer. */
+  private reviewWaiters = new Map<string, (answer: string | null) => void>();
+
+  /** A reviewer's question to the user. Resolves with the answer, or null if the task is cancelled first. */
+  private askForReview(prompt: string, options: string[]): Promise<string | null> {
+    const opts = options.map((label, i) => ({ id: String(i + 1), label }));
+    const q: NeedsInput = {
+      question_id: this.rc.router.newQuestionId(), kind: opts.length ? "choice" : "clarification", blocking: true, prompt: `Reviewer asks: ${prompt}`,
+      options: opts, default_option: null, auto_answer_after_s: null, asked_at: nowIso(), refs: [],
+    };
+    const [msg] = this.rc.router.send({ from: { kind: "agent", id: this.task.id }, to: { kind: "user" }, type: "question", body: q.prompt, question: q, priority: "urgent" });
+    this.questions.set(q.question_id, { q, messageId: msg!.id });
+    this.ev({ type: "question", question: q });
+    this.st("waiting_input", `${q.question_id}: ${q.prompt.slice(0, 120)}`);
+    return new Promise((resolve) => this.reviewWaiters.set(q.question_id, resolve));
+  }
+
   private ask(a: { prompt: string; options?: string[]; default?: string; blocking: boolean }): Reply {
     if (this.blockingAsked >= this.rc.cfg.messaging.max_blocking_questions) {
       return { ok: false, message: "Question limit reached for this task. Choose the most reasonable option, record it with `--assume` when you finish, and continue." };
@@ -1463,6 +1505,8 @@ export class AgentRun {
     this.ev({ type: "answered", question_id: questionId, answer });
     this.ev({ type: "chat", from: "user", text: answer });
     if (this.state === "waiting_input" && !this.questions.size) this.st(this.gate ? "paused" : this.fixing ? "fixing" : "working");
+    const waiter = this.reviewWaiters.get(questionId);
+    if (waiter) { this.reviewWaiters.delete(questionId); this.st("reviewing"); waiter(answer); return true; }
     // Delivered to the agent through its inbox (live, or when it resumes).
     this.rc.router.send({
       from: { kind: "user" }, to: { kind: "agent", id: this.task.id }, type: "answer",
@@ -1505,6 +1549,8 @@ export class AgentRun {
 
   cancel(): void {
     this.cancelled = true;
+    for (const w of this.reviewWaiters.values()) w(null);
+    this.reviewWaiters.clear();
     this.quotaWake?.();
     this.abort.abort();
     this.gate?.resolve();

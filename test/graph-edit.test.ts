@@ -171,3 +171,26 @@ describe("a blocked task", () => {
     expect(await blocked("go is not installed")).toEqual([]);
   }, 60000);
 });
+
+describe("a reviewer question", () => {
+  const open: { s: DaemonServer; c: HexClient }[] = [];
+  afterEach(() => { for (const o of open.splice(0)) { o.c.close(); o.s.orch.shutdown(); } });
+
+  it("goes to the user, and the answer comes back into the review before the verdict", async () => {
+    const { MockAdapter } = await import("../src/agents/mock.js");
+    MockAdapter.turns.length = 0;
+    MockAdapter.reviews.clear(); // the mock counts reviews per task id across tests
+    const root = project();
+    const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [], tasks: [task("T-1", [], "@review-question: keep the legacy flag?")] };
+    fs.writeFileSync(path.join(root, "plan.json"), JSON.stringify(p));
+    const s = new DaemonServer(root); await s.listen();
+    const c = await HexClient.connect(root, { autostart: false }); open.push({ s, c });
+    await c.call("run.start", { plan_path: "plan.json" });
+    const q = await until(async () => (await c.call<{ questions: { question_id: string; prompt: string }[] }>("inbox.list")).questions.find((x) => /Reviewer asks: keep the legacy flag\?/.test(x.prompt)));
+    expect((await c.call<AgentStatus>("agent.status", { task: "T-1" })).state).toBe("waiting_input");
+    await c.call("question.answer", { question_id: q.question_id, answer: "1" });
+    const st = await until(async () => { const x = await c.call<AgentStatus>("agent.status", { task: "T-1" }); return x.state === "done" || x.state === "failed" ? x : null; }, 60000);
+    expect(st.state).toBe("done");
+    expect(MockAdapter.turns.some((t) => /The user answered your question \("keep the legacy flag\?"\): 1\) Yes/.test(t.text))).toBe(true);
+  }, 90000);
+});
