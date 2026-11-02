@@ -23,6 +23,8 @@ export interface OneShotSpec {
   argv: string[];
   /** Prompt written to stdin (never interpolated into a shell). null = it is already in argv. */
   stdin: string | null;
+  /** Called once when the process has ended (temp files). */
+  cleanup?: () => void;
 }
 
 /**
@@ -69,8 +71,9 @@ export abstract class OneShotAdapter extends AdapterBase {
       child.stdin.end(spec.stdin ?? "");
       const kill = () => { try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ } };
       ctx.signal.addEventListener("abort", kill, { once: true });
-      child.on("error", (e) => resolve({ kind: "error", error: { kind: "internal", message: `cannot start ${spec.argv[0]}: ${e.message} — is it installed and on PATH?`, retryable: false } }));
+      child.on("error", (e) => { try { spec.cleanup?.(); } catch { /* best effort */ } resolve({ kind: "error", error: { kind: "internal", message: `cannot start ${spec.argv[0]}: ${e.message} — is it installed and on PATH?`, retryable: false } }); });
       child.on("close", (code, sig) => {
+        try { spec.cleanup?.(); } catch { /* best effort */ }
         handle(lines.flush());
         ctx.signal.removeEventListener("abort", kill);
         if (ctx.signal.aborted) return resolve({ kind: "interrupted" });

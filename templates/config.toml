@@ -76,11 +76,15 @@ command = ["claude"]
 # provider = "xai"
 # command = ["grok"]
 
-# Any other non-interactive coding CLI ({prompt} is replaced by the task prompt):
+# Any other non-interactive coding CLI (the prompt arrives on stdin; name "{prompt}" or "{prompt_file}" in the command to pass it as an argument / temp file):
 # [agents.other]
 # adapter = "exec"
 # provider = "acme"
 # command = ["acme-agent", "run", "{prompt}"]
+
+# Third-party adapters (a manifest .toml/.json or a module); see docs/ADAPTERS.md:
+# [plugins]
+# adapters = ["./adapters/example.toml"]
 
 # Scripted offline agent, useful to try the workflow without spending anything:
 #   set agent = "mock" for every role, or `hexagon run plan.json --agent mock`

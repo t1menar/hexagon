@@ -10,6 +10,7 @@ import { argsFromFlags, commandDef, commandDocs, parseArgs } from "./core/comman
 import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
 import { adapterClis } from "./agents/registry.js";
+import { pluginReports } from "./agents/plugins.js";
 import { whichExecutable } from "./agents/contracts/adapter.js";
 import { loadConfig } from "./core/config.js";
 import { formatCard } from "./core/card.js";
@@ -410,6 +411,12 @@ async function main(argv: string[]): Promise<void> {
           console.log(list.map((a) => formatAgent(a, sub === "doctor")).join("\n\n"));
           const bad = list.filter((a) => a.error || a.diagnostics?.installed === false || a.diagnostics?.auth === "unauthenticated");
           if (sub === "doctor") {
+            const plugins = (() => { try { loadConfig(new ProjectPaths(root()).config); } catch { /* reported below */ } return pluginReports(); })();
+            if (plugins.length) {
+              console.log("\nPlugins ([plugins].adapters):");
+              for (const p of plugins) console.log(p.ok ? `  ✔ ${p.spec} → ${p.adapters.join(", ")}` : `  ✖ ${p.spec}: ${p.error}`);
+              if (plugins.some((p) => !p.ok)) process.exitCode = 1;
+            }
             console.log(`\n${securitySummary(loadConfig(new ProjectPaths(root()).config), list).join("\n")}`);
             console.log(bad.length ? `\n${bad.length} agent(s) need attention.` : "\nAll configured agents look usable.");
             if (bad.length) process.exitCode = 1;

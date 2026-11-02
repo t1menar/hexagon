@@ -1,0 +1,54 @@
+# A complete declarative adapter for a made-up CLI "examplecli" that reads the prompt on stdin and prints JSON lines:
+#   {"type":"session","id":"s-1","model":"m"}  {"type":"text","text":"hello"}  {"type":"tool","cmd":"ls"}  {"type":"done","tokens":{"in":10,"out":2}}
+# Register it:   [plugins]  adapters = ["./adapters/example.toml"]   then   [agents.ex]  adapter = "example"
+apiVersion = 1
+id = "example"
+provider = "example"
+display_name = "Example CLI"
+cli = "examplecli"            # the executable (override per agent with [agents.ex] command = [...])
+auth_env = ["EXAMPLE_*"]      # login variables the CLI needs; everything else is withheld from it
+
+[run]
+prompt = "stdin"                                              # stdin (default) | file ({prompt_file}) | argv ({prompt}, ARG_MAX/ps risk)
+new = ["run", "--json", ["--model", "{model}"], ["--session", "{session}"]]   # [a, b] groups vanish together when a slot is empty
+resume = ["run", "--json", ["--model", "{model}"], ["--resume", "{session}"]] # {session} = the id the CLI reported
+readonly_args = ["--sandbox", "read-only"]
+write_args = ["--sandbox", "workspace"]
+
+[detect]
+version = ["--version"]
+auth = ["auth", "status"]     # exit 0 = logged in
+
+[models]
+list = ["models"]             # one model per line
+
+[security]                    # declare only what you verified; readonly_args alone is a request, not enforcement
+read_only_enforced = false
+command_allow_list = false
+
+[[events]]
+emit = "session_handle"
+when = { type = "session" }
+handle = "id"
+
+[[events]]
+emit = "model"
+when = { type = "session" }
+model = "model"
+
+[[events]]
+emit = "chat"
+when = { type = "text" }
+text = "text"
+
+[[events]]
+emit = "tool_call"
+when = { type = "tool" }
+name = "cmd"
+summary = "cmd"
+
+[[events]]
+emit = "usage"
+when = { type = "done" }
+input = "tokens.in"
+output = "tokens.out"

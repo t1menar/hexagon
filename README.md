@@ -252,7 +252,7 @@ This writes `[agents.codex]` to `.hexagon/config.toml`. The Codex and Grok integ
 
 ### Path 2: any other CLI with the generic `exec` adapter (config only)
 
-Add it to `.hexagon/config.toml`. `{prompt}` is replaced by the task prompt (system instructions + task); without it the prompt is appended as the last argument.
+Add it to `.hexagon/config.toml`. The task prompt (system instructions + task) is written to the CLI's **stdin**. To pass it another way name the slot in `command`: `{prompt_file}` (a private temp file) or `{prompt}` (in argv: limited by ARG_MAX and visible in `ps`, so it is opt-in). *Before this change the prompt was appended as the last argument when no slot was given; add `"{prompt}"` to keep that.* A CLI that prints JSON lines and has sessions deserves a declarative manifest instead: [docs/ADAPTERS.md](docs/ADAPTERS.md).
 
 ```toml
 [agents.gemini]

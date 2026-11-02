@@ -1,61 +1,24 @@
-import { spawn } from "node:child_process";
-import { AdapterBase } from "./contracts/base.js";
 import { capabilities } from "./contracts/capabilities.js";
-import type { AdapterOutcome, AgentAdapter, AgentRunContext } from "./types.js";
-import { formatInjected } from "./types.js";
+import { selectionFrom } from "./contracts/model-selection.js";
+import { ManifestAdapter, checkManifest } from "./manifest.js";
 import { registerAdapter } from "./adapter-registry.js";
 
 /**
- * Generic wrapper for any non-interactive coding CLI (anything that takes the prompt as an argument).
- * The prompt (system + task) is passed as an argument: `{prompt}` in the command is replaced, otherwise
- * it is appended. No live input: messages that arrive while it runs are delivered on the next run.
- * The agent reports back through the same `hexagon …` shell commands as every other agent.
+ * Generic wrapper for any non-interactive coding CLI: a manifest built from `command = [...]`.
+ * The prompt (system + task) goes to the CLI's stdin. To pass it another way, name the slot in the command:
+ * `{prompt_file}` (a private temp file) or `{prompt}` (in argv: limited by ARG_MAX and visible in `ps`, so it is opt-in).
+ * No live input, no usage, no runtime model: a generic wrapper claims nothing it cannot do. Messages that arrive while it runs are
+ * delivered on the next run. The agent reports back through the same `hexagon …` shell commands as every other agent.
+ * For a CLI that prints JSON lines and has sessions, write a manifest instead (docs/ADAPTERS.md).
  */
-export class ExecAdapter extends AdapterBase implements AgentAdapter {
-  readonly adapterId = "exec";
-  readonly provider: string;
-  readonly displayName = "Generic CLI";
-  // A generic wrapper claims nothing it cannot do: no discovery, no usage, no runtime model.
-  readonly capabilities = capabilities({ supportsStreaming: false, supportsSessionResume: false });
-
-  constructor(id: string, command: string[], private interactive: string[] | null, provider = "unknown") {
-    super(id, command);
-    this.provider = provider;
-  }
-
-  takeoverCommand(): string[] | null {
-    return this.interactive;
-  }
-
-  run(ctx: AgentRunContext): Promise<AdapterOutcome> {
-    const inbox = ctx.host.drainInbox();
-    const body = [ctx.resume && ctx.followUp ? ctx.followUp : ctx.prompt, inbox.length ? formatInjected(inbox) : ""].filter(Boolean).join("\n\n");
-    const prompt = `${ctx.system}\n\n---\n\n${body}`;
-    const hasSlot = this.command.some((a) => a.includes("{prompt}"));
-    const argv = hasSlot ? this.command.map((a) => a.replace("{prompt}", prompt)) : [...this.command, prompt];
-    for (const m of inbox) ctx.host.received(m.id);
-    return new Promise((resolve) => {
-      const child = spawn(argv[0]!, argv.slice(1), { cwd: ctx.cwd, env: this.processEnv(ctx.env), stdio: ["ignore", "pipe", "pipe"], detached: true });
-      let tail = "";
-      const onLine = (d: Buffer) => {
-        tail = (tail + d.toString()).slice(-4000);
-        const line = d.toString().trim().split("\n").filter(Boolean).at(-1);
-        if (line) ctx.host.emit({ type: "progress", text: line.slice(0, 200) });
-      };
-      child.stdout.on("data", onLine);
-      child.stderr.on("data", onLine);
-      const onAbort = () => { try { process.kill(-child.pid!, "SIGTERM"); } catch { /* gone */ } };
-      ctx.signal.addEventListener("abort", onAbort, { once: true });
-      child.on("error", (e) => resolve({ kind: "error", error: { kind: "internal", message: `cannot start ${argv[0]}: ${e.message}`, retryable: false } }));
-      child.on("close", (code) => {
-        ctx.signal.removeEventListener("abort", onAbort);
-        if (ctx.signal.aborted) return resolve({ kind: "interrupted" });
-        if (code !== 0 && !ctx.host.isFinished()) {
-          return resolve({ kind: "error", error: { kind: "transient", message: `${argv[0]} exited ${code}: ${tail.slice(-300)}`, retryable: true, raw: tail } });
-        }
-        resolve({ kind: "finished" });
-      });
-    });
+export class ExecAdapter extends ManifestAdapter {
+  constructor(id: string, command: string[], interactive: string[] | null, provider = "unknown") {
+    const tail = command.slice(1);
+    const all = JSON.stringify(tail);
+    const prompt = all.includes("{prompt}") ? "argv" : all.includes("{prompt_file}") ? "file" : "stdin";
+    const m = checkManifest({ apiVersion: 1, id: "exec", provider, display_name: "Generic CLI", run: { new: tail, prompt }, plain_output: "progress", interactive: interactive ?? undefined }, `[agents.${id}]`);
+    super(id, m, command.slice(0, 1), selectionFrom(null));
+    (this as { capabilities: unknown }).capabilities = capabilities({ supportsStreaming: false, supportsSessionResume: false });
   }
 }
 
