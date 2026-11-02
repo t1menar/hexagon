@@ -39,6 +39,7 @@
         "properties": { "text": { "type": "string" }, "question_id": { "type": ["string", "null"] } }
       }
     },
+    "test_integrity": { "type": "array", "items": { "type": "object", "required": ["kind", "file", "detail"], "properties": { "kind": { "type": "string" }, "file": { "type": "string" }, "detail": { "type": "string" } } } },
     "follow_ups": { "type": "array", "items": { "type": "string" } }
   }
 }

@@ -1,4 +1,5 @@
 import { evaluateEvidence, missingEvidence } from "./evidence.js";
+import { DEFAULT_TEST_GLOBS, describeFlags, testIntegrity, type IntegrityFlag } from "./integrity.js";
 import fs from "node:fs";
 import path from "node:path";
 import type {
@@ -117,6 +118,8 @@ export class AgentRun {
   private baseCommit = "";
   /** HEAD after the last commit or merge Hexagon made itself. Anything past it was done by the agent. */
   private checkpoint = "";
+  /** Deleted, skipped or weakened tests since base: flagged for the reviewer and the report. */
+  private integrity: IntegrityFlag[] = [];
   private takeoverCommit = "";
   private cancelled = false;
   private userDone = false;
@@ -915,6 +918,10 @@ export class AgentRun {
     const message = `${this.task.id}: ${this.task.title}\n\n${this.result?.summary ?? ""}\n\nHexagon-Task: ${this.task.id}\nHexagon-Attempt: ${this.attempt}\nRefs: ${refs(this.task)}`;
     await g.commitAll(this.worktree, message);
     this.checkpoint = await g.revParse(this.worktree, "HEAD");
+    const tg = this.rc.cfg.run.test_globs;
+    this.integrity = await testIntegrity(this.worktree, this.baseCommit, tg.length ? tg : DEFAULT_TEST_GLOBS);
+    if (this.integrity.length) this.ev({ type: "progress", text: `test integrity: ${describeFlags(this.integrity).join("; ")}` });
+    if (this.result) this.result.test_integrity = this.integrity;
     const files = await g.changedFiles(this.worktree, this.baseCommit);
     if (files.length) this.ev({ type: "files", files });
     if (this.result) this.result.files_changed = files;
