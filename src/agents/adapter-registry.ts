@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { stateDir } from "../util/token.js";
 import type { AgentConfig } from "../core/config.js";
 import type { AgentAdapter } from "./types.js";
 
@@ -82,5 +85,17 @@ export function realCliBlocked(bin: string): boolean {
 
 /** The recorded real-CLI run of an adapter, if there is one. */
 export function realRunOf(adapter: string): { version: string; date: string; covered: string } | undefined {
-  return metas.get(adapter)?.realRun;
+  return userVerified()[adapter] ?? metas.get(adapter)?.realRun;
+}
+
+/** `<state dir>/verified.json`: written by `hexagon agents conformance <id> --real`, so a provider can be marked verified without a commit. */
+export function verifiedFile(): string { return path.join(stateDir(), "verified.json"); }
+function userVerified(): Record<string, { version: string; date: string; covered: string }> {
+  try { return JSON.parse(fs.readFileSync(verifiedFile(), "utf8")) as Record<string, { version: string; date: string; covered: string }>; } catch { return {}; }
+}
+export function recordVerified(adapter: string, row: { version: string; date: string; covered: string }): void {
+  const all = userVerified();
+  all[adapter] = row;
+  fs.mkdirSync(path.dirname(verifiedFile()), { recursive: true });
+  fs.writeFileSync(verifiedFile(), JSON.stringify(all, null, 2) + "\n");
 }

@@ -192,3 +192,25 @@ describe("HEXAGON_NO_REAL_CLI is enforced for every integration that declares a 
     expect(out).toMatchObject({ kind: "error", error: { retryable: false, message: expect.stringMatching(/HEXAGON_NO_REAL_CLI/) } });
   });
 });
+
+describe("scaffold → conformance on a fresh manifest adapter", () => {
+  it("the scaffold passes the fake-CLI conformance checks it can pass, with no edits", async () => {
+    const { scaffold } = await import("../src/core/project.js");
+    const { adapterTool } = await import("../src/shell/adapter-tools.js");
+    const { vi } = await import("vitest");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hex-scaf-"));
+    scaffold(root);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await adapterTool("scaffold", ["mytool"], root);
+      expect(fs.readFileSync(path.join(root, ".hexagon/config.toml"), "utf8")).toMatch(/\[plugins\]\nadapters = \["\.\/adapters\/mytool\.toml"\]/);
+      process.exitCode = 0;
+      await adapterTool("conformance", ["mytool"], root);
+      const text = log.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(text).toMatch(/Adapter conformance: mytool/);
+      expect(text).not.toMatch(/✖/);
+      expect(text).toMatch(/12\. prompt is not in argv unless declared — not in argv/);
+      expect(process.exitCode).toBe(0);
+    } finally { log.mockRestore(); process.exitCode = 0; }
+  });
+});

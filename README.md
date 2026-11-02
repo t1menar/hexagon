@@ -250,6 +250,10 @@ hexagon agents configure reviewer codex               # role → agent (or run i
 
 This writes `[agents.codex]` to `.hexagon/config.toml`. The Codex and Grok integrations follow the vendors' public CLI docs and are tested with mock CLIs, not the real ones: check them with `hexagon agents doctor` and one small task before relying on them ([docs/PROVIDERS.md](docs/PROVIDERS.md)).
 
+### Path 3: a third-party adapter, no fork
+
+Describe the CLI in a manifest file (argv templates + a JSON-line → event map) or write a small module, list it under `[plugins]`, and check it with `hexagon agents scaffold|record|conformance <id>`. Walkthrough, field reference and the conformance checks: [docs/ADAPTERS.md](docs/ADAPTERS.md).
+
 ### Path 2: any other CLI with the generic `exec` adapter (config only)
 
 Add it to `.hexagon/config.toml`. The task prompt (system instructions + task) is written to the CLI's **stdin**. To pass it another way name the slot in `command`: `{prompt_file}` (a private temp file) or `{prompt}` (in argv: limited by ARG_MAX and visible in `ps`, so it is opt-in). *Before this change the prompt was appended as the last argument when no slot was given; add `"{prompt}"` to keep that.* A CLI that prints JSON lines and has sessions deserves a declarative manifest instead: [docs/ADAPTERS.md](docs/ADAPTERS.md).

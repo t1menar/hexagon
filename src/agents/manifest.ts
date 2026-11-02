@@ -143,6 +143,7 @@ export class ManifestAdapter extends OneShotAdapter implements AgentAdapter {
   readonly adapterId: string;
   readonly provider: string;
   readonly displayName: string;
+  get promptInArgv(): boolean { return (this.m.run.prompt ?? "stdin") === "argv"; }
   readonly capabilities;
   override readonly security: SecurityCapabilities;
   protected override readonly authEnv: readonly string[];
