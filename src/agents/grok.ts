@@ -13,6 +13,7 @@ import { registerAdapter } from "./adapter-registry.js";
  * format is not documented, so identifiers are taken as the first token of each non-empty line and shown as-is.
  */
 export class GrokAdapter extends OneShotAdapter implements AgentAdapter {
+  protected override readonly authEnv = ["XAI_*", "GROK_*"];
   readonly adapterId = "grok";
   readonly provider = "xai";
   readonly displayName = "xAI Grok CLI";

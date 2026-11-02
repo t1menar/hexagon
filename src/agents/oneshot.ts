@@ -48,7 +48,7 @@ export abstract class OneShotAdapter extends AdapterBase {
     return new Promise((resolve) => {
       let child;
       try {
-        child = spawn(spec.argv[0]!, spec.argv.slice(1), { cwd: ctx.cwd, env: { ...process.env, ...ctx.env }, stdio: ["pipe", "pipe", "pipe"], detached: true, shell: false });
+        child = spawn(spec.argv[0]!, spec.argv.slice(1), { cwd: ctx.cwd, env: this.processEnv(ctx.env), stdio: ["pipe", "pipe", "pipe"], detached: true, shell: false });
       } catch (e) {
         return resolve({ kind: "error", error: { kind: "internal", message: `cannot start ${spec.argv[0]}: ${(e as Error).message}`, retryable: false } });
       }

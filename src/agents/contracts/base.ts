@@ -1,6 +1,7 @@
 import { classifyError, probe, probeVersion, whichExecutable, type AdapterDiagnostics } from "./adapter.js";
 import { NO_SECURITY, type AgentCapabilities, type SecurityCapabilities } from "./capabilities.js";
 import type { ClassifiedError } from "./errors.js";
+import { agentProcessEnv } from "./env.js";
 import { CLI_DEFAULT, overrideOf, type ModelDiscoveryResult, type ModelSelection } from "./model-selection.js";
 
 /** Shared behaviour for CLI-backed integrations. Subclasses add only what is specific to their CLI. */
@@ -11,6 +12,12 @@ export abstract class AdapterBase {
   abstract readonly capabilities: AgentCapabilities;
   /** Policy enforcement this CLI really provides; the default claims nothing. */
   readonly security: SecurityCapabilities = NO_SECURITY;
+
+  /** Environment variables the CLI needs to log in (names or `PREFIX_*`). Everything else is withheld from the agent process. */
+  protected readonly authEnv: readonly string[] = [];
+  /** [agents.x].env_passthrough: extra variables the user chose to hand over. */
+  envPassthrough: string[] = [];
+  protected processEnv(ctxEnv: Record<string, string>): Record<string, string> { return agentProcessEnv(ctxEnv, this.authEnv, this.envPassthrough); }
 
   constructor(readonly id: string, protected command: string[], readonly selection: ModelSelection = CLI_DEFAULT) {}
 

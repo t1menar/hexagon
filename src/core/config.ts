@@ -20,6 +20,8 @@ export interface AgentConfig {
   model?: string;
   /** Explicit authorization to run read-only roles (reviewer) on a CLI that cannot enforce read-only itself. */
   allow_weaker_isolation?: boolean;
+  /** Environment variables handed to this agent's process besides PATH, HOME, locale, terminal and its own login variables. */
+  env_passthrough?: string[];
   args?: string[];
   /** Mock adapter: delay between scripted steps (ms). */
   step_ms?: number;
@@ -78,9 +80,8 @@ export const DEFAULT_CONFIG: HexagonConfig = {
   messaging: { max_outbound_per_run: 10, max_blocking_questions: 2 },
   sandbox: {
     allow_commands: [
-      "npm", "npx", "pnpm", "yarn", "node", "tsc", "vitest", "jest", "pytest", "python", "python3", "go", "cargo",
-      "make", "mvn", "gradle", "./gradlew", "./mvnw", "java", "sh", "ls", "cat", "grep", "rg", "find", "mkdir", "test",
-      "git status", "git diff", "git log",
+      "npm", "pnpm", "yarn", "tsc", "vitest", "jest", "pytest", "go", "cargo", "mvn", "gradle", "./gradlew", "./mvnw",
+      "ls", "cat", "grep", "rg", "mkdir", "test", "git status", "git diff", "git log",
     ],
     command_timeout_s: 600,
   },
@@ -89,7 +90,7 @@ export const DEFAULT_CONFIG: HexagonConfig = {
 
 /** Read-only probes every agent may always run (checking what's installed, looking around). */
 export const SAFE_COMMANDS = [
-  "ls", "cat", "head", "tail", "wc", "find", "grep", "rg", "which", "command -v", "type", "uname", "pwd", "echo", "printenv",
+  "ls", "cat", "head", "tail", "wc", "grep", "rg", "which", "command -v", "type", "uname", "pwd", "echo",
   "date", "tree", "file", "stat", "du", "sort", "uniq", "diff", "test", "git status", "git diff", "git log", "git show", "git ls-files",
   "go version", "go env", "node --version", "npm --version", "python3 --version", "java -version", "mvn -v", "mvn --version",
 ];

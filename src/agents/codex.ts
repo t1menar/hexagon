@@ -12,6 +12,7 @@ import { registerAdapter } from "./adapter-registry.js";
  * is reported unsupported rather than guessed.
  */
 export class CodexAdapter extends OneShotAdapter implements AgentAdapter {
+  protected override readonly authEnv = ["OPENAI_*", "CODEX_*"];
   readonly adapterId = "codex";
   readonly provider = "openai";
   readonly displayName = "OpenAI Codex CLI";

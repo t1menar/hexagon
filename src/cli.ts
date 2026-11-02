@@ -9,6 +9,8 @@ import { ensureRepo, isRepo } from "./core/git.js";
 import { argsFromFlags, commandDef, commandDocs, parseArgs } from "./core/commands.js";
 import { planTree } from "./core/plan.js";
 import { findProjectRoot, ProjectPaths, scaffold } from "./core/project.js";
+import { loadConfig } from "./core/config.js";
+import { securitySummary } from "./core/security.js";
 import { feedAfter, mergeSession, type SessionStatus } from "./core/solo.js";
 import { findSpecs, lintSpec, listProjectFiles, parseSpec } from "./core/spec.js";
 import type { ModelDiscoveryResult } from "./agents/contracts/model-selection.js";
@@ -174,6 +176,7 @@ async function main(argv: string[]): Promise<void> {
     const client = await HexClient.connect(root());
     const info = await client.call<{ pid: number }>("ping");
     console.log(`daemon running (pid ${info.pid})`);
+    console.log(securitySummary(loadConfig(new ProjectPaths(root()).config)).join("\n"));
     return void client.close();
   }
 
@@ -367,6 +370,7 @@ async function main(argv: string[]): Promise<void> {
           console.log(list.map((a) => formatAgent(a, sub === "doctor")).join("\n\n"));
           const bad = list.filter((a) => a.error || a.diagnostics?.installed === false || a.diagnostics?.auth === "unauthenticated");
           if (sub === "doctor") {
+            console.log(`\n${securitySummary(loadConfig(new ProjectPaths(root()).config), list).join("\n")}`);
             console.log(bad.length ? `\n${bad.length} agent(s) need attention.` : "\nAll configured agents look usable.");
             if (bad.length) process.exitCode = 1;
           }
