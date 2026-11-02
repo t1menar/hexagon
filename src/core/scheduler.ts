@@ -270,7 +270,9 @@ export class Scheduler extends EventEmitter {
   /** A task may be changed only while nothing of it exists yet: it never launched, has no outcome, is not running. */
   editable(id: string): boolean {
     const prior = this.opts.prior?.get(id);
-    return this.tasks.some((t) => t.id === id) && !this.active.has(id) && !this.outcome.has(id) && !this.last.has(id) && (!prior || prior.state === "queued");
+    // A task held back only because something it waits for failed (outcome "blocked", never launched) has not started either.
+    const unlaunchedBlock = this.outcome.get(id) === "blocked" && !this.last.has(id);
+    return this.tasks.some((t) => t.id === id) && !this.active.has(id) && (!this.outcome.has(id) || unlaunchedBlock) && !this.last.has(id) && (!prior || prior.state === "queued");
   }
 
   /** Why `id` cannot be edited, or null. */
@@ -292,7 +294,12 @@ export class Scheduler extends EventEmitter {
    */
   editGraph(name: "graph.addNode" | "graph.removeNode" | "graph.addEdge" | "graph.removeEdge", a: Record<string, unknown>): void {
     if (this.aborted || this.rc.store.runState === "aborted") throw new Error("the run was aborted");
-    if (this.rc.store.runState === "done") throw new Error("the run is finished; start a new one");
+    // A run that ended only because tasks are blocked is not over: the plan can still be repaired (replan). Reopen it.
+    if (this.rc.store.runState === "done") {
+      if (!this.tasks.some((t) => this.outcome.get(t.id) === "blocked")) throw new Error("the run is finished; start a new one");
+      this.rc.store.runState = "running";
+      this.rc.store.startHeartbeat();
+    }
     const next = applyGraph(this.plan, name, a); // throws on unknown ids and cycles
     if (name === "graph.removeNode") { const why = this.whyNotEditable(String(a.id)); if (why) throw new Error(why); }
     if (name === "graph.addEdge" || name === "graph.removeEdge") { const why = this.whyNotEditable(String(a.to)); if (why) throw new Error(why); }

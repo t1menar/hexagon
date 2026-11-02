@@ -54,11 +54,45 @@ export class ControlService {
     return { status: "proposed", proposal, message: `Proposed ${proposal.id}: ${diff.join("; ")}. Nothing changed yet; the user must confirm it. Tell them what you proposed and stop.` };
   }
 
+  /** A replan from the analyst: one proposal holding the spec patch and the graph edits. Nothing changes until it is confirmed. */
+  proposeReplan(args: Record<string, unknown>, diff: string[]): Proposal {
+    const proposal: Proposal = { id: `P-${this.seq++}`, command: "replan.apply", args, diff, destructive: false, by: "agent", created_at: nowIso() };
+    this.proposals.set(proposal.id, proposal);
+    this.onChange(this.list());
+    this.o.notice("attention", `${String(args.task)} needs a plan change (${proposal.id}): ${diff[0] ?? ""}. Review it, then /apply ${proposal.id} or /reject ${proposal.id}.`);
+    return proposal;
+  }
+
+  /** Confirming applies the spec patch (and re-approves it: you just read the diff), edits the not-yet-started graph, then retries the blocked task. */
+  private async applyReplan(a: Record<string, unknown>): Promise<unknown> {
+    const o = this.o;
+    const live = this.o.current && this.o.current.store.runState !== "aborted" ? this.o.current : null; // a run that ended on a blocked task is still repairable
+    if (!live) throw new Error("the run was aborted; the replan can no longer be applied");
+    const bundle = a.bundle as { graph: { command: string; args: Record<string, unknown> }[] };
+    if (typeof a.spec_rel === "string" && typeof a.new_spec === "string") {
+      const file = path.join(o.root, a.spec_rel);
+      fs.writeFileSync(file, a.new_spec);
+      o.approvals.approve(file, "user");
+    }
+    for (const op of bundle.graph) live.scheduler.editGraph(op.command as Parameters<typeof live.scheduler.editGraph>[0], op.args);
+    o.approveUntraced(live.plan, "by this replan");
+    live.scheduler.reviveGated();
+    const task = String(a.task);
+    if (live.plan.tasks.some((t) => t.id === task) && live.store.byTask(task)?.state === "blocked") live.scheduler.retry(task, {});
+    return { tasks: live.plan.tasks.length, retried: live.plan.tasks.some((t) => t.id === task) ? task : null };
+  }
+
   async confirm(id: string): Promise<unknown> {
     const p = this.proposals.get(id);
     if (!p) throw new Error(`no pending proposal ${id}`);
     this.proposals.delete(id);
     this.onChange(this.list());
+    if (p.command === "replan.apply") {
+      try { return await this.applyReplan(p.args); } catch (e) {
+        this.o.notice("error", `${p.id} (replan) failed: ${(e as Error).message}`);
+        throw e;
+      }
+    }
     const def = commandDef(p.command)!;
     try { return await this.run(def, p.args); } catch (e) {
       this.o.notice("error", `${p.id} (${p.command}) failed: ${(e as Error).message}`);

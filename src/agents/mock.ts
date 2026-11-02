@@ -259,6 +259,14 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
         "---", "spec: goal", "---", `# ${goal}`, "",
         ...reqs.flatMap((r) => [`## ${r.id}: ${r.title}`, `${r.title}.`, "", "**Acceptance**", `- AC-1: ${r.file} exists`, "", `**Touches**: \`${r.file}\``, ""]),
       ].join("\n"));
+    } else if (stage === "replan") {
+      await step("Preparing a replan");
+      const tail = /Tasks you may change \(not started\): ([^.\n]+)\./.exec(text)?.[1]?.split(/,\s*/) ?? [];
+      const graph = [
+        ...(tail[0] ? [{ command: "graph.removeNode", args: { id: tail[0] } }] : []),
+        { command: "graph.addNode", args: { title: "Rework after replan", role: "developer", write: ["hexagon-mock/rework.md"], verify_exempt: "mock" } },
+      ];
+      fs.writeFileSync(path.join(out, "replan.json"), JSON.stringify({ summary: "mock replan: replace the next task with a rework task", graph }));
     } else {
       await step("Drafting tasks");
       const spec = parseSpec(path.join(out, "spec.md"));

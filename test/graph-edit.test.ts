@@ -155,20 +155,35 @@ describe("a blocked task", () => {
     s.orch.chat = (t: string) => { asked.push(t); };
     await c.call("run.start", { plan_path: "plan.json" });
     await until(async () => (await c.call<AgentStatus>("agent.status", { task: "T-1" })).state === "blocked");
-    await sleep(200);
-    return asked;
+    return { c, s, asked };
   }
+  const proposals = async (c: HexClient) => (await c.call<{ proposals: { id: string; command: string; diff: string[] }[] }>("ui.snapshot")).proposals;
 
-  it("is re-planned only when the plan is the problem: the Assistant is asked about the tasks after it", async () => {
-    const asked = await blocked("REQ-A contradicts REQ-B about the retry limit");
-    expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatch(/replan request/i);
-    expect(asked[0]).toContain("REQ-A contradicts REQ-B");
-    expect(asked[0]).toMatch(/not started and can still be edited[^.]*: T-2/);
+  it("is re-planned only when the plan is the problem: the analyst proposes, nothing changes until you confirm, and started tasks are untouched", async () => {
+    const { c, asked } = await blocked("REQ-A contradicts REQ-B about the retry limit");
+    const p = await until(async () => (await proposals(c)).find((x) => x.command === "replan.apply"));
+    expect(asked).toEqual([]); // the analyst was free, so the Assistant was not asked
+    expect(p.diff[0]).toMatch(/mock replan/);
+    expect(p.diff).toEqual(expect.arrayContaining(["- task T-2 [developer] Task T-2"]));
+    expect(p.diff.some((d) => /^\+ task T-3 \[developer\] Rework after replan/.test(d))).toBe(true);
+    expect(p.diff.some((d) => /^[-+~] task T-1\b/.test(d))).toBe(false); // T-1 (the blocked, started task) is not edited
+    expect((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks.map((t) => t.id)).toEqual(["T-1", "T-2"]); // proposal only
+    await c.call("command.confirm", { id: p.id });
+    expect((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks.map((t) => t.id)).toEqual(["T-1", "T-3"]);
+  }, 60000);
+
+  it("rejecting the proposal leaves the plan as it was", async () => {
+    const { c } = await blocked("REQ-A contradicts REQ-B about the retry limit");
+    const p = await until(async () => (await proposals(c)).find((x) => x.command === "replan.apply"));
+    await c.call("command.reject", { id: p.id });
+    expect((await c.call<{ plan: Plan }>("ui.snapshot")).plan.tasks.map((t) => t.id)).toEqual(["T-1", "T-2"]);
   }, 60000);
 
   it("a missing tool is not a plan problem: no re-plan", async () => {
-    expect(await blocked("go is not installed")).toEqual([]);
+    const { c, asked } = await blocked("go is not installed");
+    await sleep(600);
+    expect(asked).toEqual([]);
+    expect(await proposals(c)).toEqual([]);
   }, 60000);
 });
 
