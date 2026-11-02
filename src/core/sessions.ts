@@ -15,7 +15,7 @@ export interface SessionRecord {
   /** Hash of everything that defines the agent (role prompt, protocol, skills). A change starts a new session. */
   promptHash: string;
   nativeSessionId: string;
-  /** The CLI's own id for the conversation, where it assigns one (Codex thread id). Dropped whenever nativeSessionId changes. */
+  /** The CLI's own id for the conversation, where it assigns one (e.g. a thread id). Dropped whenever nativeSessionId changes. */
   nativeHandle?: string;
   /** The CLI confirmed it created the session. Until then the id is reused for a fresh create, never resumed. */
   confirmed: boolean;

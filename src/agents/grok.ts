@@ -54,4 +54,4 @@ export class GrokAdapter extends OneShotAdapter implements AgentAdapter {
   }
 }
 
-registerAdapter("grok", (id, c, o) => new GrokAdapter(id, c.command?.length ? c.command : ["grok"], selectionFrom(o || c.model), c.args ?? []));
+registerAdapter("grok", (id, c, o) => new GrokAdapter(id, c.command?.length ? c.command : ["grok"], selectionFrom(o || c.model), c.args ?? []), { cli: "grok" });
