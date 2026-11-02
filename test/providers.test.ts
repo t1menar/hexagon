@@ -343,3 +343,13 @@ let s = ""; process.stdin.on("data", d => s += d); process.stdin.on("end", () =>
     expect(last.a).toEqual(expect.arrayContaining(["--model", "m-two"]));
   });
 });
+
+describe("real-CLI evidence is stated, not implied", () => {
+  it("an integration with no recorded real run says so; a recorded one names the version, and a different installed version is flagged", async () => {
+    const { realCliNote } = await import("../src/agents/contracts/verified.js");
+    expect(realCliNote("codex", "0.1.0")).toMatch(/NOT run against the real CLI/);
+    expect(realCliNote("grok", null)).toMatch(/NOT run against the real CLI/);
+    expect(realCliNote("claude-code", "2.1.316 (Claude Code)")).toMatch(/run against the real CLI 2\.1\.316/);
+    expect(realCliNote("claude-code", "9.0.0")).toMatch(/different version: untested/);
+  });
+});

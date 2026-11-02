@@ -1,6 +1,7 @@
 import readline from "node:readline/promises";
 import type { AgentCapabilities } from "../agents/contracts/capabilities.js";
 import type { ModelDiscoveryResult } from "../agents/contracts/model-selection.js";
+import { realCliNote } from "../agents/contracts/verified.js";
 import { describeSelection } from "../agents/contracts/model-selection.js";
 import type { AgentInfo } from "../daemon/orchestrator.js";
 
@@ -24,6 +25,7 @@ export function formatAgent(a: AgentInfo, verbose: boolean): string {
   out.push(`  Adapter:          ${a.adapter}${a.command ? `   command: ${a.command.join(" ")}` : ""}`);
   out.push(`  Executable:       ${d?.installed ? d.executable : "not found"}`);
   out.push(`  CLI version:      ${d?.version ?? "unknown"}`);
+  out.push(`  Real CLI:         ${realCliNote(a.adapter, d?.version ?? null)}`);
   out.push(`  Authentication:   ${d ? `${d.auth}${d.authDetail ? ` (${d.authDetail})` : ""}` : "unknown"}`);
   out.push(`  Model selection:  ${a.selection ? describeSelection(a.selection) : "—"}`);
   out.push(`  Model discovery:  ${a.capabilities?.supportsModelDiscovery ? "supported (hexagon agents models " + a.id + ")" : "unsupported — the CLI manages its own model configuration"}`);
