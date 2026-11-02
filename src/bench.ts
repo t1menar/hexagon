@@ -43,10 +43,10 @@ const T = (n: number, title: string, write: string[], description: string, extra
   files: { write, read: [] }, skills: [], definition_of_done: ["`node --test` passes"], verify: [VERIFY], description, ...extra,
 });
 
-/** Five tasks of different sizes. Each depends on the previous one, so one agent identity does them in order. */
+/** Five tasks of different sizes. T-1 verifies only its own test file: the suite is red on purpose until T-2 (a first version ran the whole suite and T-1 rightly refused to edit T-2's file). Each depends on the previous one, so one agent identity does them in order. */
 export function benchTasks(gapSeconds = 0): Task[] {
   const tasks = [
-    T(1, "Add clamp to mathx", ["src/mathx.js", "test/mathx.test.js"], "Add `clamp(n, lo, hi)` to src/mathx.js and a test for it in test/mathx.test.js."),
+    T(1, "Add clamp to mathx", ["src/mathx.js", "test/mathx.test.js"], "Add `clamp(n, lo, hi)` to src/mathx.js and a test for it in test/mathx.test.js.", { verify: ["node --test test/mathx.test.js"], definition_of_done: ["`node --test test/mathx.test.js` passes"] }),
     T(2, "Fix titleCase on empty words", ["src/strings.js"], "`titleCase('a  b')` crashes (the existing test fails). Fix it in src/strings.js without changing other behavior."),
     T(3, "Add a bounded queue", ["src/queue.js", "test/queue.test.js"], "Create src/queue.js exporting class `BoundedQueue` (constructor(limit), push(x) returns false when full, shift(), get size) with tests in test/queue.test.js covering full, empty and order."),
     T(4, "Move shared helpers into util.js", ["src/util.js", "src/mathx.js", "src/strings.js", "test/util.test.js"], "Create src/util.js with a `clampInt(n, lo, hi)` helper used by both mathx.js and strings.js where it fits; keep every existing export and test working; add a test in test/util.test.js."),
@@ -159,4 +159,5 @@ export function benchTable(rows: BenchRow[]): string {
   return [head, ...body].join("\n");
 }
 
+export const benchCapDefault = (): number => loadConfig("/nonexistent/config.toml").bench.max_cost_usd;
 export const benchCap = (root: string): number => loadConfig(new ProjectPaths(root).config).bench.max_cost_usd;
