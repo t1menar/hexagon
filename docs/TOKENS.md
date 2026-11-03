@@ -90,3 +90,30 @@ cold starts cheaper than modelled, so real savings are smaller than these. A run
   Overflow recovery still applies.
 * No adapter reports its context window; `assumed_window_tokens` is used.
 * The per-agent token gauge in the agent list is not drawn yet (the inspector shows it).
+
+## Prompt diet (measured)
+
+`scripts/prompt-sizes.ts` prints the system prompt per role (role prompt + protocol + skills + the capped HEXAGON.md of a
+sample project, 2,899 chars) and the per-turn task card (`esbuild scripts/prompt-sizes.ts --bundle --platform=node
+--format=esm --outfile=dist/tools/ps.mjs && node dist/tools/ps.mjs`). Characters; tokens ≈ chars / 4.
+
+| Role | Before (chars) | After (chars) | Change |
+|---|---|---|---|
+| developer, identity only (role + protocol + skills) | 7,465 | 4,991 | −33% |
+| developer, with the sample HEXAGON.md | 10,364 (≈2,591 tok) | 7,894 (≈1,974 tok) | −24% |
+| qa | 10,189 | 8,146 | −20% |
+| devops | 9,738 | 7,695 | −21% |
+| security | 9,842 | 7,799 | −21% |
+| architect | 9,281 | 7,395 | −20% |
+| release | 9,243 | 7,200 | −22% |
+| control | 7,956 | 7,033 | −12% |
+| reviewer | 5,859 | 5,984 | +2% (it now checks the diff against the brief) |
+| task card, minimal developer task | 485 (≈121 tok) | 485 | unchanged |
+
+What moved: `bus` details, `exec`/`install`/`sudo` and `scope request` are now one line each in the protocol and the rest
+sits behind `hexagon help bus|exec|scope` (`HELP_TOPICS` in `src/agents/protocol.ts`; an agent reads one only when it needs
+it). `scope-discipline` is merged into the developer role (devops/security keep the skill), `commit-conventions` is one line,
+the duplicated "ask only if…" and "be honest" text is gone, and the analyst stage prompts in `orchestrator.ts` point to the
+analyst role instead of restating its section list. Added: the reviewer checks the diff against the brief, and "read your brief
+and the handoffs before code" for restarts. The prefix stays byte-stable per identity (the golden prompts in
+`test/golden/prompts` pin it; `test/prompts.test.ts` asserts the key developer rules are still present).

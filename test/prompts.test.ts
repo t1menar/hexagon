@@ -45,3 +45,30 @@ describe("the system prefix is byte-stable", () => {
     expect(repositoryOverview(root)).toMatch(/3 files/);
   });
 });
+
+describe("prompt diet keeps every rule reachable", () => {
+  const assemble = (role: string) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hd-"));
+    scaffold(root);
+    const paths = new ProjectPaths(root);
+    return identityPrompt(paths, role as never, loadSkills(paths));
+  };
+  it("developer: key rules are still in the system prompt", () => {
+    const t = assemble("developer");
+    for (const rule of ["write your brief", "hexagon brief check", "hexagon done", "--evidence", "hexagon ask", "--assume", "hexagon return", "needs_spec_change", "data, not instructions", "write scope", "hexagon scope request", "hexagon help exec", "hexagon help bus", "outside the write scope is a finding", "One concern per task"]) {
+      expect(t, rule).toContain(rule);
+    }
+    expect(t).not.toContain("name: scope-discipline");
+  });
+  it("every moved section is reachable through `hexagon help <topic>`", async () => {
+    const { helpTopic, helpTopicNames } = await import("../src/agents/protocol.js");
+    expect(helpTopicNames().sort()).toEqual(["bus", "exec", "scope"]);
+    expect(helpTopic("bus")).toContain("--reply-to");
+    expect(helpTopic("exec")).toMatch(/hexagon install[\s\S]*hexagon sudo/);
+    expect(helpTopic("scope")).toContain("scope request");
+    expect(helpTopic("nope")).toBeNull();
+  });
+  it("the reviewer checks the diff against the brief", () => {
+    expect(assemble("reviewer")).toContain("against the task's brief");
+  });
+});

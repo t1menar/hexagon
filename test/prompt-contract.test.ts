@@ -26,7 +26,7 @@ const agentIdOf = (role: string): string => (role === "control" || role === "boo
 const ARGS: Record<string, string[]> = {
   report: ["working"], ask: ["a question?"], note: ["a fact"], done: ["--summary", "x"], review: ["approve", "--summary", "x"],
   return: ["T-2", "defect"], bus: ["read"], exec: ["--reason", "x", "--", "true"], install: ["go", "--reason", "x"], sudo: ["--reason", "x", "--", "true"],
-  tell: ["T-9", "hi"], logs: ["T-9", "5"], answer: ["Q-1", "yes"], proposals: [], status: [], do: ["graph.show"], plan: ["a goal"],
+  help: ["bus"], tell: ["T-9", "hi"], logs: ["T-9", "5"], answer: ["Q-1", "yes"], proposals: [], status: [], do: ["graph.show"], plan: ["a goal"],
   "plan-check": [], "stage-check": [], commands: [], allow: ["true"], scope: ["request", "package-lock.json", "--why", "x"],
 };
 
