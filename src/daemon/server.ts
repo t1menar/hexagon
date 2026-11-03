@@ -101,6 +101,7 @@ export class DaemonServer {
         const filtered = task ? all.filter((m) => m.thread_id === task || m.to.id === task || m.from.id === task) : all;
         return filtered.slice(-((p.limit as number) ?? 50));
       },
+      "delivery.run": async (p) => o.deliver(p.confirm === true),
       "merge.base": async (p) => ({ text: await o.mergeToBase({ override: typeof p.override === "string" && p.override.trim() ? p.override.trim() : undefined }) }),
       "worktrees.clean": async () => ({ removed: await o.cleanup() }),
       "run.close": () => ({ closed: o.closeRun("closed by user") }),

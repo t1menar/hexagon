@@ -20,6 +20,8 @@ const p = (name: string, type: ParamDef["type"], help: string, required = false)
 
 export const COMMANDS: readonly CommandDef[] = [
   { name: "status.get", kind: "read", summary: "Run state, per-task states and any plan or spec waiting for approval.", params: [] },
+  { name: "clarify.show", kind: "read", summary: "Questions the analyst is waiting on, and the answers so far.", params: [] },
+  { name: "clarify.answer", kind: "mutate", summary: "Answer one of the analyst's questions (an option number, option text or free text), or accept all defaults. The user's decision: propose it, do not guess.", params: [p("question_id", "string", "Q-n"), p("answer", "string", "the answer"), p("defaults", "boolean", "accept every default")] },
   { name: "graph.show", kind: "read", summary: "The task graph being edited: nodes and edges.", params: [] },
   { name: "graph.addNode", kind: "mutate", summary: "Add a task to the draft plan.", params: [
     p("title", "string", "what the task does", true), p("role", "string", "role that does it (developer, qa, …)", true),

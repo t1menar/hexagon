@@ -27,6 +27,7 @@ export const SHIPPED_ROLE_HASHES = new Set<string>([
   "b5260aa1b474aef4",
   "b642254d1965506f",
   "b79d095167abd82e",
+  "bd5e47cb5fcf1a52",
   "d08b57a730986ac1",
   "d910aa3f1f9f284d",
   "df6643d21bd6a832",

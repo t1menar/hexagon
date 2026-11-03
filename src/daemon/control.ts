@@ -146,6 +146,7 @@ export class ControlService {
         const ids = a.from ? fromTask(plan, String(a.from)) : plan.tasks.map((t) => t.id);
         return [`start ${ids.join(", ")}`];
       }
+      case "clarify.answer": return [a.defaults === true ? "accept every default answer to the analyst's questions" : `answer ${String(a.question_id)}: ${String(a.answer).slice(0, 80)}`];
       case "run.pause": return ["pause all agents"];
       case "run.resume": return ["resume all agents"];
       case "run.cancel": return ["abort the run and stop its agents"];
@@ -170,7 +171,13 @@ export class ControlService {
       return { tasks: o.reloadDraft().plan.tasks.length };
     }
     switch (def.name) {
-      case "status.get": return { run: o.status(), draft: o.draft ? { goal: o.draft.goal, tasks: o.draft.plan.tasks.length, errors: o.draft.check.errors } : null, spec_review: o.specReview ? { spec: o.specReview.spec_path } : null, proposals: this.list() };
+      case "clarify.show": return o.clarify ? { questions: o.clarify.questions, answers: o.clarify.answers } : { questions: [], answers: [] };
+      case "clarify.answer": {
+        if (a.defaults === true) return o.acceptDefaults();
+        if (typeof a.question_id !== "string" || typeof a.answer !== "string") throw new Error("clarify.answer needs question_id and answer, or defaults: true");
+        return o.answerQuestion(a.question_id, a.answer);
+      }
+      case "status.get": return { run: o.status(), clarify: o.clarify ? { waiting: o.clarify.questions.length - o.clarify.answers.length } : null, draft: o.draft ? { goal: o.draft.goal, tasks: o.draft.plan.tasks.length, errors: o.draft.check.errors } : null, spec_review: o.specReview ? { spec: o.specReview.spec_path } : null, proposals: this.list() };
       case "graph.show": {
         const live = this.liveRun();
         const plan = live?.plan ?? o.draft?.plan ?? o.current?.plan ?? null;

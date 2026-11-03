@@ -17,7 +17,7 @@ import { DiscoveryCache, type ModelDiscoveryResult } from "../agents/contracts/m
 import type { AdapterDiagnostics } from "../agents/contracts/adapter.js";
 import type { AgentCapabilities, SecurityCapabilities as AdapterSecurity } from "../agents/contracts/capabilities.js";
 import type { ModelSelection } from "../agents/contracts/model-selection.js";
-import { addAgent, allowCommands, allowLocal, loadConfig, migrateConfigFile, roleConfig, setRoleAgent, setRoleModel, type HexagonConfig } from "../core/config.js";
+import { addAgent, allowCommands, allowLocal, loadConfig, migrateConfigFile, roleConfig, setRoleAgent, setRoleModel, setSection, type HexagonConfig } from "../core/config.js";
 import { applyToolchainEnv, install as installToolchain, installed as installedToolchains, onPath, toolchainFor, TOOLCHAINS } from "../core/toolchains.js";
 import * as g from "../core/git.js";
 import { checkPlan, normalizePlan, type PlanCheck } from "../core/plan.js";
@@ -32,6 +32,7 @@ import { Mutex } from "../util/mutex.js";
 import { reviewerWarnings } from "../core/security.js";
 import { AgentTokens } from "./auth.js";
 import { ControlService, type Proposal } from "./control.js";
+import { deliveryFromAnswers, dropAnswered, loadQuestions, needsQuestions, parseApproaches, renderAnswers, resolveAnswer, unanswered, type Answer, type Question } from "../core/clarify.js";
 import { Approvals, ARTIFACT, checkStage, isUntraced, MODES, parseMode, parseSpikes, recommendMode, specHash, type Mode, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
 import { IdentityPool, SessionRegistry } from "../core/sessions.js";
@@ -90,6 +91,16 @@ export interface Draft {
   card?: Card;
 }
 
+/** The pipeline is paused here until every question has an answer (or the user accepts the defaults). */
+export interface ClarifyState {
+  id: string;
+  goal: string;
+  out_dir: string;
+  why: string[];
+  questions: Question[];
+  answers: Answer[];
+}
+
 export type Push =
   | { event: "status"; data: AgentStatus }
   | { event: "agent_event"; data: StampedEvent }
@@ -102,6 +113,8 @@ export type Push =
   | { event: "session"; data: SessionStatus }
   | { event: "draft"; data: Draft | null }
   | { event: "spec_review"; data: SpecReview | null }
+  /** Questions the analyst needs answered before it specifies; null once they are. */
+  | { event: "clarify"; data: ClarifyState | null }
   | { event: "permissions"; data: PermissionRequest[] }
   | { event: "proposals"; data: Proposal[] }
   /** The running graph was edited. */
@@ -115,6 +128,7 @@ export interface Snapshot {
   sessions: SessionStatus[];
   draft: Draft | null;
   spec_review: SpecReview | null;
+  clarify: ClarifyState | null;
   has_context: boolean;
   permissions: PermissionRequest[];
   /** Changes the control agent proposed, waiting for your confirmation. */
@@ -180,6 +194,7 @@ export class Orchestrator extends EventEmitter {
   current: ActiveRun | null = null;
   draft: Draft | null = null;
   specReview: SpecReview | null = null;
+  clarify: ClarifyState | null = null;
   readonly control: ControlService = new ControlService(this, (list) => this.push({ event: "proposals", data: list }));
   /** The stage the analyst is in (drives what `hexagon plan-check` validates). */
   private stage: Stage = "analyze";
@@ -207,6 +222,8 @@ export class Orchestrator extends EventEmitter {
     if (d && fs.existsSync(d.plan_path)) this.draft = d;
     const sr = readJson<SpecReview>(path.join(this.paths.hex, "drafts", "spec-review.json"));
     if (sr && fs.existsSync(sr.spec_path)) this.specReview = sr;
+    const cl = readJson<ClarifyState>(path.join(this.paths.hex, "drafts", "clarify.json"));
+    if (cl && fs.existsSync(cl.out_dir)) this.clarify = cl;
     void this.autoClose();
   }
 
@@ -481,6 +498,7 @@ export class Orchestrator extends EventEmitter {
       sessions: [...this.sessions.values()].map((s) => s.status),
       draft: this.draft,
       spec_review: this.specReview,
+      clarify: this.clarify,
       has_context: contextFile(this.root) !== null,
       permissions: [...this.permissions.values()],
       proposals: this.control.list(),
@@ -586,9 +604,12 @@ export class Orchestrator extends EventEmitter {
     const existingSpecs = fs.existsSync(path.join(this.root, "specs")) ? fs.readdirSync(path.join(this.root, "specs")).filter((f) => f.endsWith(".md")) : [];
     this.draft = null;
     this.specReview = null;
+    this.clarify = null;
+    this.saveClarify();
     this.saveDraft();
     this.push({ event: "draft", data: null });
     this.push({ event: "spec_review", data: null });
+    this.push({ event: "clarify", data: null });
     this.stage = "analyze";
     const prompt = [
       `<goal>\n${goal.trim()}\n</goal>`,
@@ -596,7 +617,7 @@ export class Orchestrator extends EventEmitter {
       `Output directory: ${out}`,
       existingSpecs.length ? `Existing specs (for context; don't modify them): ${existingSpecs.map((f) => `specs/${f}`).join(", ")}` : "",
       "",
-      "Stage 1 of 3: analyze. Read the codebase and the request, then write analysis.md with the sections Current state, Constraints, Risks, Open questions, Mode, Impacted areas. Mode: first word solo | single-task | dag, then the reason (solo = one small, understood edit; single-task = one agent with full checks; dag = several truly independent slices). If the cause is unknown, the change is cross-cutting (API, schema, migration) or module boundaries are unclear, add a Spike section with one read-only investigation per unknown as `- S-1: <question>`; do not guess in the spec. Ask the user only about decisions that change the outcome. Run `hexagon plan-check`, then `hexagon done`.",
+      "Stage 1 of 3: analyze. Read the codebase and the request, then write analysis.md with the sections Current state, Constraints, Risks, Open questions, Confidence, Mode, Impacted areas. Mode: first word solo | single-task | dag, then the reason (solo = one small, understood edit; single-task = one agent with full checks; dag = several truly independent slices). If the cause is unknown, the change is cross-cutting (API, schema, migration) or module boundaries are unclear, add a Spike section with one read-only investigation per unknown as `- S-1: <question>`; do not guess in the spec. Add Confidence (low|medium|high and why), and Approaches (`- A-1: …`, only if more than one design is viable). If the answer to something changes the result (ambiguous scope, several viable designs, irreversible or data-affecting change, public API change, unknown delivery target), write questions.json instead of guessing (see your instructions). Run `hexagon plan-check`, then `hexagon done`.",
     ].filter((l) => l !== "").join("\n");
     void this.runPipeline(s, id, goal.trim(), out, "analyze", prompt);
     return { id };
@@ -631,9 +652,10 @@ export class Orchestrator extends EventEmitter {
   private stageCheck(out: string): Reply {
     if (this.stage === "plan") return draftCheck(this.root, out).reply;
     if (this.stage === "replan") return this.replanCheck(out).reply;
-    const { errors, warnings } = checkStage(this.stage, out, listProjectFiles(this.root, 5000), { requireSpike: this.cfg.run.require_spike });
+    const st = this.stage === "clarify" ? "analyze" : this.stage;
+    const { errors, warnings } = checkStage(st, out, listProjectFiles(this.root, 5000), { requireSpike: this.cfg.run.require_spike, clarify: st === "analyze" ? this.clarifyCtx() : undefined });
     const lines = [
-      errors.length ? `✖ ${errors.length} error(s) in ${ARTIFACT[this.stage]}:\n${errors.map((e) => `  - ${e}`).join("\n")}` : `✔ ${ARTIFACT[this.stage]} is valid`,
+      errors.length ? `✖ ${errors.length} error(s) in ${ARTIFACT[st]}:\n${errors.map((e) => `  - ${e}`).join("\n")}` : `✔ ${ARTIFACT[st]} is valid`,
       warnings.length ? `! ${warnings.length} warning(s):\n${warnings.map((w) => `  - ${w}`).join("\n")}` : "",
     ].filter(Boolean);
     return { ok: errors.length === 0, message: lines.join("\n") };
@@ -641,6 +663,7 @@ export class Orchestrator extends EventEmitter {
 
   /** Feedback on the spec under review, on the draft plan, or an answer to the analyst's question. */
   revise(feedback: string): void {
+    if (this.clarify) throw new Error(`${unanswered(this.clarify.questions, this.clarify.answers).length} question(s) are waiting for you: /answer Q-n <answer>, or accept the defaults (hexagon answer --defaults)`);
     const s = this.sessions.get("planner");
     if (s && (s.status.state === "running" || s.status.state === "waiting_input")) return s.say(feedback);
     const sr = this.specReview;
@@ -694,26 +717,16 @@ export class Orchestrator extends EventEmitter {
       if (from === "analyze") {
         if (!(await this.runStage(s, prompt, followUp))) return;
         this.decideMode(out);
-        const spikes = parseSpikes(fs.existsSync(path.join(out, "analysis.md")) ? fs.readFileSync(path.join(out, "analysis.md"), "utf8") : "");
-        if (spikes.length) {
-          // Explore before specifying: read-only investigations whose answers become inputs to the spec.
-          this.stage = "spike";
-          from = "spike";
-          prompt = "";
-          followUp = `<stage>spike</stage>\nanalysis.md is accepted, and it lists spikes. Write spike.md in ${out}: a "Findings" section answering each spike by id (S-1, …) with file:line evidence, a "Decision" section (what the spec should assume, and what stays open), and "Open risks". This is read-only investigation: change no product file. Run \`hexagon plan-check\`, then \`hexagon done\`.\nSpikes:\n${spikes.map((q) => `- ${q.id}: ${q.question}`).join("\n")}`;
-        } else {
-          this.stage = "specify";
-          from = "specify";
-          prompt = "";
-          followUp = `<stage>specify</stage>\nanalysis.md is accepted. Stage 2 of 3: specify. Write spec.md in ${out} (frontmatter, one \`## REQ-…: title\` per requirement with observable \`- AC-n:\` criteria, non-goals, **Touches**). If the change needs a design, also write design.md with the sections Interfaces, Data flow, Trade-offs. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
-        }
+        if (this.openClarify(id, goal, out)) return;
+        ({ from, followUp } = this.afterAnalysis(out));
+        prompt = "";
       }
       if (from === "spike") {
         if (!(await this.runStage(s, prompt, followUp))) return;
         this.stage = "specify";
         from = "specify";
         prompt = "";
-        followUp = `<stage>specify</stage>\nanalysis.md and spike.md are accepted; write the spec from the spike's Decision, not from guesses. Stage 2 of 3: specify. Write spec.md in ${out} (frontmatter, one \`## REQ-…: title\` per requirement with observable \`- AC-n:\` criteria, non-goals, **Touches**). If the change needs a design, also write design.md with the sections Interfaces, Data flow, Trade-offs. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
+        followUp = `<stage>specify</stage>\nanalysis.md and spike.md are accepted${fs.existsSync(path.join(out, "answers.md")) ? `; the user's decisions are in ${path.join(out, "answers.md")} and are binding` : ""}; write the spec from the spike's Decision, not from guesses. Stage 2 of 3: specify. Write spec.md in ${out} (frontmatter, one \`## REQ-…: title\` per requirement with observable \`- AC-n:\` criteria, non-goals, **Touches**). If the change needs a design, also write design.md with the sections Interfaces, Data flow, Trade-offs. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
       }
       if (from === "specify") {
         if (!(await this.runStage(s, prompt, followUp))) return;
@@ -730,6 +743,92 @@ export class Orchestrator extends EventEmitter {
     } catch (e) {
       this.notice("error", `analyst output is invalid: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  private clarifyCtx() {
+    return { ask: this.cfg.sdd.ask, delivery: this.cfg.delivery };
+  }
+
+  /** The stage after an accepted analysis: spikes when it lists any, else the spec. `answers` carries the user's decisions. */
+  private afterAnalysis(out: string, answers = ""): { from: Stage; followUp: string } {
+    const file = path.join(out, "analysis.md");
+    const spikes = parseSpikes(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
+    const decided = answers ? `\nThe user answered your questions; their decisions are binding (also in ${path.join(out, "answers.md")}):\n<answers>\n${answers}\n</answers>\n` : "";
+    if (spikes.length) {
+      // Explore before specifying: read-only investigations whose answers become inputs to the spec.
+      this.stage = "spike";
+      return { from: "spike", followUp: `<stage>spike</stage>\nanalysis.md is accepted, and it lists spikes.${decided} Write spike.md in ${out}: a "Findings" section answering each spike by id (S-1, …) with file:line evidence, a "Decision" section (what the spec should assume, and what stays open), and "Open risks". This is read-only investigation: change no product file. Run \`hexagon plan-check\`, then \`hexagon done\`.\nSpikes:\n${spikes.map((q) => `- ${q.id}: ${q.question}`).join("\n")}` };
+    }
+    this.stage = "specify";
+    return { from: "specify", followUp: `<stage>specify</stage>\nanalysis.md is accepted.${decided} Stage 2 of 3: specify. Write spec.md in ${out} (frontmatter, one \`## REQ-…: title\` per requirement with observable \`- AC-n:\` criteria, non-goals, **Touches**). If the change needs a design, also write design.md with the sections Interfaces, Data flow, Trade-offs. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.` };
+  }
+
+  /** Does the accepted analysis come with questions for the user? Then the pipeline waits here. */
+  private openClarify(id: string, goal: string, out: string): boolean {
+    const file = path.join(out, "questions.json");
+    if (!fs.existsSync(file)) return false;
+    const { questions, errors } = loadQuestions(file);
+    if (errors.length) { this.notice("error", `questions.json is invalid: ${errors[0]}`); return false; }
+    // A delivery question the project already answered is never asked again.
+    const open = dropAnswered(questions, this.cfg.delivery);
+    if (!open.length) return false;
+    const analysis = fs.readFileSync(path.join(out, "analysis.md"), "utf8");
+    this.stage = "clarify";
+    this.clarify = { id, goal, out_dir: out, why: needsQuestions(analysis, this.clarifyCtx()), questions: open, answers: [] };
+    this.saveClarify();
+    this.push({ event: "clarify", data: this.clarify });
+    this.notice("attention", `${open.length} question(s) before the spec is written: /answer Q-1 <answer> (a number picks an option), or accept the defaults with /answer defaults.`);
+    return true;
+  }
+
+  private saveClarify() {
+    const f = path.join(this.paths.hex, "drafts", "clarify.json");
+    if (this.clarify) atomicWriteJson(f, this.clarify);
+    else fs.rmSync(f, { force: true });
+  }
+
+  /** Answer one question (an option number, the option text, free text, or "default"). The last answer starts the spec. */
+  answerQuestion(qid: string, text: string): { remaining: number; continued: boolean } {
+    const c = this.clarify;
+    if (!c) throw new Error("no questions are waiting");
+    const q = c.questions.find((x) => x.id === qid.toUpperCase());
+    if (!q) throw new Error(`no question ${qid} (waiting: ${c.questions.map((x) => x.id).join(", ")})`);
+    const answer = resolveAnswer(q, text);
+    c.answers = [...c.answers.filter((a) => a.id !== q.id), { id: q.id, answer, by: /^default$/i.test(text.trim()) ? "default" : "user" }];
+    return this.afterAnswer(c);
+  }
+
+  /** "Accept defaults": every unanswered question takes its default. */
+  acceptDefaults(): { remaining: number; continued: boolean } {
+    const c = this.clarify;
+    if (!c) throw new Error("no questions are waiting");
+    for (const q of unanswered(c.questions, c.answers)) c.answers.push({ id: q.id, answer: q.default, by: "default" });
+    return this.afterAnswer(c);
+  }
+
+  private afterAnswer(c: ClarifyState): { remaining: number; continued: boolean } {
+    const left = unanswered(c.questions, c.answers).length;
+    this.saveClarify();
+    this.push({ event: "clarify", data: this.clarify });
+    if (left) return { remaining: left, continued: false };
+    const answers = renderAnswers(c.questions, c.answers);
+    fs.writeFileSync(path.join(c.out_dir, "answers.md"), answers);
+    // The first delivery answer is remembered for the project: it is not asked again.
+    const d = deliveryFromAnswers(c.questions, c.answers);
+    const set: Record<string, string | boolean> = {};
+    if (d.push !== undefined && d.push !== null) set.push = d.push;
+    if (d.pr !== undefined && d.pr !== null) set.pr = d.pr;
+    if (d.remote) set.remote = d.remote;
+    if (Object.keys(set).length) { setSection(this.paths.config, "delivery", set); this.reloadConfig(); }
+    this.clarify = null;
+    this.saveClarify();
+    this.push({ event: "clarify", data: null });
+    const s = this.sessions.get("planner") ?? this.analystSession(c.out_dir);
+    this.registry.register("planner", s.api());
+    const next = this.afterAnalysis(c.out_dir, answers);
+    this.notice("info", "Answers recorded; the analyst continues with the spec.");
+    void this.runPipeline(s, c.id, c.goal, c.out_dir, next.from, "", next.followUp);
+    return { remaining: 0, continued: true };
   }
 
   private makeSpecReview(id: string, goal: string, out: string, summary: string): SpecReview {
@@ -833,6 +932,11 @@ export class Orchestrator extends EventEmitter {
   discardDraft(): void {
     const d = this.draft;
     this.sessions.get("planner")?.cancel();
+    if (this.clarify) {
+      this.clarify = null;
+      this.saveClarify();
+      this.push({ event: "clarify", data: null });
+    }
     if (this.specReview) {
       fs.rmSync(this.specReview.spec_path, { force: true });
       this.specReview = null;
@@ -1368,14 +1472,17 @@ export class Orchestrator extends EventEmitter {
 
   answer(questionId: string, answer: string): string {
     const qid = questionId.toUpperCase();
+    if (qid === "DEFAULTS" || qid === "DEFAULT") { this.acceptDefaults(); return "clarify"; }
     if (qid.startsWith("P-")) return this.answerPermission(qid, answer);
     for (const s of this.sessions.values()) {
       if (s.status.question?.question_id.toUpperCase() === qid) { s.say(answer); return s.id; }
     }
-    const r = this.requireRun();
-    for (const run of r.scheduler.activeRuns()) {
+    // The analyst's clarify questions share the Q-n form; an agent's own open question with that id wins.
+    const live = this.current?.scheduler.activeRuns() ?? [];
+    for (const run of live) {
       if (run.answer(qid, answer)) return run.task.id;
     }
+    if (this.clarify?.questions.some((q) => q.id === qid)) { this.answerQuestion(qid, answer); return "clarify"; }
     throw new Error(`no open question ${questionId}`);
   }
 
@@ -1637,7 +1744,42 @@ export class Orchestrator extends EventEmitter {
     const m = await g.merge(this.root, r.rc.integration.branch, `Merge Hexagon run ${r.runId}`);
     if (!m.ok) throw new Error(m.conflict ? "merge conflict — resolve manually: git merge " + r.rc.integration.branch : m.output);
     this.closeRun("merged");
-    return `Merged ${r.rc.integration.branch} into ${r.base}. The run is closed; its worktrees can go with /clean.`;
+    const delivery = this.cfg.delivery;
+    if (delivery.push === true || delivery.pr === true) {
+      atomicWriteJson(this.deliveryFile(), { run: r.runId, base: r.base, branch: r.rc.integration.branch, at: nowIso() });
+      this.notice("attention", `Merged. Your delivery settings say to ${delivery.pr ? "open a pull request" : "push"}: review it with /deliver, then confirm with /deliver yes.`);
+    }
+    return `Merged ${r.rc.integration.branch} into ${r.base}. The run is closed; its worktrees can go with /clean.${delivery.push === true || delivery.pr === true ? " Delivery is waiting for your confirmation: hexagon deliver" : ""}`;
+  }
+
+  private deliveryFile() {
+    return path.join(this.paths.hex, "delivery-pending.json");
+  }
+
+  /**
+   * What happens after /merge according to [delivery]: nothing runs without `confirm`. A push publishes work, so it is
+   * shown first and done only on an explicit yes.
+   */
+  async deliver(confirm: boolean): Promise<{ steps: string[]; done: boolean; output: string }> {
+    const pending = readJson<{ run: string; base: string; branch: string }>(this.deliveryFile());
+    if (!pending) throw new Error("nothing to deliver: no merge is waiting for delivery (see [delivery] in config.toml)");
+    const d = this.cfg.delivery;
+    const remote = d.remote || "origin";
+    const steps = d.pr === true
+      ? [`git push ${remote} ${pending.branch}`, `gh pr create --base ${pending.base} --head ${pending.branch} --fill`]
+      : d.push === true ? [`git push ${remote} ${pending.base}`] : [];
+    if (!steps.length) throw new Error("[delivery] does not ask for a push or a pull request");
+    if (!confirm) return { steps, done: false, output: "" };
+    if (!(await g.git(this.root, ["remote", "get-url", remote])).ok) throw new Error(`no git remote "${remote}"; add it (git remote add ${remote} <url>) or set [delivery].remote`);
+    let output = "";
+    for (const cmd of steps) {
+      const x = await runShell(cmd, this.root, this.cfg.sandbox.command_timeout_s);
+      output += `$ ${cmd}\n${x.output}\n`;
+      if (x.code !== 0) throw new Error(`delivery stopped: \`${cmd}\` exited ${x.code}\n${x.output.trim().split("\n").slice(-6).join("\n")}`);
+    }
+    fs.rmSync(this.deliveryFile(), { force: true });
+    this.notice("info", `Delivered: ${steps.join(" · ")}`);
+    return { steps, done: true, output };
   }
 
   async cleanup(): Promise<string[]> {

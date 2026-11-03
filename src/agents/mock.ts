@@ -253,7 +253,15 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
     ctx.api.report({ phase: "planning", activity: `Stage: ${stage}` });
     if (stage === "analyze") {
       await step("Reading the codebase");
-      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", /@spike/.test(goal) ? "(mock) the root cause is unknown" : "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", "none", "", ...(/@spike/.test(goal) ? ["## Spike", "- S-1: find out why it fails", ""] : []), "## Mode", /@single-task/.test(goal) ? "single-task: mock goal asked for it" : "dag: mock goal splits into parallel parts", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
+      fs.writeFileSync(path.join(out, "analysis.md"), [`# Analysis: ${goal}`, "", "## Current state", /@spike/.test(goal) ? "(mock) the root cause is unknown" : "(mock) empty repository", "", "## Constraints", "none", "", "## Risks", "none", "", "## Open questions", /@ask/.test(goal) ? "- see questions.json" : "none", "", "## Confidence", /@ask/.test(goal) ? "medium: scope and delivery need the user" : "high: the mock knows everything", "", ...(/@approaches/.test(goal) ? ["## Approaches", "- A-1: extend the existing module", "- A-2: add a new module", ""] : []), ...(/@ask/.test(goal) ? [] : ["## Delivery", "local branch only, no push (mock)", ""]), ...(/@spike/.test(goal) ? ["## Spike", "- S-1: find out why it fails", ""] : []), "## Mode", /@single-task/.test(goal) ? "single-task: mock goal asked for it" : "dag: mock goal splits into parallel parts", "", "## Impacted areas", ...reqs.map((r) => `- ${r.file}`), ""].join("\n"));
+      if (/@ask/.test(goal)) {
+        fs.writeFileSync(path.join(out, "questions.json"), JSON.stringify([
+          { id: "Q-1", question: "Which scope?", why_it_matters: "two scopes lead to different designs", options: ["narrow", "wide"], default: "narrow", blocking: true },
+          { id: "Q-2", question: "Push the result to a remote after the merge?", why_it_matters: "decides whether Hexagon offers to push", options: ["yes", "no"], default: "no", blocking: true, topic: "delivery.push" },
+          { id: "Q-3", question: "Which remote?", why_it_matters: "where the push goes", options: [], default: "origin", blocking: false, topic: "delivery.remote" },
+          ...(/@approaches/.test(goal) ? [{ id: "Q-4", question: "Which approach?", why_it_matters: "the spec follows it", options: ["extend the existing module", "add a new module"], default: "extend the existing module", blocking: true, topic: "design" }] : []),
+        ], null, 2));
+      }
     } else if (stage === "specify") {
       await step("Writing the spec");
       fs.writeFileSync(path.join(out, "spec.md"), [

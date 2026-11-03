@@ -22,7 +22,7 @@ export const METHOD_SCOPES: Record<string, Scope> = {
   "agent.status": "user", "agent.events": "user", "agent.pause": "user", "agent.resume": "user", "agent.cancel": "user", "agent.retry": "user",
   "agent.takeover": "user", "agent.takeover_end": "user", "agent.diff": "user",
   "stats.get": "user", "cost.get": "user", "message.send": "user", "question.answer": "user", "inbox.list": "user", "notes.get": "user", "messages.list": "user",
-  "merge.base": "user", "worktrees.clean": "user", allow: "user",
+  "merge.base": "user", "delivery.run": "user", "worktrees.clean": "user", allow: "user",
   "models.list": "user", trace: "user", "agents.list": "user", "agents.models": "user", "agents.role": "user", "agents.add": "user", "models.set": "user",
   "toolchain.list": "user", "toolchain.install": "user", shutdown: "user",
 };
