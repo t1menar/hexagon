@@ -17,6 +17,15 @@ max_identical_failures = 3  # same failure this many times in a row = no progres
 budget_tokens = 0       # pause the run after this many tokens (input + cached + output; 0 = no limit)
 # base_branch = "main"  # default: the branch checked out when the run starts
 
+[sdd]
+ask = "normal"          # minimal: ask only when confidence is low or designs differ · normal: also the delivery target · thorough: anything below high confidence
+
+# Where the result goes after /merge. Filled from your first answer to the analyst's delivery question, never asked twice.
+# [delivery]
+# push = false         # offer `hexagon deliver` (push, behind a confirmation) after /merge
+# remote = "origin"
+# pr = false           # open a pull request from the integration branch instead (needs `gh`)
+
 # Which agent and effort each role uses. Agents are defined below. Hexagon ships NO model names: each CLI
 # keeps using its own configured default. To override for a role add `model = "<identifier>"` (an opaque string
 # handed to that CLI as-is; `hexagon agents models <agent>` lists what the CLI reports, when it can).

@@ -4,16 +4,17 @@ import path from "node:path";
 import type { Task } from "../contracts/types.js";
 import { atomicWriteJson, nowIso, readJson } from "../util/fsx.js";
 import { lintSpec, parseSpec, type Spec } from "./spec.js";
+import { checkClarifyAnalysis, type ClarifyContext } from "./clarify.js";
 
 /**
  * Spec-driven development as gated stages. Each stage is an agent turn that produces a file; the next stage starts
  * only when that file validates. The spec additionally needs the user's approval before a plan is derived from it,
  * and no task that cites requirements runs unless the approved spec still matches the file on disk.
  */
-export type Stage = "analyze" | "spike" | "specify" | "plan" | "replan";
+export type Stage = "analyze" | "clarify" | "spike" | "specify" | "plan" | "replan";
 export const STAGES: readonly Stage[] = ["analyze", "specify", "plan"];
 
-export const ARTIFACT: Record<Stage, string> = { analyze: "analysis.md", specify: "spec.md", plan: "plan.json", replan: "replan.json", spike: "spike.md" };
+export const ARTIFACT: Record<Stage, string> = { analyze: "analysis.md", clarify: "questions.json", specify: "spec.md", plan: "plan.json", replan: "replan.json", spike: "spike.md" };
 
 const ANALYSIS_SECTIONS = ["current state", "constraints", "risks", "open questions", "impacted areas"];
 const DESIGN_SECTIONS = ["interfaces", "data flow", "trade-offs"];
@@ -110,7 +111,7 @@ export const checkAnalysis = (text: string): string[] => missingSections(text, A
 export const checkDesign = (text: string): string[] => missingSections(text, DESIGN_SECTIONS, "design.md");
 
 /** Validate the artifact of a stage that is not the plan (the plan is checked by plan-check with its coverage rules). */
-export function checkStage(stage: "analyze" | "spike" | "specify" | "replan", dir: string, projectFiles?: string[], opts: { requireSpike?: boolean } = {}): { errors: string[]; warnings: string[] } {
+export function checkStage(stage: "analyze" | "spike" | "specify" | "replan", dir: string, projectFiles?: string[], opts: { requireSpike?: boolean; clarify?: ClarifyContext } = {}): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
   const file = path.join(dir, ARTIFACT[stage]);
@@ -123,6 +124,7 @@ export function checkStage(stage: "analyze" | "spike" | "specify" | "replan", di
     if (why.length && opts.requireSpike !== false && !parseSpikes(text).length) {
       errors.push(`analysis.md shows uncertainty (${why.join("; ")}) but has no "Spike" section. List one read-only investigation per unknown as "- S-1: <question to answer>"; the answers become inputs to the spec. (Turn this off with [run].require_spike = false.)`);
     }
+    if (opts.clarify) errors.push(...checkClarifyAnalysis(text, opts.clarify, dir));
     return { errors, warnings };
   }
   if (stage === "spike") return { errors: checkSpike(text, dir), warnings };

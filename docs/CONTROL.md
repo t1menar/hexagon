@@ -13,6 +13,8 @@ The chat agent (session id `control`, role `control`) operates Hexagon; it does 
 
 Unknown parameters, wrong types and missing parameters are errors, not ignored.
 
+The analyst's pending questions are in the table too: `clarify.show` (read) and `clarify.answer` (`question_id` + `answer`, or `defaults`; proposed, applied after you confirm: the decision is yours).
+
 ## Who may do what
 
 | Caller | read | mutate | destructive |

@@ -49,6 +49,7 @@ ${c.bold("Watch & steer")}
   hexagon prompts lint [--json]    check the shipped role prompts and skills (frontmatter, vendor names, size, contradictions)
   hexagon commands                 the typed command API (graph, agents, runs) the assistant uses  ·  hexagon do <command> [--param v]
   hexagon proposals | apply [P-n] | reject [P-n]   changes the assistant proposed, waiting for you
+  hexagon deliver [--yes]          after /merge: show (then with --yes run) the push / pull request your [delivery] settings ask for
   hexagon approve-spec [file]      approve the spec under review (or a spec file): nothing is planned or built before that
   hexagon trace                    requirement → task → agent → verification → review → completion
   hexagon allow <cmd…> | all       let agents run these commands (e.g. allow brew curl) or everything
@@ -312,8 +313,10 @@ async function main(argv: string[]): Promise<void> {
         break;
       }
       case "answer": {
-        const [qid, ...ans] = rest;
-        if (!qid || !ans.length) throw new Error("usage: hexagon answer <Q-n> <text>");
+        const [qid0, ...ans0] = rest;
+        const qid = qid0 === "--defaults" ? "defaults" : qid0;
+        const ans = qid === "defaults" ? ["defaults"] : ans0;
+        if (!qid || !ans.length) throw new Error("usage: hexagon answer <Q-n> <text>  ·  hexagon answer --defaults (accept the analyst's defaults)");
         const res = await client.call<{ task_id: string }>("question.answer", { question_id: qid, answer: ans.join(" ") });
         console.log(`answered ${qid} (${res.task_id})`);
         break;
@@ -336,6 +339,12 @@ async function main(argv: string[]): Promise<void> {
         if (!id) { console.error("no proposal is waiting"); process.exitCode = 1; break; }
         await client.call(cmd === "apply" ? "command.confirm" : "command.reject", { id });
         console.log(`${id} ${cmd === "apply" ? "applied" : "dropped"}`);
+        break;
+      }
+      case "deliver": {
+        const r = await client.call<{ steps: string[]; done: boolean; output: string }>("delivery.run", { confirm: bool(rest, "--yes") });
+        if (r.done) console.log(r.output.trim() || "delivered");
+        else { console.log(`Would run:\n${r.steps.map((x) => `  ${x}`).join("\n")}\nConfirm with: hexagon deliver --yes`); }
         break;
       }
       case "approve-spec": {

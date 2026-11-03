@@ -6,6 +6,7 @@ import { loadPlugins, pluginErrors } from "../agents/plugins.js";
 import { adapterNames, defaultAgents, migrateAgentEntry, primaryAgentId } from "../agents/registry.js";
 import { BUILTIN_ROLES, ROLE_ALIASES } from "./roles.js";
 import { DEFAULT_RECOVERY, type RecoveryConfig } from "./recovery.js";
+import { ASK_LEVELS, type AskLevel } from "./clarify.js";
 
 export interface AgentConfig {
   id: string;
@@ -77,6 +78,10 @@ export interface HexagonConfig {
   /** Your own prices per million tokens, by agent id. Hexagon ships none: it uses the cost a CLI reports, and only estimates from this table when a CLI reports none. */
   prices: Record<string, PriceRow>;
   control: ControlConfig;
+  /** How much the analyst asks before specifying: minimal (only when confidence is low or designs differ) · normal · thorough (anything below high confidence). */
+  sdd: { ask: AskLevel };
+  /** Where the result goes after /merge. Filled from the user's first answer; `push`/`pr` unset = never asked. */
+  delivery: { remote: string; push: boolean | null; pr: boolean | null };
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
   sandbox: { allow_commands: string[]; command_timeout_s: number };
   ui: { open_with: "auto" | "tmux" | "iterm" | "terminal" | "print"; /** auto | full | reduced | off */ animation: string; startup_animation: boolean; inspector: boolean; /** "minimal" (default): shared solid rules, no boxes, quiet input; "classic": the earlier framed look */ style: "minimal" | "classic"; /** faint ambient hexagons behind the network (full motion only) */ ambient: boolean; /** wheel scrolling and clicking agents; Shift-drag still selects text in most terminals */ mouse: boolean };
@@ -93,6 +98,8 @@ export const DEFAULT_CONFIG: HexagonConfig = {
   bench: { max_cost_usd: 5 },
   prices: {},
   control: { auto_apply: false },
+  sdd: { ask: "normal" },
+  delivery: { remote: "", push: null, pr: null },
   messaging: { max_outbound_per_run: 10, max_blocking_questions: 2 },
   sandbox: {
     allow_commands: [
@@ -188,6 +195,7 @@ export function loadConfig(file: string): HexagonConfig {
   const rawRun = (raw.run ?? {}) as Record<string, unknown>;
   if ("fix_loops" in rawRun && !("max_fix_cycles" in rawRun)) cfg.run.max_fix_cycles = cfg.run.fix_loops;
   if (!["task", "merged", "full"].includes(cfg.run.integration_verify)) throw new Error(`[run].integration_verify must be "task", "merged" or "full" (got "${cfg.run.integration_verify}")`);
+  if (!ASK_LEVELS.includes(cfg.sdd.ask)) throw new Error(`[sdd].ask must be ${ASK_LEVELS.map((x) => `"${x}"`).join(", ")} (got "${cfg.sdd.ask}")`);
   cfg.run.task_budget_tokens = Math.max(0, Math.floor(cfg.run.task_budget_tokens));
   delete (cfg.run as Record<string, unknown>).budget_usd; // v0.1 setting; budgets are in tokens now
   if (cfg.run.budget_tokens !== null && cfg.run.budget_tokens <= 0) cfg.run.budget_tokens = null;
@@ -286,5 +294,22 @@ export function setRoleModel(file: string, role: Role, model: string | null): vo
   let body = text.slice(bodyStart, end).replace(/^model\s*=.*\n?/m, "");
   if (model) body = body.replace(/^(agent\s*=.*\n)/m, `$1model = "${model}"\n`) || body;
   if (model && !/^model\s*=/m.test(body)) body = `model = "${model}"\n${body}`;
+  fs.writeFileSync(file, text.slice(0, bodyStart) + body + text.slice(end));
+}
+
+/** Set keys of one [section] in config.toml, keeping the rest of the file. Booleans and strings only. */
+export function setSection(file: string, section: string, values: Record<string, string | boolean>): void {
+  let text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  const head = new RegExp(`^\\[${section.replace(/\./g, "\\.")}\\]\\s*$`, "m");
+  if (!head.test(text)) text += `${text.endsWith("\n") || !text ? "" : "\n"}\n[${section}]\n`;
+  const start = text.search(head);
+  const bodyStart = text.indexOf("\n", start) + 1;
+  const next = text.slice(bodyStart).search(/^\[/m);
+  const end = next < 0 ? text.length : bodyStart + next;
+  let body = text.slice(bodyStart, end);
+  for (const [k, v] of Object.entries(values)) {
+    const line = `${k} = ${JSON.stringify(v)}`;
+    body = new RegExp(`^${k}\\s*=.*$`, "m").test(body) ? body.replace(new RegExp(`^${k}\\s*=.*$`, "m"), line) : `${body}${body && !body.endsWith("\n") ? "\n" : ""}${line}\n`;
+  }
   fs.writeFileSync(file, text.slice(0, bodyStart) + body + text.slice(end));
 }

@@ -41,7 +41,7 @@ const COMMANDS: [string, string][] = [
   ["/spec", "open the spec in $EDITOR"],
   ["/plan", "edit the draft plan.json in $EDITOR"],
   ["/init [description]", "let an agent study the repo and write HEXAGON.md"],
-  ["/answer <Q-n> <text>", "answer an agent's question"],
+  ["/answer <Q-n> <text>", "answer an agent's or the analyst's question (a number picks an option; /answer defaults accepts all defaults)"],
   ["/tell <T-n|@role|@all> <text>", "message agents"],
   ["/lead <question>", "ask the Hexagon Assistant (same as typing on its tab)"],
   ["/pause [T-n]", "pause the selected agent (or the whole run)"],
@@ -54,6 +54,7 @@ const COMMANDS: [string, string][] = [
   ["/unlink <T-a> <T-b>", "remove that ordering (asks for your yes)"],
   ["/apply [P-n]", "apply a change the assistant proposed"],
   ["/reject [P-n]", "drop a proposed change"],
+  ["/deliver [yes]", "after /merge: show, then with yes run, the push / PR your [delivery] settings ask for"],
   ["/approve-spec [file]", "approve the spec under review (Enter on the analyst tab)"],
   ["/respec <change>", "change the approved spec: it is reviewed and approved again before planning"],
   ["/compact [agent|T-n]", "compact an agent's session at its next safe point"],
@@ -431,6 +432,24 @@ export class App {
           this.log("Enter approves it; type what to change instead.", S.cyan);
           this.flash("Spec ready — read it, then press Enter to approve (or type what to change)", "attention");
           this.select("planner");
+        }
+        this.invalidate();
+        break;
+      case "clarify":
+        this.snap.clarify = p.data;
+        if (p.data) {
+          this.log("The analyst needs your decisions before it writes the spec:", S.cyan);
+          for (const q of p.data.questions) {
+            const done = p.data.answers.find((a) => a.id === q.id);
+            this.log(`${q.id}${q.blocking ? " (blocking)" : ""}  ${q.question}${done ? `  → ${done.answer}` : ""}`, done ? S.dim : S.cyan);
+            if (!done) {
+              if (q.options.length) this.log(`    options: ${q.options.map((o, i) => `${i + 1}) ${o}${o === q.default ? " (default)" : ""}`).join("  ")}`, S.dim);
+              else this.log(`    default: ${q.default}`, S.dim);
+              this.log(`    why: ${q.why_it_matters}`, S.dim);
+            }
+          }
+          this.log("/answer Q-n <answer or option number> · /answer defaults accepts every default", S.cyan);
+          this.flash(`${p.data.questions.length - p.data.answers.length} question(s) before the spec — /answer Q-n …, or /answer defaults`, "attention");
         }
         this.invalidate();
         break;
@@ -1018,8 +1037,9 @@ export class App {
           return;
         }
         case "/answer": {
-          const [qid, ...rest] = args;
-          if (!qid || !rest.length) throw new Error("usage: /answer Q-n <text>");
+          const [qid, ...rest0] = args;
+          const rest = qid && /^defaults?$/i.test(qid) ? ["defaults"] : rest0;
+          if (!qid || !rest.length) throw new Error("usage: /answer Q-n <text> · /answer defaults");
           const r = await c.call<{ task_id: string }>("question.answer", { question_id: qid, answer: rest.join(" ") });
           this.log(`↳ answered ${qid} (${r.task_id}): ${rest.join(" ")}`, S.orange);
           return;
@@ -1068,6 +1088,12 @@ export class App {
           if (!id) throw new Error("no proposal is waiting");
           if (cmd!.toLowerCase() === "/apply") await c.call("command.confirm", { id }); else await c.call("command.reject", { id });
           this.flash(cmd!.toLowerCase() === "/apply" ? `${id} applied` : `${id} dropped`);
+          return;
+        }
+        case "/deliver": {
+          const r = await c.call<{ steps: string[]; done: boolean }>("delivery.run", { confirm: args[0]?.toLowerCase() === "yes" });
+          if (r.done) this.flash(`delivered: ${r.steps.join(" · ")}`);
+          else { this.log(`Delivery would run: ${r.steps.join(" · ")}`, S.cyan); this.log("/deliver yes to confirm", S.cyan); }
           return;
         }
         case "/approve-spec": {

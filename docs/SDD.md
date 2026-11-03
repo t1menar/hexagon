@@ -4,7 +4,8 @@ A goal goes through gated stages. Each stage writes one artifact and Hexagon val
 
 | Stage | Agent | Artifact | Checked for |
 |---|---|---|---|
-| analyze | analyst | `analysis.md` | sections: current state, constraints, risks, open questions, mode, impacted areas |
+| analyze | analyst | `analysis.md` (+ `questions.json`) | sections: current state, constraints, risks, open questions, confidence, mode, impacted areas; the clarify rules below |
+| **clarify** (only when the analyst has questions) | you | `answers.md` | every question answered, or the defaults accepted; nothing is specified before that |
 | spike (only when analyze is uncertain) | analyst, read-only | `spike.md` | every `S-n` answered with `file:line` evidence, then a decision |
 | specify | analyst | `spec.md` (+ optional `design.md`) | spec lint (requirement ids, acceptance criteria); design: interfaces, data flow, trade-offs |
 | **approve** | you | `.hexagon/approvals.json` | the spec exactly as on disk, hashed per requirement |
@@ -12,12 +13,21 @@ A goal goes through gated stages. Each stage writes one artifact and Hexagon val
 | replan (only when a running plan breaks) | analyst | `replan.json` (+ patched `spec.md`) | graph commands only, never a started task |
 
 ```
-goal → analyze → [spike] → specify → approve (card) → plan (card) → run → merge
+goal → analyze → [clarify] → [spike] → specify → approve (card) → plan (card) → run → merge
                                           ↑                          │
                                           └── replan ← blocked(plan) / needs_spec_change / spec edited after approval
 ```
 
 It is not a one-way waterfall: findings during the run flow back into the spec and the tasks that have not started.
+
+## Asking you first (clarify)
+
+The analyst states `Confidence: low|medium|high` and, if more than one design is viable, `Approaches` (`- A-1: …`). `Open questions: none` passes only with confidence high **and** a known delivery target; low confidence, listed open questions, several approaches, or an unknown delivery target require `questions.json`: 3-7 entries `{id, question, why_it_matters, options[], default, blocking, topic?}`. Hexagon validates it (a `delivery.push` question when delivery is unknown, a `design` question when there are approaches, the default among the options), shows the batch in the TUI and holds the pipeline.
+
+* `/answer Q-n <text>` (or `hexagon answer Q-n <text>`): an option number picks that option; `/answer defaults` (`hexagon answer --defaults`) accepts every default. Answers are written to `answers.md` (defaults are marked) and passed to the spike/specify stage as binding decisions. Free-text feedback is refused while questions are open.
+* `[sdd] ask = minimal|normal|thorough` (default `normal`): minimal asks only when confidence is low or designs differ and never about delivery; thorough also asks below high confidence.
+* The delivery block (`delivery.push`, `.remote`, `.pr`, `.branch`, `.merge`) is persisted to `[delivery] remote, push, pr` in `config.toml` after the first answer; a project that answered it is never asked again (answered delivery questions are dropped from later batches).
+* After `/merge`, if `[delivery]` asks for a push or a pull request, Hexagon only tells you: `hexagon deliver` shows the commands, `hexagon deliver --yes` (`/deliver yes`) runs them (`git push <remote> <base>`, or with `pr = true` push the integration branch and `gh pr create`).
 
 ## Exploring first (spike)
 
