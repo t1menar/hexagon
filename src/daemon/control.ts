@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Plan } from "../contracts/types.js";
-import { isUntraced } from "../core/pipeline.js";
-import { applyGraph, commandDef, edgesOf, fromTask, graphDiff, parseArgs, type CommandDef } from "../core/commands.js";
+import { isUntraced, reqHash } from "../core/pipeline.js";
+import { parseSpec } from "../core/spec.js";
+import { applyGraph, commandDef, edgesOf, fromTask, graphDiff, isGraphEdit, parseArgs, type CommandDef, type GraphEdit } from "../core/commands.js";
 import { canonicalRole } from "../core/roles.js";
 import { nowIso } from "../util/fsx.js";
 import type { ActiveRun, Orchestrator } from "./orchestrator.js";
@@ -18,6 +19,9 @@ export interface Proposal {
   by: "agent" | "user";
   created_at: string;
 }
+
+/** With [assistant].autonomy = "safe" the Assistant applies only these on its own. Everything else, and every destructive command, waits for the user. */
+export const SAFE_AUTO: ReadonlySet<string> = new Set(["task.pause", "task.resume", "session.compact", "bus.send"]);
 
 export type CommandResult =
   | { status: "done"; result: unknown }
@@ -47,7 +51,7 @@ export class ControlService {
     if (def.kind === "read" || (via === "user" && !needsYes)) return { status: "done", result: await this.run(def, args) };
     const diff = this.preview(def, args); // validates against current state before the user is asked
     const destructive = def.kind === "destructive";
-    if (!destructive && this.o.cfg.control.auto_apply) return { status: "done", result: await this.run(def, args) };
+    if (!destructive && (this.o.cfg.control.auto_apply || (via === "agent" && this.o.cfg.assistant.autonomy === "safe" && SAFE_AUTO.has(name)))) return { status: "done", result: await this.run(def, args) };
     const proposal: Proposal = { id: `P-${this.seq++}`, command: name, args, diff, destructive, by: via, created_at: nowIso() };
     this.proposals.set(proposal.id, proposal);
     this.onChange(this.list());
@@ -71,6 +75,12 @@ export class ControlService {
     const bundle = a.bundle as { graph: { command: string; args: Record<string, unknown> }[] };
     if (typeof a.spec_rel === "string" && typeof a.new_spec === "string") {
       const file = path.join(o.root, a.spec_rel);
+      // Tasks that started before this patch and cite a requirement it changes are told by the watchdog.
+      try {
+        const before = new Map(parseSpec(file).requirements.map((r) => [r.id, reqHash(r)]));
+        const changed = parseSpec(file, a.new_spec).requirements.filter((r) => before.get(r.id) !== reqHash(r)).map((r) => r.id);
+        if (changed.length) o.noteChange(changed, "a spec patch");
+      } catch { /* an unreadable old spec: nothing to compare */ }
       fs.writeFileSync(file, a.new_spec);
       o.approvals.approve(file, "user");
     }
@@ -128,7 +138,7 @@ export class ControlService {
   }
 
   private preview(def: CommandDef, a: Record<string, unknown>): string[] {
-    if (def.name.startsWith("graph.") && def.kind !== "read") {
+    if (isGraphEdit(def.name)) {
       const before = this.draftPlan();
       const live = this.liveRun();
       if (live) this.checkLive(live.scheduler, def.name, a);
@@ -147,6 +157,12 @@ export class ControlService {
         return [`start ${ids.join(", ")}`];
       }
       case "clarify.answer": return [a.defaults === true ? "accept every default answer to the analyst's questions" : `answer ${String(a.question_id)}: ${String(a.answer).slice(0, 80)}`];
+      case "task.retry": return [`new attempt of ${String(a.id)}${a.agent ? ` with ${String(a.agent)}` : ""}${a.fresh_session ? " in a new session" : ""}; a running attempt is stopped`];
+      case "task.continue": return [`tell ${String(a.id)} (resumes its session): ${String(a.text).slice(0, 80)}`];
+      case "task.pause": case "task.resume": case "task.cancel": return [`${def.name.slice(5)} ${String(a.id)}`];
+      case "run.replan": return [`ask the analyst to repair the plan around ${String(a.task)}: ${String(a.reason).slice(0, 80)}`];
+      case "session.compact": return [`compact ${a.agent ? String(a.agent) : "every session"} at the next safe point`];
+      case "session.reset": return [`reset the session of ${String(a.agent)}: its next turn is a new session`];
       case "run.pause": return ["pause all agents"];
       case "run.resume": return ["resume all agents"];
       case "run.cancel": return ["abort the run and stop its agents"];
@@ -157,10 +173,10 @@ export class ControlService {
 
   private async run(def: CommandDef, a: Record<string, unknown>): Promise<unknown> {
     const o = this.o;
-    if (def.name.startsWith("graph.") && def.kind !== "read") {
+    if (isGraphEdit(def.name)) {
       const live = this.liveRun();
       if (live) {
-        live.scheduler.editGraph(def.name as Parameters<typeof live.scheduler.editGraph>[0], a);
+        live.scheduler.editGraph(def.name as GraphEdit, a);
         o.approveUntraced(live.plan, "by this edit");
         return { tasks: live.plan.tasks.length, live: true };
       }
@@ -206,6 +222,17 @@ export class ControlService {
         const only = a.from ? fromTask(d.plan, String(a.from)) : undefined;
         return { run_id: await o.approve({ max_parallel: a.max_parallel as number | undefined, only }) };
       }
+      case "task.retry": o.taskRetry(String(a.id), { agent: a.agent as string | undefined, effort: a.effort as string | undefined, fresh_session: a.fresh_session === true }); return { ok: true };
+      case "task.continue": return o.send(String(a.id), String(a.text));
+      case "task.pause": return { ok: o.agentRun(String(a.id).toUpperCase()).pause() };
+      case "task.resume": return { ok: o.agentRun(String(a.id).toUpperCase()).resume() };
+      case "task.cancel": o.agentRun(String(a.id).toUpperCase()).cancel(); return { ok: true };
+      case "run.replan": o.requestReplan(String(a.task), String(a.reason)); return { ok: true };
+      case "session.compact": return { ok: true, agents: o.compactSessions(a.agent ? String(a.agent) : undefined) };
+      case "session.reset": return { ok: true, agents: o.resetSessions(String(a.agent)) };
+      case "bus.read": return o.busLog({ task: a.task as string | undefined, waiting: a.waiting === true, limit: a.limit as number | undefined });
+      case "bus.waiting": return o.busLog({ waiting: true }).waiting;
+      case "health.get": return { items: o.health(), autonomy: o.cfg.assistant.autonomy };
       case "run.pause": o.requireRun().scheduler.pauseAll(); return { ok: true };
       case "run.resume": o.requireRun().scheduler.resumeAll(); return { ok: true };
       case "run.cancel": o.requireRun().scheduler.abort(); return { ok: true };

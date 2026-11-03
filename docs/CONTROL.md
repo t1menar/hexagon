@@ -24,7 +24,35 @@ The analyst's pending questions are in the table too: `clarify.show` (read) and 
 
 A proposal (`P-n`) carries a diff (`+ task T-4 …`, `- edge T-1->T-2`). Confirm with `/apply [P-n]` or `hexagon apply`, drop with `/reject` or `hexagon reject`. Proposals are validated when made (unknown task, cycle) and again when applied. They live in the daemon's memory: a daemon restart drops them.
 
-Commands: `status.get`, `graph.show`, `graph.addNode`, `graph.removeNode`*, `graph.addEdge`, `graph.removeEdge`*, `agent.configure`, `agent.setPrompt`, `run.start [--from T-n]`, `run.pause`, `run.resume`, `run.cancel`*, `bus.send` (*destructive).
+Commands: `status.get`, `graph.show`, `graph.addNode`, `graph.removeNode`*, `graph.addEdge`, `graph.removeEdge`*, `agent.configure`, `agent.setPrompt`, `run.start [--from T-n]`, `run.pause`, `run.resume`, `run.cancel`*, `bus.send` (*destructive), and for supervising a run:
+
+| Command | Kind | What it does |
+|---|---|---|
+| `task.retry {id, agent?, effort?, fresh_session?}` | destructive | new attempt (a running one is stopped); `fresh_session` resets the agent's session, and the brief and last failure are re-sent |
+| `task.continue {id, text}` | mutate | text to a blocked/failed/cancelled task (it resumes its session) or a running one |
+| `task.pause` / `task.resume {id}` | mutate | one task's agent |
+| `task.cancel {id}` | destructive | stop one task |
+| `task.update {id, title?, description?, write?, read?, verify?, role?, agent?}` | mutate | only a task that has not started; the result must still pass the plan check |
+| `graph.insertNode {after, before?, …}` | mutate | a task between two others; `before` must not have started |
+| `graph.replaceTask {id, …}` | destructive | cancels the task (even a started one; not a merged one) and adds a new task with its dependencies; what waited for it waits for the new one; unset fields are copied |
+| `run.replan {task, reason}` | mutate | the analyst's replan flow (spec patch + graph edits, one proposal) |
+| `session.compact {agent?}` / `session.reset {agent}` | mutate | compact at the next safe point / start a new session next turn |
+| `bus.read {task?, waiting?, limit?}`, `bus.waiting`, `health.get` | read | the bus log (`hexagon bus log [--task T-n] [--waiting]`), who waits for whom, the watchdog's findings |
+
+## Supervision: the watchdog and the Assistant
+
+The daemon runs pure rules over the run every `[watchdog] interval_s` seconds (`src/core/watchdog.ts`, unit-tested). It never acts; it publishes `health` items in the run status (and as `attention` entries of kind `health`):
+
+| Rule | Fires when |
+|---|---|
+| `stalled` | an active task has produced no event for `stall_minutes` (10) |
+| `waiting_input` | a question has waited `waiting_minutes` (30) |
+| `token_burn` | `burn_tokens` (300k) used within `burn_window_minutes` (15) while the files changed did not grow |
+| `ping_pong` | the same two tasks exchanged more than `ping_pong` (4) questions/answers/returns |
+| `oscillation` | fixes reopened A, then B, then A |
+| `stale_context` | a task started before a `decision` envelope or spec patch that touches one of its requirements |
+
+New items (by stable id) are announced as notices and, at most every `digest_every_minutes` (5), sent to the Assistant as a `<hexagon_health>` digest. It diagnoses with the read commands and proposes fixes. `[assistant] autonomy = propose` (default): every change waits for `/apply`. `safe`: `task.pause`, `task.resume`, `session.compact` and `bus.send` (tell) apply at once; retry, cancel, graph edits, replans and session resets always wait.
 
 ## Editing the graph
 

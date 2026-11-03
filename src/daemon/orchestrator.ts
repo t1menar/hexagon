@@ -5,7 +5,7 @@ import { createAdapter } from "../agents/registry.js";
 import { enforcedFor, SECRET_DENY_GLOBS } from "../agents/contracts/policy.js";
 import { contextFile, identityHash, loadSkills, projectContext, repositoryOverview, systemPrompt } from "../agents/prompts.js";
 import type { AgentAdapter, Reply } from "../agents/types.js";
-import type { AgentStatus, Message, Plan, Role, RunStatus, StampedEvent, Task } from "../contracts/types.js";
+import type { AgentStatus, Effort, Message, Plan, Role, RunStatus, StampedEvent, Task } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
 import { costReport } from "../core/cost.js";
 import { appendJsonl, atomicWriteJson, nowIso, readJson, readJsonl, readJsonlTail } from "../util/fsx.js";
@@ -32,6 +32,7 @@ import { Mutex } from "../util/mutex.js";
 import { reviewerWarnings } from "../core/security.js";
 import { AgentTokens } from "./auth.js";
 import { ControlService, type Proposal } from "./control.js";
+import { detect, digest as healthDigest, type HealthItem, type WatchInput, type WatchTask } from "../core/watchdog.js";
 import { deliveryFromAnswers, dropAnswered, loadQuestions, needsQuestions, parseApproaches, renderAnswers, resolveAnswer, unanswered, type Answer, type Question } from "../core/clarify.js";
 import { Approvals, ARTIFACT, checkStage, isUntraced, MODES, parseMode, parseSpikes, recommendMode, specHash, type Mode, type Stage } from "../core/pipeline.js";
 import { canonicalRole } from "../core/roles.js";
@@ -239,6 +240,140 @@ export class Orchestrator extends EventEmitter {
   }
 
   /** Hide the finished run from the dashboard (its records stay in .hexagon/runs/). */
+  // ───────────── watchdog ─────────────
+
+  private watch = new Map<string, { started: number; last: number; waiting?: number; tokens: number; samples: WatchTask["samples"] }>();
+  private watchChanges: WatchInput["changes"] = [];
+  private healthSeen = new Set<string>();
+  private lastDigest = 0;
+  private watchTimer: NodeJS.Timeout | null = null;
+
+  /** Fed by every agent event: when a task started, when it last did anything, and how its tokens and changes grew. */
+  private observe(e: StampedEvent): void {
+    const now = Date.parse(e.ts) || Date.now();
+    const w = this.watch.get(e.agent_run_id) ?? { started: now, last: now, tokens: 0, samples: [] };
+    w.last = now;
+    if (e.event.type === "state") w.waiting = e.event.state === "waiting_input" ? now : undefined;
+    if (e.event.type === "usage") {
+      w.tokens += (e.event.input ?? 0) + (e.event.cache_read ?? 0) + (e.event.output ?? 0);
+      const last = w.samples[w.samples.length - 1];
+      if (e.event.step && (!last || now - last.at >= 30_000)) {
+        const files = this.current?.store.get(e.agent_run_id)?.files_touched?.length ?? 0;
+        w.samples.push({ at: now, tokens: w.tokens, files });
+        if (w.samples.length > 120) w.samples.shift();
+      }
+    }
+    this.watch.set(e.agent_run_id, w);
+  }
+
+  /** A decision or a spec patch that may change what a running task should do. */
+  noteChange(refs: string[], what: string): void {
+    this.watchChanges.push({ at: Date.now(), refs, what });
+  }
+
+  private watchInput(r: ActiveRun): WatchInput {
+    const tasks: WatchTask[] = [];
+    for (const s of r.store.all()) {
+      if (TERMINAL_STATES.has(s.state) || s.state === "queued") continue;
+      const w = this.watch.get(s.agent_run_id);
+      const task = r.plan.tasks.find((t) => t.id === s.task_id);
+      tasks.push({
+        id: s.task_id, state: s.state, last_progress_at: w?.last ?? Date.parse(s.updated_at), waiting_since: w?.waiting, started_at: w?.started ?? Date.parse(s.state_since),
+        requirements: task?.requirements ?? [], samples: w?.samples ?? [],
+      });
+    }
+    const envs = r.rc.bus.all();
+    const bus = envs.map((e) => ({ kind: e.kind, from: e.from, to: e.to.agent ?? "", subject: e.subject, ts: Date.parse(e.ts) || 0, reply_to: e.reply_to }));
+    const reopened = envs.filter((e) => e.kind === "request" && e.fields?.returned === "1" && e.to.agent).map((e) => ({ task: e.to.agent!, from: e.from, at: Date.parse(e.ts) || 0 }));
+    const decisions = envs.filter((e) => e.kind === "decision").map((e) => ({ at: Date.parse(e.ts) || 0, refs: e.refs ?? [], what: `decision "${e.subject.slice(0, 40)}"` }));
+    return { now: Date.now(), tasks, bus, reopened, changes: [...this.watchChanges, ...decisions] };
+  }
+
+  /** What the watchdog sees right now. */
+  health(): HealthItem[] {
+    const r = this.current;
+    if (!r || r.store.runState === "done" || r.store.runState === "aborted") return [];
+    const w = this.cfg.watchdog;
+    return detect(this.watchInput(r), { stall_minutes: w.stall_minutes, ping_pong: w.ping_pong, burn_tokens: w.burn_tokens, burn_window_minutes: w.burn_window_minutes, waiting_minutes: w.waiting_minutes });
+  }
+
+  /** One watchdog pass: publish the items, and tell the Assistant about new ones (debounced). */
+  watchTick(): HealthItem[] {
+    const r = this.current;
+    if (!r || r.store.runState === "done" || r.store.runState === "aborted") { this.stopWatchdog(); if (r) r.store.setHealth([]); return []; }
+    const items = this.health();
+    r.store.setHealth(items);
+    const ids = new Set(items.map((i) => i.id));
+    for (const id of [...this.healthSeen]) if (!ids.has(id)) this.healthSeen.delete(id); // solved: a recurrence is news again
+    const fresh = items.filter((i) => !this.healthSeen.has(i.id));
+    if (fresh.length && Date.now() - this.lastDigest >= this.cfg.watchdog.digest_every_minutes * 60_000) {
+      for (const i of fresh) this.healthSeen.add(i.id);
+      this.lastDigest = Date.now();
+      for (const i of fresh) this.notice("attention", `Health: ${i.message}`);
+      this.chat(healthDigest(fresh));
+    }
+    return items;
+  }
+
+  private startWatchdog(): void {
+    this.stopWatchdog();
+    this.watch.clear();
+    this.watchChanges = [];
+    this.healthSeen.clear();
+    this.lastDigest = 0;
+    if (!this.cfg.watchdog.enabled) return;
+    this.watchTimer = setInterval(() => { try { this.watchTick(); } catch { /* the watchdog must never stop a run */ } }, Math.max(1, this.cfg.watchdog.interval_s) * 1000);
+    this.watchTimer.unref();
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchTimer) clearInterval(this.watchTimer);
+    this.watchTimer = null;
+  }
+
+  /** `task.retry`: a new attempt; with fresh_session the agent's session is thrown away first (the brief and last failure are re-sent). */
+  taskRetry(id: string, opts: { agent?: string; effort?: string; fresh_session?: boolean }): void {
+    const r = this.requireRun();
+    const t = id.toUpperCase();
+    if (opts.fresh_session) {
+      const ident = r.store.byTask(t)?.session?.agent;
+      if (ident) this.agentSessions.reset(ident, "reset by the user or the Assistant before a retry");
+    }
+    r.scheduler.retry(t, { agent: opts.agent, effort: opts.effort as Effort | undefined });
+  }
+
+  /** `session.reset`: the agent's next turn starts a new session. */
+  resetSessions(target: string): string[] {
+    let ids: string[];
+    if (this.agentSessions.get(target)) ids = [target];
+    else {
+      const id = this.current?.store.byTask(target.toUpperCase())?.session?.agent;
+      ids = id ? [id] : [];
+    }
+    if (!ids.length) throw new Error(`no session for "${target}" (agents: ${this.agentSessions.all().map((r) => r.agentId).join(", ") || "none yet"})`);
+    for (const id of ids) this.agentSessions.reset(id, "reset by the user or the Assistant");
+    return ids;
+  }
+
+  /** `run.replan`: ask the analyst for a plan repair around a task. */
+  requestReplan(taskId: string, reason: string): void {
+    const r = this.requireRun();
+    const t = r.plan.tasks.find((x) => x.id === taskId.toUpperCase());
+    if (!t) throw new Error(`no task ${taskId} in this run`);
+    this.replan(t, reason, []);
+  }
+
+  /** `bus.read` / `bus.waiting` for the user and the Assistant. */
+  busLog(opts: { task?: string; waiting?: boolean; limit?: number }) {
+    const r = this.requireRun();
+    const task = opts.task?.toUpperCase();
+    const waiting = r.rc.bus.summary().waiting;
+    if (opts.waiting) return { waiting, envelopes: [] };
+    let all = r.rc.bus.all();
+    if (task) all = all.filter((e) => e.from === task || e.to.agent === task);
+    return { waiting, envelopes: all.slice(-(opts.limit ?? 40)).map((e) => ({ id: e.id, ts: e.ts, kind: e.kind, from: e.from, to: e.to.agent ?? e.to.role ?? e.to.topic ?? "all", subject: e.subject, state: e.state, blocking: Boolean(e.blocking), body: e.body.slice(0, 300) })) };
+  }
+
   closeRun(reason: string): boolean {
     const r = this.current;
     if (r && r.store.runState !== "done" && r.store.runState !== "aborted") throw new Error(`run ${r.runId} is still active; /abort it first`);
@@ -1057,6 +1192,7 @@ export class Orchestrator extends EventEmitter {
         bus.activity({ from: e.task_id, to: "model", kind: "model_call", size: e.event.input + e.event.cache_read });
         bus.activity({ from: "model", to: e.task_id, kind: "model_response", size: e.event.output });
       }
+      this.observe(e);
       if (e.event.type === "permission_denied") this.requestPermission(e.task_id, "task", e.event.command, e.event.tool);
       if (e.event.type === "tool_missing") this.toolMissing(e.event.command);
     });
@@ -1084,6 +1220,7 @@ export class Orchestrator extends EventEmitter {
 
     this.current = { runId, run, plan, store, router, scheduler, rc, base };
     scheduler.start();
+    this.startWatchdog();
     this.push({ event: "run", data: store.runStatus() });
     this.notice("info", `Run ${runId} started: ${scheduler.plan.tasks.length} task(s), up to ${scheduler.maxParallel} in parallel.`);
     return runId;
@@ -1801,6 +1938,7 @@ export class Orchestrator extends EventEmitter {
   }
 
   shutdown(): void {
+    this.stopWatchdog();
     this.current?.scheduler.shutdown();
     this.current?.rc.bus.close();
     for (const s of this.sessions.values()) if (s.status.state === "running" || s.status.state === "waiting_input") s.cancel();

@@ -33,6 +33,7 @@ export class StatusStore extends EventEmitter {
   private startedAt = new Map<string, number>();
   private timer: NodeJS.Timeout | undefined;
   private extraAttention: RunStatus["attention"] = [];
+  private healthItems: NonNullable<RunStatus["health"]> = [];
   runState: RunStatus["state"] = "running";
 
   constructor(
@@ -261,6 +262,17 @@ export class StatusStore extends EventEmitter {
     return s;
   }
 
+  /** What the watchdog found; shown in the run status and as attention items. */
+  setHealth(items: NonNullable<RunStatus["health"]>): void {
+    if (JSON.stringify(items.map((i) => i.id)) === JSON.stringify(this.healthItems.map((i) => i.id))) return;
+    this.healthItems = items;
+    this.writeRun();
+  }
+
+  get health(): NonNullable<RunStatus["health"]> {
+    return this.healthItems;
+  }
+
   setAttention(items: RunStatus["attention"]): void {
     this.extraAttention = items;
     this.writeRun();
@@ -327,7 +339,8 @@ export class StatusStore extends EventEmitter {
         task_id: s.task_id, agent_run_id: s.agent_run_id, role: s.role, agent: s.agent.id, state: s.state,
         activity: s.activity ?? null, needs_input: Boolean(s.needs_input), progress: s.progress ?? null, cost_usd: s.usage.cost_usd, tokens: s.usage.input_tokens + s.usage.cache_read_tokens + s.usage.output_tokens,
       })),
-      attention: [...attention, ...this.extraAttention],
+      ...(this.healthItems.length ? { health: this.healthItems } : {}),
+      attention: [...attention, ...this.extraAttention, ...this.healthItems.map((h) => ({ kind: "health" as const, task_id: h.task ?? h.tasks?.[0] ?? null, text: h.message, ref: h.id }))],
     };
   }
 

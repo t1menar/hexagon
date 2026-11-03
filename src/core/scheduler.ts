@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import type { AgentState, Effort, Plan, RunStatus, Task } from "../contracts/types.js";
 import { TERMINAL_STATES } from "../contracts/types.js";
 import { atomicWriteJson } from "../util/fsx.js";
-import { applyGraph } from "./commands.js";
+import { applyGraph, type GraphEdit } from "./commands.js";
 import { overlaps } from "./plan.js";
 import { roleConfig } from "./config.js";
 import { AgentRun, type RunContext } from "./supervisor.js";
@@ -359,7 +359,7 @@ export class Scheduler extends EventEmitter {
    * Apply a graph command to the running graph. Tasks and edges can be added any time; a task can be removed, and
    * its incoming edges changed, only while it has not started. The result is validated first (unknown ids, cycles).
    */
-  editGraph(name: "graph.addNode" | "graph.removeNode" | "graph.addEdge" | "graph.removeEdge", a: Record<string, unknown>): void {
+  editGraph(name: GraphEdit, a: Record<string, unknown>): void {
     if (this.aborted || this.rc.store.runState === "aborted") throw new Error("the run was aborted");
     // A run that ended only because tasks are blocked is not over: the plan can still be repaired (replan). Reopen it.
     if (this.rc.store.runState === "done") {
@@ -370,7 +370,18 @@ export class Scheduler extends EventEmitter {
     const next = applyGraph(this.plan, name, a); // throws on unknown ids and cycles
     if (name === "graph.removeNode") { const why = this.whyNotEditable(String(a.id)); if (why) throw new Error(why); }
     if (name === "graph.addEdge" || name === "graph.removeEdge") { const why = this.whyNotEditable(String(a.to)); if (why) throw new Error(why); }
-    if (name === "graph.addNode") roleConfig(this.rc.cfg, String(a.role)); // unknown role: error with the list
+    if (name === "graph.addNode" || name === "graph.insertNode" || (name === "graph.replaceTask" && a.role)) roleConfig(this.rc.cfg, String(a.role)); // unknown role: error with the list
+    if (name === "task.update") {
+      const why = this.whyNotEditable(String(a.id));
+      if (why) throw new Error(why);
+      if (a.role !== undefined) roleConfig(this.rc.cfg, String(a.role));
+    }
+    if (name === "graph.insertNode" && a.before) { const why = this.whyNotEditable(String(a.before)); if (why) throw new Error(why); }
+    if (name === "graph.replaceTask") {
+      const id = String(a.id);
+      if (!this.tasks.some((t) => t.id === id)) throw new Error(`no task ${id} in this run`);
+      if (this.outcome.get(id) === "done") throw new Error(`${id} is already merged; add a follow-up task instead (graph.insertNode) or /retry ${id}`);
+    }
     if (name === "graph.removeNode") {
       const started = this.plan.tasks.find((t) => t.depends_on.includes(String(a.id)) && !this.editable(t.id));
       if (started) throw new Error(`${started.id} depends on ${String(a.id)} and has already started or finished`);
@@ -380,11 +391,22 @@ export class Scheduler extends EventEmitter {
     const keep = this.plan.tasks;
     const nextById = new Map(next.tasks.map((t) => [t.id, t]));
     for (let i = keep.length - 1; i >= 0; i--) if (!nextById.has(keep[i]!.id)) keep.splice(i, 1);
-    for (const t of keep) t.depends_on = nextById.get(t.id)!.depends_on;
+    for (const t of keep) {
+      const n = nextById.get(t.id)!;
+      t.depends_on = n.depends_on;
+      if (name === "task.update" && t.id === String(a.id)) Object.assign(t, { title: n.title, description: n.description, role: n.role, files: n.files, verify: n.verify, verify_exempt: n.verify_exempt, agent_hint: n.agent_hint });
+    }
     for (const t of next.tasks) if (!before.has(t.id)) keep.push(t);
     this.tasks = this.tasks === keep ? keep : [...this.tasks.filter((t) => nextById.has(t.id)), ...next.tasks.filter((t) => !before.has(t.id))];
     for (const t of keep) {
       if (!before.has(t.id)) { this.attempts.set(t.id, 1); this.createStatus(t, 1); }
+    }
+    if (name === "graph.replaceTask") {
+      const id = String(a.id);
+      const cur = this.active.get(id);
+      if (cur) cur.cancel();
+      if (!cur && this.attempts.has(id)) this.rc.store.apply(`${id}-a${this.attempts.get(id)}`, { type: "state", state: "cancelled", reason: "replaced in the graph" });
+      this.outcome.set(id, "cancelled");
     }
     if (name === "graph.removeNode") {
       const id = String(a.id);
