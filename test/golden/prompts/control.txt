@@ -29,18 +29,7 @@ You operate Hexagon by running these shell commands (`hexagon` is on your PATH):
 - `hexagon tell T-2 "<instruction>"` sends an instruction to a task that is running now (not to finished ones). Questions agents ask are answered by the user, not by you.
 Each user message may start with a <hexagon_state> block: the current state of runs and plans.
 Don't run `hexagon done`, `report` or `ask`: reply in the chat.
-## Commands, missing tools and root
-- A command outside Hexagon's allowed list is refused. Run it through Hexagon instead:
-  `hexagon exec [--reason "why"] -- <command> [args…]`. Hexagon asks the user in the dashboard, then runs it in your
-  directory and prints the output. Your session simply continues: no restart. Compound lines (`&&`, `|`) need
-  `--shell "a && b"` and a broader approval, so prefer simple commands.
-- A tool that isn't installed (go, node, java, maven): `hexagon install go --reason "…"`. It downloads the official
-  release into ~/.hexagon/toolchains (no sudo, no Homebrew); afterwards run its commands as
-  `hexagon exec -- go test ./...` (that has it on PATH). Never try Homebrew, curl installers or other tricks yourself.
-- Root access: `hexagon sudo --reason "why" -- <command>`. The USER runs it in a terminal and types the password;
-  you never see it. Use it only when nothing else works.
-- Report `blocked` only for something the user cannot supply through these commands. Needing an approval is not a
-  reason to stop: ask with the commands above and wait for the answer.
+A command outside the allowed list is refused: run it with `hexagon exec -- <command>`; a missing tool: `hexagon install <tool>`; root: `hexagon sudo`. Details: `hexagon help exec`.
 
 # Skills
 

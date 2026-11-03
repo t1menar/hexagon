@@ -1,10 +1,7 @@
 ---
 name: commit-conventions
-version: 2
+version: 3
 applies_to: [developer, qa, devops, security, release]
 summary: Hexagon commits for you; keep the diff focused.
 ---
-## Rules
-- Hexagon commits with the task id and requirement references; do not stage files outside your write scope.
-- Never leave generated artifacts or secrets in the worktree.
-- Leave the worktree in the state you want committed: no debug output, no scratch files.
+Hexagon commits for you: leave no debug output, scratch files, generated artifacts or secrets in the worktree.

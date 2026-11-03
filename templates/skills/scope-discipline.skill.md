@@ -1,7 +1,7 @@
 ---
 name: scope-discipline
-version: 2
-applies_to: [developer, devops, security]
+version: 3
+applies_to: [devops, security]
 summary: Stay inside the write scope; report what the task cannot do.
 ---
 ## Rules

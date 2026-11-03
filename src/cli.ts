@@ -105,6 +105,12 @@ async function main(argv: string[]): Promise<void> {
     return runDaemon(rest[0] ?? process.cwd());
   }
   if (cmd === "--version" || cmd === "-v") return void console.log(VERSION);
+  if (cmd === "help" && rest[0]) {
+    const { helpTopic, helpTopicNames } = await import("./agents/protocol.js");
+    const t = helpTopic(rest[0]);
+    if (!t) { console.error(`No help topic "${rest[0]}". Topics: ${helpTopicNames().join(", ")}`); process.exitCode = 1; return; }
+    return void console.log(t);
+  }
   if (cmd === "--help" || cmd === "-h" || cmd === "help") return void console.log(USAGE);
   // For the user (and the Assistant through `hexagon do bus.read`), the bus is readable too: agents use `hexagon bus send|read|subscribe`.
   if (cmd === "bus" && rest[0] === "log" && !process.env.HEXAGON_AGENT) {

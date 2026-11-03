@@ -752,7 +752,7 @@ export class Orchestrator extends EventEmitter {
       `Output directory: ${out}`,
       existingSpecs.length ? `Existing specs (for context; don't modify them): ${existingSpecs.map((f) => `specs/${f}`).join(", ")}` : "",
       "",
-      "Stage 1 of 3: analyze. Read the codebase and the request, then write analysis.md with the sections Current state, Constraints, Risks, Open questions, Confidence, Mode, Impacted areas. Mode: first word solo | single-task | dag, then the reason (solo = one small, understood edit; single-task = one agent with full checks; dag = several truly independent slices). If the cause is unknown, the change is cross-cutting (API, schema, migration) or module boundaries are unclear, add a Spike section with one read-only investigation per unknown as `- S-1: <question>`; do not guess in the spec. Add Confidence (low|medium|high and why), and Approaches (`- A-1: …`, only if more than one design is viable). If the answer to something changes the result (ambiguous scope, several viable designs, irreversible or data-affecting change, public API change, unknown delivery target), write questions.json instead of guessing (see your instructions). Run `hexagon plan-check`, then `hexagon done`.",
+      "Stage 1 of 3: analyze. Write analysis.md as your analyst instructions describe (sections, Mode, Spike, Approaches, questions.json). Run `hexagon plan-check`, then `hexagon done`.",
     ].filter((l) => l !== "").join("\n");
     void this.runPipeline(s, id, goal.trim(), out, "analyze", prompt);
     return { id };
@@ -861,7 +861,7 @@ export class Orchestrator extends EventEmitter {
         this.stage = "specify";
         from = "specify";
         prompt = "";
-        followUp = `<stage>specify</stage>\nanalysis.md and spike.md are accepted${fs.existsSync(path.join(out, "answers.md")) ? `; the user's decisions are in ${path.join(out, "answers.md")} and are binding` : ""}; write the spec from the spike's Decision, not from guesses. Stage 2 of 3: specify. Write spec.md in ${out} (frontmatter, one \`## REQ-…: title\` per requirement with observable \`- AC-n:\` criteria, non-goals, **Touches**). If the change needs a design, also write design.md with the sections Interfaces, Data flow, Trade-offs. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
+        followUp = `<stage>specify</stage>\nanalysis.md and spike.md are accepted${fs.existsSync(path.join(out, "answers.md")) ? `; the user's decisions are in ${path.join(out, "answers.md")} and are binding` : ""}; write the spec from the spike's Decision, not from guesses. Stage 2 of 3: specify. Write spec.md in ${out} (and design.md if the change alters an interface) as your analyst instructions describe. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.`;
       }
       if (from === "specify") {
         if (!(await this.runStage(s, prompt, followUp))) return;
@@ -895,7 +895,7 @@ export class Orchestrator extends EventEmitter {
       return { from: "spike", followUp: `<stage>spike</stage>\nanalysis.md is accepted, and it lists spikes.${decided} Write spike.md in ${out}: a "Findings" section answering each spike by id (S-1, …) with file:line evidence, a "Decision" section (what the spec should assume, and what stays open), and "Open risks". This is read-only investigation: change no product file. Run \`hexagon plan-check\`, then \`hexagon done\`.\nSpikes:\n${spikes.map((q) => `- ${q.id}: ${q.question}`).join("\n")}` };
     }
     this.stage = "specify";
-    return { from: "specify", followUp: `<stage>specify</stage>\nanalysis.md is accepted.${decided} Stage 2 of 3: specify. Write spec.md in ${out} (frontmatter, one \`## REQ-…: title\` per requirement with observable \`- AC-n:\` criteria, non-goals, **Touches**). If the change needs a design, also write design.md with the sections Interfaces, Data flow, Trade-offs. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.` };
+    return { from: "specify", followUp: `<stage>specify</stage>\nanalysis.md is accepted.${decided} Stage 2 of 3: specify. Write spec.md in ${out} (and design.md if the change alters an interface) as your analyst instructions describe. Do not write plan.json: the user approves the spec first. Run \`hexagon plan-check\`, then \`hexagon done\`.` };
   }
 
   /** Does the accepted analysis come with questions for the user? Then the pipeline waits here. */
