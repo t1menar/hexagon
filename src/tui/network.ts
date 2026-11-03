@@ -13,6 +13,8 @@ export const INTEGRATION = "∑integration";
 export interface NetNode extends DagNode {
   /** Unresolved review rounds shown as a badge; the visual rejection itself is driven by effects. */
   reviewOpen?: number | null;
+  /** Bus badge: unread inbox count and who this task waits for ("✉2 ⏳T-3"). */
+  badge?: string;
 }
 
 /** Transient visual effects per node, owned by the motion director. */
@@ -290,7 +292,7 @@ export function renderNetwork(all: NetNode[], o: NetOptions): Geometry {
       // title row sits in the border: id · role
       c.text(x0 + 2, y0, clip(` ${node.id} · ${node.role} `, m.w - 4), sty(sgr(TOKENS.text, depth), "1"), x1);
       const bar2 = node.progress != null ? bar(node.progress, Math.max(6, inner - 5)) : null;
-      const state = node.quota ? `${glyph} ${node.quota}` : `${glyph} ${look.label}${node.fixCycle ? ` · fix ${node.fixCycle}` : ""}`;
+      const state = (node.quota ? `${glyph} ${node.quota}` : `${glyph} ${look.label}${node.fixCycle ? ` · fix ${node.fixCycle}` : ""}`) + (node.badge ? ` · ${node.badge}` : "");
       const idLine = [node.provider, node.cli].filter(Boolean).join(" · ") || "no agent yet";
       const modelLine = node.provider || node.cli ? `model: ${node.runtimeModel ?? "CLI-managed"}` : "";
       const pct = node.progress != null ? `${Math.round(node.progress * 100)}%` : "";

@@ -31,10 +31,44 @@ export class Director {
   private seeded = false;
   private activeSet = new Set<string>();
   private waitingSet = new Set<string>();
+  private seenMsg = new Set<string>();
+  private seenBus = new Set<string>();
 
   constructor(private m: AnimationManager, private clockIso: () => string = () => new Date().toISOString()) {}
 
   setGeometry(g: Geometry | null) { this.geometry = g; }
+
+  /**
+   * A path for a message between two cards: the dependency edge when there is one, otherwise a direct route in the
+   * space between them (horizontal out of the sender, vertical in the gutter, horizontal into the receiver). Particles
+   * only show over empty cells and line cells, so the route disappears behind any card it crosses.
+   */
+  routeBetween(a: string, b: string): Path | null {
+    const geo = this.geometry;
+    if (!geo) return null;
+    const edge = geo.edges.find((e) => e.from === a && e.to === b) ?? null;
+    if (edge) return edge.path;
+    const back = geo.edges.find((e) => e.from === b && e.to === a);
+    if (back) return back.path.reversed();
+    const na = geo.nodes.get(a), nb = geo.nodes.get(b);
+    if (!na || !nb) return null;
+    const ltr = na.cx <= nb.cx;
+    const x0 = ltr ? na.x + na.w : na.x - 1, x1 = ltr ? nb.x - 1 : nb.x + nb.w;
+    const midX = Math.round((x0 + x1) / 2);
+    const pts: [number, number][] = [];
+    const push = (x: number, y: number) => { const l = pts[pts.length - 1]; if (!l || l[0] !== x || l[1] !== y) pts.push([x, y]); };
+    const walk = (xa: number, ya: number, xb: number, yb: number) => {
+      const dx = Math.sign(xb - xa), dy = Math.sign(yb - ya);
+      let x = xa, y = ya;
+      push(x, y);
+      while (x !== xb) { x += dx; push(x, y); }
+      while (y !== yb) { y += dy; push(x, y); }
+    };
+    walk(x0, na.cy, midX, na.cy);
+    walk(midX, na.cy, midX, nb.cy);
+    walk(midX, nb.cy, x1, nb.cy);
+    return pts.length > 1 ? new Path(pts) : null;
+  }
 
   /** Load the initial state without playing effects (so a restart does not replay old completions). */
   seed(statuses: Iterable<AgentStatus>): void {
@@ -204,16 +238,20 @@ export class Director {
     }
   }
 
-  /** A message between agents: particles travel the real dependency edge when one exists, otherwise timeline only. */
+  /**
+   * A router message between agents. The router emits one on every delivery-state change, so only the first (`queued`)
+   * counts, and a message that carries a bus envelope is left to `bus()`, which animates it once per envelope.
+   */
   message(msg: Message): void {
+    if (msg.delivery.state !== "queued" || this.seenMsg.has(msg.id)) return;
+    this.seenMsg.add(msg.id);
+    if (this.seenMsg.size > 2000) this.seenMsg = new Set([...this.seenMsg].slice(-1000));
+    if (msg.bus_id) return;
     if (msg.from.kind !== "agent" || msg.to.kind !== "agent" || !msg.from.id || !msg.to.id) return;
     const a = msg.from.id, b = msg.to.id;
     this.log(a, "comm", `→ ${b}: ${msg.body.split("\n")[0]!.slice(0, 60)}`, "info");
-    const edges = this.geometry?.edges ?? [];
-    const fwd = edges.find((e) => e.from === a && e.to === b);
-    const back = edges.find((e) => e.from === b && e.to === a);
-    const path = fwd?.path ?? back?.path.reversed();
     this.flash(a, TOKENS.info, 500);
+    const path = this.routeBetween(a, b);
     if (!path) return;
     for (let k = 0; k < 2; k++) this.m.spawn("information", path, { delay: k * 160, tag: `msg:${a}`, onArrive: k === 1 ? () => this.flash(b, TOKENS.info, 600) : undefined });
   }
@@ -235,25 +273,46 @@ export class Director {
       this.flash(id, a.kind === "model_call" ? TOKENS.active : TOKENS.brand, 300);
       return;
     }
-    if (!task(a.from)) {
-      this.log(a.to, "comm", `${a.kind} from ${a.from}`, "info");
-      return;
+    // Each envelope is animated once, however many times its delivery state changes.
+    if (a.id) {
+      if (this.seenBus.has(a.id)) return;
+      this.seenBus.add(a.id);
+      if (this.seenBus.size > 2000) this.seenBus = new Set([...this.seenBus].slice(-1000));
     }
     const color = a.kind === "handoff" ? TOKENS.success : a.kind === "finding" ? TOKENS.warning : a.kind === "decision" ? TOKENS.brand2 : TOKENS.info;
     const kind = a.kind === "finding" ? "review" : a.kind === "handoff" ? "completion" : "information";
     const n = a.size < 400 ? 1 : a.size < 2000 ? 2 : 3;
-    this.log(a.from, "comm", `${a.kind} → ${a.to} (${a.size < 1024 ? `${a.size} B` : `${(a.size / 1024).toFixed(1)} KB`})`, a.kind === "finding" ? "warning" : "info");
+    const size = a.size < 1024 ? `${a.size} B` : `${(a.size / 1024).toFixed(1)} KB`;
+    // Who really received it: the router's recipients for a role/topic/broadcast, else the named task.
+    const targets = (a.recipients?.length ? a.recipients : task(a.to) ? [a.to] : []).filter((t) => task(t) && t !== a.from);
+    if (a.from === "reviewer") {
+      // The reviewer's findings come out of the review footer of the card they are about.
+      const t = targets[0] ?? (task(a.to) ? a.to : "");
+      this.log(t || "reviewer", "review", `reviewer finding → ${t || a.to}: ${size}`, "warning");
+      if (!t) return;
+      this.flash(t, TOKENS.warning, 700, "reviewer");
+      this.note(t, "rejected", 2000);
+      const lane = this.geometry?.reviewers.get(t);
+      if (lane) for (let k = 0; k < n + 1; k++) this.m.spawn("review", lane.stem, { delay: k * 130, tag: `bus:reviewer:${t}` });
+      return;
+    }
+    if (!task(a.from)) {
+      this.log(targets[0] ?? a.to, "comm", `${a.kind} from ${a.from}`, "info");
+      for (const t of targets.slice(0, 4)) this.flash(t, color, 600);
+      return;
+    }
+    const where = targets.length > 1 || !task(a.to) ? `${a.to}${targets.length ? ` (${targets.join(", ")})` : ""}` : a.to;
+    this.log(a.from, "comm", `${a.kind} → ${where} (${size})`, a.kind === "finding" ? "warning" : "info");
     this.flash(a.from, color, 500);
-    const edges = this.geometry?.edges ?? [];
-    let paths: Path[];
-    if (task(a.to)) {
-      const fwd = edges.find((e) => e.from === a.from && e.to === a.to);
-      const back = edges.find((e) => e.from === a.to && e.to === a.from);
-      const p = fwd?.path ?? back?.path.reversed();
-      paths = p ? [p] : [];
-      if (p) this.flash(a.to, color, 700);
-    } else paths = this.outgoing(a.from).slice(0, 2);
-    for (const [i, p] of paths.entries()) for (let k = 0; k < n; k++) this.m.spawn(kind, p, { delay: k * 140 + i * 60, tag: `bus:${a.from}` });
+    const routes: Path[] = [];
+    for (const t of targets.slice(0, 4)) {
+      this.flash(t, color, 700);
+      const p = this.routeBetween(a.from, t);
+      if (p) routes.push(p);
+    }
+    // A role/topic/broadcast with no known recipient fans out along the outgoing edges; nothing is invented otherwise.
+    if (!targets.length && !task(a.to)) routes.push(...this.outgoing(a.from).slice(0, 2));
+    for (const [i, p] of routes.entries()) for (let k = 0; k < n; k++) this.m.spawn(kind, p, { delay: k * 140 + i * 60, tag: `bus:${a.from}` });
   }
 
   dispose(): void { this.m.cancelAll(); this.fx.clear(); this.activity.length = 0; this.activeSet.clear(); this.waitingSet.clear(); }

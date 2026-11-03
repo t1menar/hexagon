@@ -13,21 +13,26 @@ export interface DashLayout {
   /** One-line selected-agent summary used when there is no agent panel. */
   strip: Region | null;
   activity: Region | null;
+  /** 1-3 lines of agent-bus traffic above the chat, in layouts that have no activity panel (medium, small). */
+  busStrip: Region | null;
   chat: Region;
   input: Region;
 }
 
+/** Rows the bus strip may take. */
+export const MAX_BUS_ROWS = 3;
+
 /** Rows the input box may grow to (a notice line above and a key hint below come on top). */
 export const MAX_INPUT_ROWS = 6;
 
-export function computeLayout(W: number, H: number, o: { inspector?: boolean; inputRows?: number; /** minimal chrome: neighbouring panels share one rule (their regions overlap by the border cells) */ shared?: boolean } = {}): DashLayout {
+export function computeLayout(W: number, H: number, o: { inspector?: boolean; inputRows?: number; /** bus strip rows wanted (0 = none); only medium and small layouts have room for it */ busRows?: number; /** minimal chrome: neighbouring panels share one rule (their regions overlap by the border cells) */ shared?: boolean } = {}): DashLayout {
   const L = baseLayout(W, H, o);
   if (!o.shared) return L;
   // Shared rules: a panel's frame is drawn on its edge cells, so the neighbour's frame must be the same cells. Interiors keep their size.
-  const { agents, network, inspector, activity, chat, strip } = L;
+  const { agents, network, inspector, activity, chat, strip, busStrip } = L;
   if (agents) {
     network.x -= 1; network.w += 1;
-    if (activity) { activity.x -= 1; activity.w += 2; } else { chat.x -= 1; chat.w += 1; }
+    if (activity) { activity.x -= 1; activity.w += 2; } else { chat.x -= 1; chat.w += 1; if (busStrip) { busStrip.x -= 1; busStrip.w += 1; } }
   }
   if (inspector) { network.w += 1; inspector.h += 1; }
   network.h += 1; // the network's bottom rule is the band's top rule
@@ -35,7 +40,7 @@ export function computeLayout(W: number, H: number, o: { inspector?: boolean; in
   return L;
 }
 
-function baseLayout(W: number, H: number, o: { inspector?: boolean; inputRows?: number } = {}): DashLayout {
+function baseLayout(W: number, H: number, o: { inspector?: boolean; inputRows?: number; busRows?: number } = {}): DashLayout {
   const mode: LayoutMode = W >= 150 && H >= 30 ? "large" : W >= 100 && H >= 22 ? "medium" : "small";
   const inputH = 2 + Math.max(1, Math.min(MAX_INPUT_ROWS, o.inputRows ?? 1));
   const header: Region = { x: 0, y: 0, w: W, h: 1 };
@@ -62,7 +67,14 @@ function baseLayout(W: number, H: number, o: { inspector?: boolean; inputRows?: 
   const activity: Region | null = actW ? { x: bandX, y: bandY, w: actW, h: bandH } : null;
   const chat: Region = { x: bandX + actW, y: bandY, w: bandW - actW, h: bandH };
   if (agents) agents.h = body - (strip ? 1 : 0);
-  return { mode, header, agents, network, inspector, strip, activity, chat, input };
+  // The strip takes rows off the top of the chat band, and only if the chat keeps at least 4 rows.
+  let busStrip: Region | null = null;
+  const want = Math.max(0, Math.min(MAX_BUS_ROWS, o.busRows ?? 0));
+  if (!activity && want > 0) {
+    const rows = Math.min(want, chat.h - 4);
+    if (rows > 0) { busStrip = { x: chat.x, y: chat.y, w: chat.w, h: rows }; chat.y += rows; chat.h -= rows; }
+  }
+  return { mode, header, agents, network, inspector, strip, activity, busStrip, chat, input };
 }
 
 export const overlaps = (a: Region, b: Region) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;

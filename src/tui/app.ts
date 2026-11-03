@@ -16,6 +16,7 @@ import { Canvas, clip, padTo, S, st, wrap } from "./canvas.js";
 import { AnimationManager } from "./motion.js";
 import { AmbientField } from "./ambient.js";
 import { Director } from "./director.js";
+import { badgeFor, BusLog, busLine, busStrip, waitLine } from "./busview.js";
 import { computeLayout, MAX_INPUT_ROWS, type Region } from "./layout.js";
 import { renderNetwork, type NetNode } from "./network.js";
 import { renderStartup, startupProgress, STARTUP_MS } from "./startup.js";
@@ -67,6 +68,7 @@ const COMMANDS: [string, string][] = [
   ["/clean", "remove worktrees of finished runs (and close the run)"],
   ["/close", "hide the finished run from the dashboard (without merging)"],
   ["/model [role] [model]", "show or set a model override per role (default = the CLI's own) · /agents lists agents, versions and discovered models"],
+  ["/bus", "show or hide the agent bus: who sent what to whom, delivery state, who waits for whom (F6)"],
   ["/animate [full|reduced|off]", "set the motion level (F3 toggles); reduced = fewer frames, off = static"],
   ["/agents", "agents, providers, CLI versions, auth and what each CLI reports about models"],
   ["/allow <cmd…> | all", "let agents run these commands (e.g. /allow brew curl), or everything"],
@@ -165,6 +167,9 @@ export class App {
   private histIdx = -1;
   private scroll = 0;
   private frames = 0;
+  /** Agent bus: envelopes keyed by id; a state change updates the entry, it never adds a second one. */
+  private readonly busLog = new BusLog();
+  private busView = false;
   private modalHidden: string | null = null;
   private changes: RunChanges | null = null;
   private changesAt = 0;
@@ -404,6 +409,7 @@ export class App {
       }
       case "message": this.onMessage(p.data); this.director.message(p.data); break;
       case "bus_activity": this.director.bus(p.data); break;
+      case "bus": this.busLog.apply(p.data); this.invalidate(); break;
       case "plan": this.snap.plan = p.data; this.invalidate(); break;
       case "notice": this.log(p.data.text, p.data.level === "info" ? S.cyan : S.orange); this.flash(p.data.text, p.data.level); break;
       case "session": {
@@ -557,11 +563,25 @@ export class App {
     } catch { /* daemon busy: keep the last picture */ }
   }
 
+  private busWaiting(): { from: string; for: string }[] {
+    return this.snap.run?.bus?.waiting ?? [];
+  }
+
+  /** History of the bus for a dashboard that attached after traffic began. */
+  private async refreshBus() {
+    if (!this.snap.run) return;
+    try {
+      const r = await this.client.call<{ status: string; result: { envelopes: Parameters<BusLog["apply"]>[0][] } }>("command.exec", { name: "bus.read", args: { limit: 200 } });
+      this.busLog.load(r.result.envelopes);
+      this.invalidate();
+    } catch { /* no run, or the daemon is busy: the live pushes still arrive */ }
+  }
+
   private setMotion(arg: string) {
     const mode = arg === "on" ? "full" : arg;
     if (!["full", "reduced", "off"].includes(mode)) return this.flash("usage: /animate [full|reduced|off]");
     this.mgr.motion = mode as "full" | "reduced" | "off";
-    this.mgr.fps = mode === "full" ? 24 : mode === "reduced" ? 8 : 0;
+    this.mgr.fps = mode === "full" ? 15 : mode === "reduced" ? 8 : 0; // the same numbers AnimationManager starts with
     if (mode === "off") this.mgr.cancelAll();
     this.caps = { ...this.caps, motion: mode as Caps["motion"] };
     this.prev = [];
@@ -672,6 +692,7 @@ export class App {
     if (name === "f2") { this.inspectorOn = !this.inspectorOn; this.prev = []; return; }
     if (name === "f3") return this.setMotion(this.still ? "full" : "off");
     if (name === "f4") return void this.command("/agents");
+    if (name === "f6") return void this.command("/bus");
     if (name === "paste-start") { this.pasting = true; return; }
     if (name === "paste-end") { this.pasting = false; return; }
     if (k?.ctrl && name === "c") {
@@ -994,6 +1015,7 @@ export class App {
           this.select(HEX);
           return;
         }
+        case "/bus": this.busView = !this.busView; this.prev = []; this.flash(this.busView ? "bus view on (F6 or /bus to close)" : "bus view off"); void this.refreshBus(); return;
         case "/animate":
           this.setMotion(args[0] ?? (this.still ? "full" : "off"));
           return;
@@ -1293,7 +1315,9 @@ export class App {
   }
 
   private dashboard(cv: Canvas, W: number, H: number) {
-    const L = computeLayout(W, H, { inspector: this.inspectorOn, inputRows: this.inputView(W).rows.length, shared: this.minimal });
+    const waiting = this.busWaiting();
+    const busRows = this.busView ? 0 : Math.min(3, waiting.length + Math.min(2, this.busLog.size));
+    const L = computeLayout(W, H, { inspector: this.inspectorOn, inputRows: this.inputView(W).rows.length, shared: this.minimal, busRows });
     this.layoutMode = L.mode;
     this.hits = [];
     this.header(cv, W);
@@ -1301,8 +1325,10 @@ export class App {
     if (L.strip) this.stripRow(cv, L.strip);
     this.networkPanel(cv, L.network);
     if (L.inspector) this.inspectorPanel(cv, L.inspector);
-    if (L.activity) this.activityPanel(cv, L.activity);
-    this.feedPanel(cv, L.chat.x, L.chat.y, L.chat.w, L.chat.h);
+    if (this.busView) this.busPanel(cv, L.activity ?? L.chat);
+    else if (L.activity) this.activityPanel(cv, L.activity);
+    if (L.busStrip) this.busStripRow(cv, L.busStrip);
+    if (!this.busView || L.activity) this.feedPanel(cv, L.chat.x, L.chat.y, L.chat.w, L.chat.h);
     this.bottom(cv, L.input.y, W);
   }
 
@@ -1368,6 +1394,7 @@ export class App {
         runtimeModel: a?.agent.runtime_model ?? null, fixCycle: a?.fix_cycle ?? null, reviewOpen: a?.fix_cycle ?? null,
         quota: a?.state === "waiting_quota" ? quotaLabel(a).replace("resumes ", "") : null,
         id: t.id, title: t.title, role: t.role, deps: t.depends_on, state,
+        badge: live ? badgeFor(t.id, a?.inbox?.pending ?? 0, this.busWaiting(), this.caps.unicode) || undefined : undefined,
         progress: live ? this.progress(t.id) : null,
       };
     });
@@ -1540,7 +1567,8 @@ export class App {
           const c = this.card(id);
           const sel = id === this.selected;
           first.set(id, rows.length);
-          rows.push({ kind: "line", id, idx: 0, title: true, segs: [[c.sym, c.symStyle], [` ${c.title}`, sel ? this.tk("text", S.bold) : this.tk("text")]], pct: c.pct });
+          const badge = badgeFor(id, this.full.get(id)?.inbox?.pending ?? 0, this.busWaiting(), this.caps.unicode);
+          rows.push({ kind: "line", id, idx: 0, title: true, segs: [[c.sym, c.symStyle], [` ${c.title}`, sel ? this.tk("text", S.bold) : this.tk("text")], ...(badge ? [[`  ${badge}`, this.tk("warning")] as [string, string]] : [])], pct: c.pct });
           if (level < 2) rows.push({ kind: "line", id, idx: 1, segs: [[`  ${c.l2}`, this.tk("muted")]] });
           if (level < 1 && c.l2b) rows.push({ kind: "line", id, idx: 1, segs: [[`  ${c.l2b}`, this.tk("muted")]] });
           rows.push({ kind: "line", id, idx: 2, segs: [["  ", ""], ...c.l3] });
@@ -1663,6 +1691,29 @@ export class App {
     });
     const room = Math.max(0, end - y);
     items.slice(-room).forEach(([t, text, sty], i) => { cv.text(x, y + i, t, this.tk("muted")); cv.text(x + 9, y + i, clip(text, w - 9), sty); });
+  }
+
+  // ── agent bus ──
+
+  /** The BUS view: the newest traffic with delivery state, blocking waits on top. */
+  private busPanel(cv: Canvas, r: Region) {
+    const waiting = this.busWaiting();
+    this.panelBox(cv, r, "BUS", `${this.busLog.size} message${this.busLog.size === 1 ? "" : "s"}${waiting.length ? ` · ${waiting.length} waiting` : ""}`);
+    const inner = r.h - 2, w = r.w - 4;
+    const lines: [string, string][] = [
+      ...waiting.map((x) => [waitLine(x, this.caps.unicode), this.tk("warning")] as [string, string]),
+      ...this.busLog.list().map((b) => [busLine(b, w, this.caps.unicode), b.state === "rejected" || b.state === "expired" ? this.tk("error") : b.blocking ? this.tk("warning") : b.state === "queued" ? this.tk("text") : this.tk("muted")] as [string, string]),
+    ];
+    if (!lines.length) { cv.text(r.x + 2, r.y + 1, "No agent has sent anything on the bus yet. (F6 or /bus closes this view)", this.tk("muted")); return; }
+    const head = waiting.length;
+    const tail = lines.slice(head).slice(-Math.max(0, inner - head));
+    [...lines.slice(0, head), ...tail].slice(0, inner).forEach(([t, sty], i) => cv.text(r.x + 2, r.y + 1 + i, clip(t, w), sty));
+  }
+
+  /** 1-3 lines under the network where there is no activity panel. */
+  private busStripRow(cv: Canvas, r: Region) {
+    const lines = busStrip(this.busLog, this.busWaiting(), r.w - 2, r.h, this.caps.unicode);
+    lines.forEach((l, i) => cv.text(r.x + 1, r.y + i, l, i === 0 && this.busWaiting().length ? this.tk("warning") : this.tk("muted")));
   }
 
   // ── activity timeline ──
