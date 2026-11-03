@@ -28,14 +28,14 @@ Process model: `src/cli.ts` (commands) and `src/tui/` (full-screen dashboard, bu
 
 Key pieces to understand across files:
 
-- **Adapters** (`src/agents/`): `contracts/` defines the `AgentAdapter` interface and shared base/capabilities/errors; `claude-code.ts`, `codex.ts`, `grok.ts`, `exec.ts` (any one-shot CLI), `mock.ts`, `oneshot.ts` implement it; `adapter-registry.ts`/`registry.ts` resolve them. Adding a provider: `docs/ADDING_PROVIDER.md`, `examples/acme-provider.ts`. Native session handles belong to the *session*, not the adapter instance. Runs that report no usage are "unknown", not zero.
+- **Adapters** (`src/agents/`): `contracts/` defines the `AgentAdapter` interface and shared base/capabilities/errors; `claude-code.ts`, `codex.ts`, `grok.ts`, `exec.ts` (any one-shot CLI), `mock.ts`, `oneshot.ts` implement it; `adapter-registry.ts`/`registry.ts` resolve them. Adding a provider: `docs/ADDING_PROVIDER.md`, `examples/acme-provider.ts`; adapter tooling (`hexagon agents scaffold|record|conformance`, conformance v2 in `agents/conformance.ts`, fixtures, user-level verified store) is in `docs/ADAPTERS.md`. The core builds one `RunPolicy` per run (`agents/contracts/policy.ts`); adapters project it and declare what they enforce. Native session handles belong to the *session*, not the adapter instance. Runs that report no usage are "unknown", not zero.
 - **Conformance**: `test/adapter-conformance.ts` is the shared suite every adapter must pass (fake CLI always, real CLI opt-in).
 - **Hub-and-spoke messaging**: agents never talk directly; everything goes through `core/router.ts`/`core/bus.ts` (see `docs/COMMUNICATION.md`). Everything is an event on one append-only log that the TUI, metrics and recovery read.
 - **Pipeline** (`core/pipeline.ts`, `scheduler.ts`, `supervisor.ts`, `plan.ts`, `spec.ts`): goal → planner writes `specs/*.spec.md` + task graph → user approves → per task: worktree from the integration branch → agent implements → out-of-scope edits reverted → commit → verify commands re-run → reviewer agent → merge into `hexagon/<run>/integration` → `/merge` into the user's branch. Scheduling uses deps, file leases and `-j N`.
 - **Contracts**: JSON schemas in `schemas/` (status, message, plan, result), validated via `src/contracts/validate.ts` (ajv). Agents publish a schema-validated `status.json`.
 - **Prompts**: role prompts/skills live in `templates/` and are checked by `hexagon prompts lint` (`core/promptlint.ts`, `test/prompts.test.ts`); `scripts/role-hashes.mjs` runs as part of build.
 - **Typed command API**: `core/commands.ts` is the single definition used by the CLI, the assistant (`hexagon do`), and docs.
-- **Docs** in `docs/` (ARCHITECTURE, COMMUNICATION, PROVIDERS, RECOVERY, SDD, SECURITY, TOKENS, TUI). ARCHITECTURE.md is partly historical (see its status note); PROVIDERS/RECOVERY/ADDING_PROVIDER reflect the implemented provider-independent design.
+- **Docs** in `docs/` (ADAPTERS, ARCHITECTURE, COMMUNICATION, CONTROL, PROMPTS, PROVIDERS, RECOVERY, SDD, SECURITY, TOKENS, TUI). ARCHITECTURE.md is partly historical (see its status note); PROVIDERS/RECOVERY/ADDING_PROVIDER reflect the implemented provider-independent design.
 
 ## Project rules
 
