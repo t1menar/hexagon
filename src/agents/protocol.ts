@@ -68,6 +68,7 @@ ${report}
     default:
       return `${head}
 - Write only to files matching the task's write scope; Hexagon reverts anything else. Don't commit; Hexagon commits for you.
+- BEFORE editing any file, write your brief: \`hexagon brief write\` with the text on stdin (heredoc). Sections: Goal (1-2 lines), Files to change (file:line anchors), Approach, Decisions and assumptions, Risks, Verification (each acceptance id → command or test). \`hexagon brief check\` validates it. Keep it a log: \`hexagon brief append progress|found "<line>"\`; \`hexagon brief show\` prints it. Edits made before a valid brief are reverted; \`hexagon done\` is refused without one.
 - Need a file outside your scope (a lockfile, an index that registers your module)? \`hexagon scope request <path…> --why "<reason>"\` before you edit it. Lockfiles and registration files are granted at once if no running task holds them; otherwise the user decides.
 ${report}
 ${ask}

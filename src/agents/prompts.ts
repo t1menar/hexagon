@@ -132,7 +132,7 @@ export const identityHash = (paths: ProjectPaths, role: Role, skills: Skill[], c
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-export function taskCard(task: Task, specs: Spec[], notes: string, others: Task[] = []): string {
+export function taskCard(task: Task, specs: Spec[], notes: string, others: Task[] = [], brief = false): string {
   const reqs = specs.flatMap((s) => s.requirements).filter((r) => task.requirements.includes(r.id));
   // A task lists REQ-X/AC-1 (or a bare AC-1 when only one of its requirements has it).
   const acs = reqs.flatMap((r) => r.acceptance.filter((a) => task.acceptance.includes(`${r.id}/${a.id}`) || task.acceptance.includes(a.id)).map((a) => ({ req: r.id, ...a })));
@@ -157,7 +157,7 @@ export function taskCard(task: Task, specs: Spec[], notes: string, others: Task[
     notes.trim() ? `  <notes_from_other_agents>\n${esc(notes.trim())}\n  </notes_from_other_agents>` : "",
     "</task>",
     "",
-    `Complete task ${task.id} in this worktree. Change only files in the write scope. Run the verify commands yourself, then finish with \`hexagon done\`.`,
+    `Complete task ${task.id} in this worktree. ${brief ? "Before editing any file, write your brief (`hexagon brief write`); keep it updated. " : ""}Change only files in the write scope. Run the verify commands yourself, then finish with \`hexagon done\`.`,
   ];
   return parts.filter((l) => l !== "").join("\n");
 }

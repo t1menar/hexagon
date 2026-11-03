@@ -196,9 +196,33 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
       const decide = /@decide:\s*(.+)$/m.exec(task.description ?? "");
       if (decide && firstOfTask) api.bus?.({ action: "send", kind: "decision", subject: decide[1]!.trim(), body: decide[1]!.trim() });
 
-      api.report({ phase: "editing", activity: "Writing files" });
       const files = task.files.write.filter((g) => !/[*?{]/.test(g));
       if (files.length === 0) files.push(defaultFile(task));
+      // The brief comes first, like a real agent following the protocol. Test hooks: `@no-brief` never writes one,
+      // `@edit-before-brief` edits a product file first.
+      const wantsBrief = api.brief && !/@no-brief/.test(task.description ?? "") && ["developer", "qa", "devops", "security"].includes(task.role);
+      if (wantsBrief && /@edit-before-brief/.test(task.description ?? "") && firstOfTask) {
+        const abs = path.join(ctx.cwd, files[0]!);
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, "edited before the brief\n");
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      if (wantsBrief && !api.brief!({ action: "check" }).ok) {
+        await step("Writing the brief");
+        const text = [
+          `# Brief ${task.id}: ${task.title}`, "## Goal", task.title,
+          "## Files to change", ...files.map((f) => `- ${f}:1 — mock change`),
+          "## Approach", "1. Write the files. 2. Run the verify commands.",
+          "## Decisions and assumptions", "- none (mock)",
+          "## Risks", "- none (mock)",
+          "## Verification", ...(task.acceptance.length ? task.acceptance.map((ac) => `- ${ac}: ${task.verify[0] ?? "mock"}`) : [`- ${task.verify[0] ?? "mock"}`]),
+          "## Progress", "## Found", "",
+        ].join("\n");
+        const w = api.brief!({ action: "write", text });
+        if (!w.ok) { host.emit({ type: "chat", from: "agent", text: w.message }); }
+        else if (/approve the brief|user is reading it/i.test(w.message)) await waitForAnswer();
+      }
+      api.report({ phase: "editing", activity: "Writing files" });
       for (const f of files) {
         await step(`Editing ${f}`);
         drain();
@@ -220,12 +244,15 @@ export class MockAdapter extends AdapterBase implements AgentAdapter {
       const dt = /@delete-test:\s*(\S+)/.exec(task.description ?? "");
       if (dt) fs.rmSync(path.join(ctx.cwd, dt[1]!), { force: true });
 
+      if (wantsBrief) api.brief!({ action: "append", kind: "progress", text: `wrote ${files.join(", ")}` });
       api.report({ phase: "testing", activity: "Running checks", done: task.acceptance });
       for (const cmd of task.verify) {
         await step(`Running ${cmd}`);
         await runShell(cmd, ctx.cwd, 60, ctx.signal);
       }
       drain();
+      // `@fail-once`: the first attempt reports failure after writing its brief (test hook for retries that must not start from scratch).
+      if (/@fail-once/.test(task.description ?? "") && /-a1$/.test(ctx.agentRunId)) { api.done({ status: "failed", summary: "mock failure on the first attempt" }); return { kind: "finished" }; }
       host.emit({ type: "chat", from: "agent", text: `I wrote ${files.join(", ")}${instructions.length ? ` and applied ${instructions.length} message(s)` : ""}. Reporting the result now.` });
       const r = api.done({
         status: "completed",

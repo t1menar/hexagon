@@ -14,7 +14,7 @@ import type { AdapterOutcome, AgentAdapter, AgentApi, AgentHost, AgentRunContext
 import { enforcedFor, SECRET_DENY_GLOBS, type RunPolicy } from "../agents/contracts/policy.js";
 import { classifyProviderError, recoveryFor } from "../agents/contracts/errors.js";
 import { planRetry, waitTooLong, type WaitStore } from "./recovery.js";
-import { atomicWriteJson, matchesAny, nowIso, truncateMiddle } from "../util/fsx.js";
+import { atomicWriteJson, matchesAny, nowIso, readJson as readJsonSafe, truncateMiddle } from "../util/fsx.js";
 import { Mutex } from "../util/mutex.js";
 import { runShell } from "../util/shell.js";
 import { onPath } from "./toolchains.js";
@@ -25,6 +25,7 @@ import type { ApiRegistry } from "./registry.js";
 import type { MessageRouter } from "./router.js";
 import { BUS_KINDS, type AgentBus, type BusKind } from "./bus.js";
 import { compactRequest, shouldCompact } from "./compaction.js";
+import { appendEntry, briefApplies, briefFile, checkBrief, explainBrief, hasProgress, loadCompact, loadFailure, needsReview, READ_BRIEF_FIRST, readText, recoveryBlock, reviewFile, saveCompact, saveFailure, saveReview, writeText } from "./brief.js";
 import type { IdentityPool, Lease, Resolution, SessionRegistry } from "./sessions.js";
 import type { Spec } from "./spec.js";
 import { relResult, type StatusStore } from "./status.js";
@@ -143,6 +144,12 @@ export class AgentRun {
   private scopeReverts: string[] = [];
   /** Revert explanation not yet shown to the agent; prefixed to its next follow-up. */
   private revertNotice = "";
+  /** The brief (`hexagon brief write`) is valid; edits before it was valid are refused at the next `done`. */
+  private briefValid = false;
+  private briefApproved = false;
+  private briefQuestion: string | null = null;
+  /** Product files already changed when the brief became valid (mtime before it): the work did not follow the brief. */
+  private preBrief: string[] = [];
   private takeoverCommit = "";
   private cancelled = false;
   private userDone = false;
@@ -160,6 +167,81 @@ export class AgentRun {
     this.agentRunId = `${task.id}-a${attempt}`;
     this.worktree = path.join(rc.paths.worktrees, rc.runId, this.agentRunId);
     this.branch = `hexagon/${rc.runId}/${this.agentRunId}`;
+    // A retry, a restart or a reset finds what the agent already wrote down.
+    this.compactSummary = loadCompact(rc.run.dir, task.id);
+    if (this.briefRequired()) {
+      this.briefValid = checkBrief(readText(briefFile(rc.run.dir, task.id)), task).length === 0;
+      this.briefApproved = Boolean((readJsonSafe(reviewFile(rc.run.dir, task.id)) as { approved?: boolean } | null)?.approved);
+    }
+  }
+
+  /** Does this task need a brief before it may be marked done? */
+  private briefRequired(): boolean {
+    return this.rc.cfg.run.task_brief === "required" && briefApplies(this.rc.cfg.run.task_brief, this.task.role);
+  }
+
+  private briefOn(): boolean {
+    return briefApplies(this.rc.cfg.run.task_brief, this.task.role);
+  }
+
+  /** `hexagon brief write|append|check|show` from the agent. */
+  private briefCall(a: Record<string, unknown>): Reply {
+    if (!this.briefOn()) return { ok: false, message: "Briefs are not used for this task ([run].task_brief)." };
+    const file = briefFile(this.rc.run.dir, this.task.id);
+    const text = readText(file);
+    switch (a.action) {
+      case "show": return text ? ok(text) : ok("(no brief yet)\n");
+      case "write": {
+        const body = String(a.text ?? "");
+        if (!body.trim()) return { ok: false, message: "Nothing to write: pipe the brief to `hexagon brief write` (heredoc) or pass --file <path>." };
+        writeText(file, body);
+        const errors = checkBrief(body, this.task);
+        if (errors.length) { this.briefValid = false; return { ok: false, message: explainBrief(errors, this.task) }; }
+        const first = !this.briefValid;
+        this.briefValid = true;
+        if (first) void this.captureEarlyEdits(Date.now());
+        this.ev({ type: "progress", text: "brief written" });
+        this.ev({ type: "chat", from: "hexagon", text: `Brief for ${this.task.id} recorded (${file}).` });
+        const review = needsReview(this.rc.cfg.run.brief_review, this.task) && !this.briefApproved;
+        if (review && !this.briefQuestion) {
+          const r = this.ask({ prompt: `Approve the brief for ${this.task.id} (${this.task.title}) before the agent edits anything?\n\n${body.slice(0, 1800)}`, options: ["approve", "changes needed (say what)"], default: "approve", blocking: true });
+          const q = [...this.questions.keys()].pop();
+          if (r.ok && q) { this.briefQuestion = q; return ok("Brief saved. The user is reading it before you start; end your turn now. The answer arrives as your next message."); }
+        }
+        return ok("Brief saved. Start the work; add progress with `hexagon brief append progress \"<line>\"`.");
+      }
+      case "append": {
+        const kind = String(a.kind ?? "");
+        const entry = String(a.text ?? "").trim();
+        if ((kind !== "progress" && kind !== "found") || !entry) return { ok: false, message: 'usage: hexagon brief append progress|found "<one line>"' };
+        if (!text) return { ok: false, message: "Write the brief first (`hexagon brief write`)." };
+        writeText(file, appendEntry(text, kind, entry, new Date().toISOString().slice(11, 16)));
+        return ok("Added.");
+      }
+      case "check": {
+        if (!text) return { ok: false, message: explainBrief(["no brief has been written"], this.task) };
+        const errors = checkBrief(text, this.task);
+        if (errors.length) return { ok: false, message: explainBrief(errors, this.task) };
+        return ok(`Brief is valid${hasProgress(text) ? "" : "; add at least one Progress line before `hexagon done`"}.`);
+      }
+    }
+    return { ok: false, message: "usage: hexagon brief write | append progress|found \"<line>\" | check | show" };
+  }
+
+  /** Which uncommitted product files are older than the brief: the agent edited before it had a valid brief. */
+  private async captureEarlyEdits(at: number): Promise<void> {
+    try {
+      const changed = (await g.uncommittedFiles(this.worktree)).filter((f) => !f.startsWith(".hexagon/"));
+      this.preBrief = changed.filter((f) => { try { return fs.statSync(path.join(this.worktree, f)).mtimeMs <= at - 5; } catch { return false; } });
+      if (this.preBrief.length) this.ev({ type: "error", kind: "scope_violation", message: `edited before the brief was valid: ${this.preBrief.join(", ")}`, retryable: true });
+    } catch { /* no worktree to inspect yet */ }
+  }
+
+  /** What a fresh session or a new attempt gets so it does not rediscover the repository. */
+  private async recoveryContext(withState: boolean): Promise<string> {
+    const brief = this.briefOn() ? readText(briefFile(this.rc.run.dir, this.task.id)) : "";
+    const diffstat = brief || this.compactSummary ? await g.diff(this.worktree, this.baseCommit, true).catch(() => "") : "";
+    return recoveryBlock({ taskId: this.task.id, brief, summary: "", diffstat, failure: withState ? loadFailure(this.rc.run.dir, this.task.id) : "" });
   }
 
   get state(): AgentState {
@@ -367,7 +449,7 @@ export class AgentRun {
       // 1. Implement (or fix)
       this.finished = false;
       this.result = undefined;
-      if (followUp && !initialFromUser) this.outstanding = followUp;
+      if (followUp && !initialFromUser) { this.outstanding = followUp; saveFailure(this.rc.run.dir, this.task.id, truncateMiddle(followUp, 3000)); }
       this.cause = followUp && !initialFromUser ? "fix_loop" : "prompt";
       const outcome = await this.agentSegment(followUp, quiet);
       followUp = undefined;
@@ -430,7 +512,7 @@ export class AgentRun {
       if (scope.warn) {
         this.ev({ type: "fix_cycle", n: ++fixLoops });
         this.fixing = true;
-        followUp = this.scopeWarning(scope.warn);
+        followUp = this.scopeWarning(scope.warn, scope.early ?? []);
         continue;
       }
 
@@ -714,7 +796,7 @@ export class AgentRun {
       this.sink = prevSink;
       this.cause = prev;
     }
-    if (who.role === this.task.role) this.compactSummary = truncateMiddle(summary.trim(), 4000);
+    if (who.role === this.task.role) { this.compactSummary = truncateMiddle(summary.trim(), 4000); saveCompact(this.rc.run.dir, this.task.id, this.compactSummary); }
     else this.reviewerSummary = truncateMiddle(summary.trim(), 4000);
     const sessionId = this.rc.sessions.compacted(id);
     const record = this.rc.sessions.get(id)!;
@@ -722,11 +804,11 @@ export class AgentRun {
   }
 
   /** What the agent receives this turn: the full card for a new session, only what changed for a resumed one. */
-  private turnInput(res: Resolution, fu: string | undefined): { prompt: string; followUp?: string; freshTask: boolean } {
+  private turnInput(res: Resolution, fu: string | undefined, recovery = ""): { prompt: string; followUp?: string; freshTask: boolean } {
     const rec = res.record;
     const fresh = !res.resume;
     if (this.started && res.resume) {
-      const msg = fu ?? "Continue the task where you left off.";
+      const msg = fu ?? (this.briefOn() ? `${READ_BRIEF_FIRST}continue the task where you left off.` : "Continue the task where you left off.");
       return { prompt: msg, followUp: msg, freshTask: false };
     }
     const seen = fresh ? { skills: [] as string[], others: "", notes: null, state: "" } : rec.seen;
@@ -742,7 +824,7 @@ export class AgentRun {
     const digest = this.started ? "" : this.rc.bus.digestFor(this.task.id, upstream);
     const newSkills = this.task.skills.filter((n) => !seen.skills.includes(n));
     const card = [
-      taskCard(this.task, this.rc.specs, notesText, seen.others === othersKey ? [] : others),
+      taskCard(this.task, this.rc.specs, notesText, seen.others === othersKey ? [] : others, this.briefOn()),
       digest,
       newSkills.length ? skillsBlock(this.rc.skills, this.task.role, newSkills) : "",
     ].filter(Boolean).join("\n\n");
@@ -754,11 +836,11 @@ export class AgentRun {
       const carried = fresh && this.compactSummary ? `Summary of your earlier work in this project (written by you before the session was compacted):\n${this.compactSummary}` : "";
       // A resumed session remembers other directories and file contents: say where it is now, and that those are stale.
       const moved = res.resume ? `You are now working on a different task, in ${this.worktree}. Paths and file contents from earlier tasks in this conversation are stale: that work is finished and merged, other worktrees are not yours to edit, and files must be read again here before you rely on them.` : "";
-      const text = [moved, res.resume ? "" : this.rc.overview, card, this.baselineNote, carried, fu].filter(Boolean).join("\n\n");
+      const text = [moved, res.resume ? "" : this.rc.overview, card, recovery, this.baselineNote, carried, fu].filter(Boolean).join("\n\n");
       return { prompt: text, followUp: res.resume ? text : undefined, freshTask: true };
     }
     // Fresh session in the middle of a task (compaction, reset, overflow): card + pinned context.
-    const text = [this.rc.overview, card, this.pinnedContext(), fu].filter(Boolean).join("\n\n");
+    const text = [this.rc.overview, card, recovery, this.pinnedContext(), fu].filter(Boolean).join("\n\n");
     return { prompt: text, freshTask: true };
   }
 
@@ -779,7 +861,9 @@ export class AgentRun {
       this.abort = new AbortController();
       this.sessionSeen = false;
       const res = await this.prepareSession();
-      const input = this.turnInput(res, fu);
+      // A new session or attempt gets the brief (and, for a new attempt, what the last one left) instead of rediscovering the repo.
+      const recovery = !this.started || !res.resume ? await this.recoveryContext(!this.started) : "";
+      const input = this.turnInput(res, fu, recovery);
       const out = await this.adapter.run(this.ctx({
         role: this.task.role,
         sessionId: res.sessionId,
@@ -972,7 +1056,7 @@ export class AgentRun {
     for (const d of dependents) {
       this.rc.bus.send({
         kind: "handoff", from: this.task.id, to: { agent: d.id }, subject: `${this.task.id} done: ${r.summary.split("\n")[0]}`.slice(0, 120),
-        fields: { files: r.files_changed.slice(0, 8).join(", ") + (r.files_changed.length > 8 ? ` (+${r.files_changed.length - 8})` : ""), acceptance: r.acceptance_evidence.map((e) => e.ac).join(", "), branch: this.branch },
+        fields: { files: r.files_changed.slice(0, 8).join(", ") + (r.files_changed.length > 8 ? ` (+${r.files_changed.length - 8})` : ""), acceptance: r.acceptance_evidence.map((e) => e.ac).join(", "), branch: this.branch, ...(this.briefOn() && fs.existsSync(briefFile(this.rc.run.dir, this.task.id)) ? { brief: path.relative(this.rc.root, briefFile(this.rc.run.dir, this.task.id)) } : {}) },
         body: [r.summary, r.assumptions.length ? `Assumptions: ${r.assumptions.map((a) => a.text).join("; ")}` : "", r.follow_ups.length ? `Follow-ups: ${r.follow_ups.join("; ")}` : ""].filter(Boolean).join("\n"),
         artifact, refs: this.task.requirements, record_only: true,
       });
@@ -1131,15 +1215,16 @@ export class AgentRun {
    * nothing is committed or reverted ("warn"); if they are still there on the next done (or the agent cannot be
    * given another round), they are reverted and the reason goes into the next follow-up and the reviewer's input.
    */
-  private async commit(mode: "warn" | "final" = "final"): Promise<{ warn?: string[] }> {
+  private async commit(mode: "warn" | "final" = "final"): Promise<{ warn?: string[]; early?: string[] }> {
     if (!this.userDone) await this.normaliseHistory();
     const changed = await g.uncommittedFiles(this.worktree);
     if (!this.userDone) {
-      const outside = changed.filter((f) => !matchesAny(f, this.task.files.write));
+      const early = this.preBrief.filter((f) => changed.includes(f));
+      const outside = [...new Set([...changed.filter((f) => !matchesAny(f, this.task.files.write)), ...early])];
       if (outside.length && mode === "warn" && this.scopeStrikes === 0) {
         this.scopeStrikes++;
         this.ev({ type: "error", kind: "scope_violation", message: `out-of-scope changes (not reverted yet, the agent was told): ${outside.join(", ")}`, retryable: true });
-        return { warn: outside };
+        return { warn: outside, early };
       }
       for (const f of outside) {
         const tracked = (await g.git(this.worktree, ["ls-files", "--error-unmatch", f])).ok;
@@ -1166,8 +1251,9 @@ export class AgentRun {
   }
 
   /** What the agent is told on the first out-of-scope finding. */
-  private scopeWarning(outside: string[]): string {
-    return `Hexagon found changes outside this task's write scope. Nothing was reverted yet and nothing was committed.\n\nOutside the scope:\n${outside.map((f) => `- ${f}`).join("\n")}\n\nWrite scope: ${this.task.files.write.join(", ") || "(empty)"}\n\nChoose one:\n1. Drop the changes: restore tracked files with \`git checkout -- <path>\`, delete files you created.\n2. Move the work into a file inside the scope.\n3. If the task cannot be done without these files, finish with \`hexagon done --status needs_spec_change --issue "<paths and why>"\` so the plan can be changed.\n\nThen run \`hexagon done\` again. If these paths are still changed then, Hexagon reverts them and tells you.`;
+  private scopeWarning(outside: string[], early: string[] = []): string {
+    const before = early.length ? `Hexagon also found product files edited BEFORE your brief was valid: ${early.join(", ")}. The brief comes first; discard those edits (\`git checkout -- <path>\`, delete new files) and redo them as the brief says.\n\n` : "";
+    return before + `Hexagon found changes outside this task's write scope. Nothing was reverted yet and nothing was committed.\n\nOutside the scope:\n${outside.map((f) => `- ${f}`).join("\n")}\n\nWrite scope: ${this.task.files.write.join(", ") || "(empty)"}\n\nChoose one:\n1. Drop the changes: restore tracked files with \`git checkout -- <path>\`, delete files you created.\n2. Move the work into a file inside the scope.\n3. If the task cannot be done without these files, finish with \`hexagon done --status needs_spec_change --issue "<paths and why>"\` so the plan can be changed.\n\nThen run \`hexagon done\` again. If these paths are still changed then, Hexagon reverts them and tells you.`;
   }
 
   /** Prefix a follow-up with a pending explanation of what Hexagon reverted (once). */
@@ -1245,6 +1331,7 @@ export class AgentRun {
       const shown = diff.length > REVIEW_DIFF ? truncateMiddle(diff, REVIEW_DIFF) : diff;
       const prompt = [
         taskCard(this.task, this.rc.specs, "", []),
+        this.briefOn() && readText(briefFile(this.rc.run.dir, this.task.id)) ? `<brief note="what the developer said it would do, before doing it: check the diff against it and against the spec; differences need a reason in Decisions">\n${truncateMiddle(readText(briefFile(this.rc.run.dir, this.task.id)), 5000)}\n</brief>` : "",
         res.mode === "new" && this.reviewerSummary ? `Your earlier review notes (compacted):\n${this.reviewerSummary}` : "",
         // The spec and the diff come first: form your own view before reading what the developer says about it.
         `<diffstat base="${base}">\n${stat}\n</diffstat>`,
@@ -1441,6 +1528,13 @@ export class AgentRun {
           if (missing.length) return { ok: false, message: `No evidence for ${missing.join(", ")}. Add one per criterion: hexagon done --evidence "${missing[0]}: test:<file>::<test name>" (a test that proves it; any other text is recorded as a claim) and run \`hexagon done\` again.` };
         }
         if (!r.summary.trim()) return { ok: false, message: "Add --summary \"<what you did>\" and run `hexagon done` again." };
+        if (r.status === "completed" && this.briefRequired()) {
+          const text = readText(briefFile(this.rc.run.dir, this.task.id));
+          const errors = text ? checkBrief(text, this.task) : ["no brief has been written"];
+          if (errors.length) return { ok: false, message: `Your brief is missing or invalid, so the task cannot be accepted.\n${explainBrief(errors, this.task)}` };
+          if (this.briefQuestion && this.questions.has(this.briefQuestion)) return { ok: false, message: "The user has not approved the brief yet. End your turn and wait for the answer." };
+          if (!hasProgress(text)) return { ok: false, message: 'Update the brief before finishing: `hexagon brief append progress "<what is done>"` (and `found` for anything you learned), then run `hexagon done` again.' };
+        }
         this.result = r;
         this.finished = true;
         if (r.acceptance_evidence.length) {
@@ -1450,6 +1544,7 @@ export class AgentRun {
       },
       review: () => ({ ok: false, message: "Only the reviewer can run `hexagon review`." }),
       bus: (a) => this.busCall(a),
+      brief: (a) => this.briefCall(a),
       return: (x) => {
         const to = String(x.task ?? "").toUpperCase().replace(/^T(\d)/, "T-$1");
         const issue = String(x.issue ?? "").trim();
@@ -1520,6 +1615,11 @@ export class AgentRun {
     const opt = open.q.options?.find((o) => o.id === text.trim() || o.label.toLowerCase() === text.trim().toLowerCase());
     const answer = opt ? `${opt.id}) ${opt.label}` : text;
     this.questions.delete(questionId);
+    if (questionId === this.briefQuestion) {
+      this.briefQuestion = null;
+      this.briefApproved = /^1\)|^approve/i.test(answer.trim());
+      saveReview(this.rc.run.dir, this.task.id, { approved: this.briefApproved, at: nowIso() });
+    }
     this.ev({ type: "answered", question_id: questionId, answer });
     this.ev({ type: "chat", from: "user", text: answer });
     if (this.state === "waiting_input" && !this.questions.size) this.st(this.gate ? "paused" : this.fixing ? "fixing" : "working");

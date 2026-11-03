@@ -8,6 +8,8 @@ max_fix_cycles = 3      # verify/review repair cycles per task; 0 = unlimited (s
 release_on_conflict = true   # a merge conflict goes to the release engineer once (conflicted files only, verified), then blocks
 checkpoint_after_first = true  # a graph pauses new starts once the first task is merged: "are we still building the right thing?" (/resume continues)
 require_spike = true      # analysis that shows an unknown cause, a cross-cutting change or unclear boundaries must plan read-only spikes before the spec
+task_brief = "required"   # implementing agents write a brief (goal, files:lines, approach, decisions, risks, verification) before editing: required | optional | off
+brief_review = "off"      # who reads the brief before work starts: off | auto (risky tasks, tasks touching interfaces) | user (every task)
 shared_files = []         # paths no task may be granted through `hexagon scope request` (e.g. a generated registry); the integration owns them
 test_command = ""         # runs one test to prove it fails without the change, e.g. "npx vitest run {file} -t {name}" or "go test ./... -run {name}"; empty = re-run the task's verify commands
 integration_verify = "merged"  # after each merge, re-run this task's verify + those of tasks already merged ("task" = only this task's, "full" = also final_verify)
