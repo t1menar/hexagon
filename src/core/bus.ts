@@ -58,7 +58,13 @@ export interface BusLimits {
 export const DEFAULT_BUS_LIMITS: BusLimits = { max_per_agent: 30, max_body_chars: 2000, max_subject_chars: 120, max_fields: 12, max_field_chars: 200, question_timeout_s: 600 };
 
 /** What the visualisation draws: a dot from one node to another (or to the model), by kind and size. */
-export interface BusActivity { from: string; to: string; kind: BusKind | "model_call" | "model_response"; size: number }
+export interface BusActivity {
+  from: string; to: string; kind: BusKind | "model_call" | "model_response"; size: number;
+  /** Envelope id: the dashboard animates each envelope once, however many times its delivery state changes. */
+  id?: string;
+  /** Tasks that actually received it (role/topic/broadcast fan-out resolved by the router), when known. */
+  recipients?: string[];
+}
 
 export type SendRequest = {
   kind: BusKind;
@@ -223,7 +229,7 @@ export class AgentBus extends EventEmitter {
     }
     if (req.kind === "answer" && req.reply_to) this.answered(req.reply_to);
     this.emit("envelope", env);
-    this.activity({ from: req.from, to: target.agent ?? (target.role ? `role:${target.role}` : target.topic ? `topic:${target.topic}` : "all"), kind: req.kind, size: body.length + subject.length });
+    this.activity({ from: req.from, to: target.agent ?? (target.role ? `role:${target.role}` : target.topic ? `topic:${target.topic}` : "all"), kind: req.kind, size: body.length + subject.length, id: env.id, recipients: env.message_ids.map((m) => this.router.get(m)?.to.id).filter((x): x is string => Boolean(x)) });
     return { ok: true, envelope: env };
   }
 

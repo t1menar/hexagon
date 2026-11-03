@@ -135,7 +135,7 @@ describe("agent bus (pure)", () => {
     const seen: unknown[] = [];
     bus.on("activity", (a) => seen.push(a));
     bus.send({ kind: "finding", from: "T-1", to: { agent: "T-2" }, subject: "bug", body: "abc" });
-    expect(seen).toEqual([{ from: "T-1", to: "T-2", kind: "finding", size: 6 }]);
+    expect(seen).toEqual([expect.objectContaining({ from: "T-1", to: "T-2", kind: "finding", size: 6, id: expect.any(String), recipients: expect.any(Array) })]);
   });
 });
 

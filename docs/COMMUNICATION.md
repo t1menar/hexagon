@@ -542,3 +542,11 @@ recorded only, their delivery path is unchanged.
 **Observability.** `run.status` / `hexagon status --json` carry `bus` (totals by kind and state, who waits for whom,
 the last 10). The daemon pushes `bus` (envelope or state change) and `bus_activity` `{from, to, kind, size}` for every
 bus message and, per model call, `task → model` / `model → task`; Phase D draws them.
+
+### Seeing the bus (TUI and CLI)
+
+- **Strip**: in layouts without an activity panel, 1-3 lines under the network show who waits for whom (blocking `ask`/`request`) and the newest envelopes (`B-12 T-1 → T-3 question "…" ⏳`). Each envelope is one entry; a delivery-state change updates it in place (`src/tui/busview.ts`).
+- **BUS view**: `/bus` or F6 replaces the activity panel with the history (`command.exec bus.read`), blocking waits first.
+- **Badges**: a card and its row in the agent list show `✉N` (unread inbox) and `⏳T-n` (waiting for).
+- **Animation**: a message is animated once per envelope along the dependency edge, or, for non-adjacent tasks, a direct route through the gutter. A role/topic/broadcast goes to its real recipients. Reviewer findings come out of the card's review footer.
+- **CLI**: `hexagon bus log [--task T-n] [--waiting] [--json]`.

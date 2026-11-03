@@ -193,3 +193,7 @@ A 40-task frame renders in ~1.8 ms; an unchanged frame writes ~140 bytes (only c
 ## Input latency
 
 A key press repaints at the next ~16 ms slot, not at the animation rate. While you type (text in the box, or a key in the last 1.5 s) ambient effects and the continuous "working" effect release their timers and come back afterwards. Full motion is capped at 15 fps (8 fps for the working effect), frames are skipped while stdout has not drained, and ambient hexagons are off unless `ui.ambient = true` or `HEXAGON_AMBIENT=on`. Measured in `test/input-latency.test.ts`: an invalidate under a 4 fps hold took ~190 ms before, under 60 ms now (timer-level, not end-to-end terminal latency).
+
+## Bus view
+
+`/bus` (F6) toggles the BUS panel; a 1-3 line strip appears under the network when no activity panel is shown. See COMMUNICATION.md, "Seeing the bus". `/animate full` now runs at 15 fps, the same as the manager's default.

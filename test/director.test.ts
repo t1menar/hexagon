@@ -77,7 +77,7 @@ describe("director maps real events to effects", () => {
   });
   it("messages travel real edges only", () => {
     const { m, d } = setup();
-    const msg = (from: string, to: string) => ({ id: "m", from: { kind: "agent", id: from }, to: { kind: "agent", id: to }, body: "hello", type: "notify" }) as never;
+    const msg = (from: string, to: string) => ({ id: `m-${to}`, from: { kind: "agent", id: from }, to: { kind: "agent", id: to }, body: "hello", type: "notify", delivery: { state: "queued" } }) as never;
     d.message(msg("T-1", "T-2"));
     expect(m.particles.activeCount).toBeGreaterThan(0);
     m.particles.clear();
