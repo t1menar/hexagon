@@ -29,6 +29,17 @@ The analyst states `Confidence: low|medium|high` and, if more than one design is
 * The delivery block (`delivery.push`, `.remote`, `.pr`, `.branch`, `.merge`) is persisted to `[delivery] remote, push, pr` in `config.toml` after the first answer; a project that answered it is never asked again (answered delivery questions are dropped from later batches).
 * After `/merge`, if `[delivery]` asks for a push or a pull request, Hexagon only tells you: `hexagon deliver` shows the commands, `hexagon deliver --yes` (`/deliver yes`) runs them (`git push <remote> <base>`, or with `pr = true` push the integration branch and `gh pr create`).
 
+## The brief (spec-then-implement in the agent's own context)
+
+Before a developer, qa, devops or security agent edits a product file, it writes `.hexagon/runs/<run>/tasks/<T-n>/brief.md` with `hexagon brief write` (text on stdin; the agent cannot write outside its worktree, the daemon owns the file): **Goal** (1-2 lines), **Files to change** (`file:line` anchors or `(new)`), **Approach**, **Decisions and assumptions**, **Risks**, **Verification** (every acceptance id mapped to a command or test). `hexagon brief check` explains what is missing and prints a skeleton.
+
+* `[run] task_brief = required|optional|off` (default `required`). Required: `hexagon done` (status completed) is refused without a valid brief and at least one Progress line; product files that were already modified (by mtime) when the brief became valid are warned about once, then reverted like out-of-scope edits. The solo/assistant path does not create tasks, so it has no brief.
+* Living log: `hexagon brief append progress|found "<line>"` adds dated lines.
+* `[run] brief_review = off|auto|user`: with `user` (every task) or `auto` (tasks with `estimate.risk` high/risky/critical, or whose write scope looks like an interface: api, interfaces, contracts, schemas, proto, openapi, `*.d.ts`) the user is asked to approve the brief before the agent goes on.
+* The reviewer receives the brief with the diff and checks the diff against it and the spec.
+* Restart without re-learning: the compaction summary (`compact.md`) and the last thing that sent the work back (`failure.md`) are persisted next to the brief. A new session or attempt for the task starts with `<resume>`: the brief, current diffstat and last failure (the summary arrives as before); a resumed turn begins "Read your brief first".
+* Handoff envelopes to downstream tasks carry the brief's path in `fields.brief`.
+
 ## Exploring first (spike)
 
 If the analysis says the cause is unknown, the change is cross-cutting, or the boundaries are unclear, it must contain a `## Spike` section (`S-n` questions) or analysis validation fails (`[run].require_spike`, default on). A spike is a read-only investigation by the analyst: it reads and runs nothing that changes the repo, writes `spike.md` (findings with `file:line` per question, then the decision), and the specify step is told to build on that decision. No sandbox experiments yet.

@@ -232,6 +232,11 @@ describe("one session per agent identity (mock agent)", () => {
     expect(t.length).toBeGreaterThan(0);
     expect(t[0]!.text).toContain("<acceptance>");
     expect(t[0]!.text).toContain("(mock) kept the module layout");
+    // The summary is also on disk, so a new Supervisor (retry, restart, session reset) still has it.
+    const runs = path.join(root, ".hexagon/runs");
+    const saved = fs.readdirSync(runs).flatMap((r) => ["T-1", "T-2", "T-3", "T-4"].map((tk) => path.join(runs, r, "tasks", tk, "compact.md"))).filter((f) => fs.existsSync(f));
+    expect(saved.length).toBeGreaterThan(0);
+    expect(fs.readFileSync(saved[0]!, "utf8")).toContain("(mock) kept the module layout");
   }, 90000);
 });
 

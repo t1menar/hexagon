@@ -69,7 +69,7 @@ ${c.bold("Agent protocol")} (run by agents inside their sessions)
   hexagon review approve|changes --summary "…" [--finding "high: file:line issue -> fix" …]
   hexagon plan-check`;
 
-const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "stage-check", "return", "bus", "exec", "install", "sudo", "scope"]);
+const AGENT_OPS = new Set(["report", "ask", "note", "done", "review", "plan-check", "stage-check", "return", "bus", "exec", "install", "sudo", "scope", "brief"]);
 const TASK_RE = /^t-?\d+$/i;
 const normTask = (s: string) => s.toUpperCase().replace(/^T(\d)/, "T-$1");
 
@@ -611,6 +611,13 @@ async function followRun(client: HexClient): Promise<void> {
 
 // ───────────── agent protocol commands ─────────────
 
+async function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) return "";
+  let s = "";
+  for await (const chunk of process.stdin) s += chunk;
+  return s;
+}
+
 async function agentOp(cmd: string, args: string[]): Promise<void> {
   const r = process.env.HEXAGON_ROOT ?? findProjectRoot();
   if (!r) { console.error("hexagon: not inside a Hexagon project"); process.exit(2); }
@@ -669,6 +676,21 @@ async function agentOp(cmd: string, args: string[]): Promise<void> {
       const tool = a.find((x) => !x.startsWith("--"));
       if (!tool) { console.error('usage: hexagon install <go|node|java|maven> [--reason "why"]'); process.exit(2); }
       params = { tool, reason };
+      break;
+    }
+    case "brief": {
+      const action = a.shift();
+      if (!["write", "append", "check", "show"].includes(action ?? "")) {
+        console.error('usage: hexagon brief write [--file path]   (brief text on stdin, or a file)\n       hexagon brief append progress|found "<one line>"\n       hexagon brief check | hexagon brief show');
+        process.exit(2);
+      }
+      if (action === "write") {
+        const f = one(a, "--file");
+        params = { action, text: f ? fs.readFileSync(f, "utf8") : await readStdin() };
+      } else if (action === "append") {
+        const kind = a.shift();
+        params = { action, kind, text: a.join(" ") };
+      } else params = { action };
       break;
     }
     case "scope": {

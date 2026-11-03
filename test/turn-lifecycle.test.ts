@@ -53,7 +53,7 @@ describe("the core owns the done-nudge for CLIs that exit without reporting", ()
     git(root, "add", "-A"); git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
     scaffold(root);
     const f = path.join(root, ".hexagon/config.toml");
-    fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/agent = "claude"/g, 'agent = "silent"').replace(/^\[review\][\s\S]*?(?=^\[|$(?![\s\S]))/m, "") + `\n[review]\nmode = "off"\n\n[agents.silent]\nadapter = "silent-test"\nargs = [${args}]\n`);
+    fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/agent = "claude"/g, 'agent = "silent"').replace('task_brief = "required"', 'task_brief = "off"').replace(/^\[review\][\s\S]*?(?=^\[|$(?![\s\S]))/m, "") + `\n[review]\nmode = "off"\n\n[agents.silent]\nadapter = "silent-test"\nargs = [${args}]\n`);
     git(root, "add", "-A"); git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hexagon init");
     const task: Task = { id: "T-1", title: "x", role: "developer", requirements: [], acceptance: [], depends_on: [], files: { write: ["src/a.txt"], read: [] }, skills: [], definition_of_done: ["d"], verify: [], verify_exempt: "test", description: "" };
     const p: Plan = { schema: "hexagon.plan/v1", id: "p", created_at: new Date().toISOString(), specs: [], spec_issues: [], tasks: [task] };

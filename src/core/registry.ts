@@ -1,6 +1,6 @@
 import type { AgentApi, Reply } from "../agents/types.js";
 
-export type ApiOp = "report" | "ask" | "note" | "done" | "review" | "plan_check" | "return" | "bus" | "exec" | "install" | "sudo" | "command" | "goal" | "logs" | "proposals" | "tell" | "scope";
+export type ApiOp = "report" | "ask" | "note" | "done" | "review" | "plan_check" | "return" | "bus" | "exec" | "install" | "sudo" | "command" | "goal" | "logs" | "proposals" | "tell" | "scope" | "brief";
 
 /** Routes `hexagon report|ask|note|done|review` calls from agent processes to the right supervisor. */
 export class ApiRegistry {
@@ -29,6 +29,7 @@ export class ApiRegistry {
       case "done": return api.done(args as never);
       case "review": return api.review(args as never);
       case "return": return api.return ? api.return(args as never) : { ok: false, message: "`hexagon return` is only for task agents in a run." };
+      case "brief": return api.brief ? api.brief(args) : { ok: false, message: "`hexagon brief` is only for task agents in a run." };
       case "bus": return api.bus ? api.bus(args) : { ok: false, message: "`hexagon bus` is only for task agents in a run." };
       case "command": case "goal": case "logs": case "proposals": case "tell": case "scope": case "exec": case "install": case "sudo": return { ok: false, message: `\`hexagon ${op}\` is handled by the daemon, not by this agent.` };
       case "plan_check": return api.plan_check ? api.plan_check() : { ok: false, message: "plan-check is only for the planner" };

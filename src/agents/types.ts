@@ -24,6 +24,8 @@ export interface AgentApi {
   return?(r: { task: string; issue: string }): Reply;
   /** `hexagon bus send|read|subscribe` (task agents in a run). */
   bus?(r: Record<string, unknown>): Reply;
+  /** `hexagon brief write|append|check|show`: the per-task brief (task agents in a run). */
+  brief?(r: Record<string, unknown>): Reply;
 }
 
 export interface Reply { ok: boolean; message: string }
