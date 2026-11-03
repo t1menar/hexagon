@@ -81,6 +81,10 @@ export interface HexagonConfig {
   control: ControlConfig;
   /** How much the analyst asks before specifying: minimal (only when confidence is low or designs differ) · normal · thorough (anything below high confidence). */
   sdd: { ask: AskLevel };
+  /** The Hexagon Assistant: propose = every change waits for your /apply · safe = it may also pause, compact and tell on its own (retry, cancel, graph edits and replans always wait). */
+  assistant: { autonomy: "propose" | "safe" };
+  /** Rules the watchdog applies (minutes / counts / tokens); see docs/CONTROL.md. */
+  watchdog: { enabled: boolean; interval_s: number; stall_minutes: number; ping_pong: number; burn_tokens: number; burn_window_minutes: number; waiting_minutes: number; digest_every_minutes: number };
   /** Where the result goes after /merge. Filled from the user's first answer; `push`/`pr` unset = never asked. */
   delivery: { remote: string; push: boolean | null; pr: boolean | null };
   messaging: { max_outbound_per_run: number; max_blocking_questions: number };
@@ -100,6 +104,8 @@ export const DEFAULT_CONFIG: HexagonConfig = {
   prices: {},
   control: { auto_apply: false },
   sdd: { ask: "normal" },
+  assistant: { autonomy: "propose" },
+  watchdog: { enabled: true, interval_s: 30, stall_minutes: 10, ping_pong: 4, burn_tokens: 300_000, burn_window_minutes: 15, waiting_minutes: 30, digest_every_minutes: 5 },
   delivery: { remote: "", push: null, pr: null },
   messaging: { max_outbound_per_run: 10, max_blocking_questions: 2 },
   sandbox: {
@@ -196,6 +202,7 @@ export function loadConfig(file: string): HexagonConfig {
   const rawRun = (raw.run ?? {}) as Record<string, unknown>;
   if ("fix_loops" in rawRun && !("max_fix_cycles" in rawRun)) cfg.run.max_fix_cycles = cfg.run.fix_loops;
   if (!["task", "merged", "full"].includes(cfg.run.integration_verify)) throw new Error(`[run].integration_verify must be "task", "merged" or "full" (got "${cfg.run.integration_verify}")`);
+  if (!["propose", "safe"].includes(cfg.assistant.autonomy)) throw new Error(`[assistant].autonomy must be "propose" or "safe" (got "${cfg.assistant.autonomy}")`);
   if (!ASK_LEVELS.includes(cfg.sdd.ask)) throw new Error(`[sdd].ask must be ${ASK_LEVELS.map((x) => `"${x}"`).join(", ")} (got "${cfg.sdd.ask}")`);
   if (!BRIEF_MODES.includes(cfg.run.task_brief)) throw new Error(`[run].task_brief must be ${BRIEF_MODES.map((x) => `"${x}"`).join(", ")} (got "${cfg.run.task_brief}")`);
   if (!BRIEF_REVIEWS.includes(cfg.run.brief_review)) throw new Error(`[run].brief_review must be ${BRIEF_REVIEWS.map((x) => `"${x}"`).join(", ")} (got "${cfg.run.brief_review}")`);

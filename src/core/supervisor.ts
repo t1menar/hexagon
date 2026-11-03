@@ -1552,7 +1552,7 @@ export class AgentRun {
         if (this.waiting) return { ok: false, message: `You already returned work to ${this.waiting.task}. End your turn and wait.` };
         const r = this.rc.returnTask(this.task.id, to, issue);
         if (!r.ok) return { ok: false, message: r.message };
-        this.rc.bus.send({ kind: "request", from: this.task.id, to: { agent: to }, subject: issue.split("\n")[0]!.slice(0, 120), body: issue, record_only: true });
+        this.rc.bus.send({ kind: "request", from: this.task.id, to: { agent: to }, subject: issue.split("\n")[0]!.slice(0, 120), fields: { returned: "1" }, body: issue, record_only: true });
         this.waiting = { task: to, issue, done: r.done };
         this.finished = true; // ends this turn; the pipeline then waits for the fix
         this.ev({ type: "chat", from: "hexagon", text: `↩ Returned to ${to}: ${issue}` });

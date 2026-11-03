@@ -22,6 +22,18 @@ budget_tokens = 0       # pause the run after this many tokens (input + cached +
 [sdd]
 ask = "normal"          # minimal: ask only when confidence is low or designs differ · normal: also the delivery target · thorough: anything below high confidence
 
+[assistant]
+autonomy = "propose"     # propose: every change waits for your /apply · safe: it may pause, compact and tell on its own (retry, cancel, graph edits, replans always wait)
+
+# The watchdog names problems early (stalled task, ping-pong, oscillating fixes, token burn, stale context, forgotten question).
+# [watchdog]
+# enabled = true
+# stall_minutes = 10
+# ping_pong = 4            # questions/answers/returns between two tasks before it is called a loop
+# burn_tokens = 300000     # tokens in burn_window_minutes without the change growing
+# waiting_minutes = 30     # a question waiting this long
+# digest_every_minutes = 5 # the Assistant hears about new problems at most this often
+
 # Where the result goes after /merge. Filled from your first answer to the analyst's delivery question, never asked twice.
 # [delivery]
 # push = false         # offer `hexagon deliver` (push, behind a confirmation) after /merge

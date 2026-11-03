@@ -45,7 +45,7 @@ ${c.bold("Watch & steer")}
   hexagon takeover <T-n>           continue the agent's own session yourself
   hexagon diff <T-n> · logs <T-n> · merge · close · abort · clean · up · down
   hexagon compact [agent|T-n]      compact an agent's session at its next safe point  ·  hexagon stats [--json]  tokens by cause
-  hexagon bus send|read|subscribe  agents: structured messages between agents (handoff, decision, finding, question …)
+  hexagon bus log [--task T-n] [--waiting]   read the agent bus (who sent what to whom, who waits for whom)  ·  agents: hexagon bus send|read|subscribe
   hexagon prompts lint [--json]    check the shipped role prompts and skills (frontmatter, vendor names, size, contradictions)
   hexagon commands                 the typed command API (graph, agents, runs) the assistant uses  ·  hexagon do <command> [--param v]
   hexagon proposals | apply [P-n] | reject [P-n]   changes the assistant proposed, waiting for you
@@ -106,6 +106,21 @@ async function main(argv: string[]): Promise<void> {
   }
   if (cmd === "--version" || cmd === "-v") return void console.log(VERSION);
   if (cmd === "--help" || cmd === "-h" || cmd === "help") return void console.log(USAGE);
+  // For the user (and the Assistant through `hexagon do bus.read`), the bus is readable too: agents use `hexagon bus send|read|subscribe`.
+  if (cmd === "bus" && rest[0] === "log" && !process.env.HEXAGON_AGENT) {
+    const client = await HexClient.connect(root());
+    try {
+      const task = one(rest, "--task");
+      const res = await client.call<{ status: string; result: { waiting: { from: string; for: string }[]; envelopes: { id: string; kind: string; from: string; to: string; subject: string; state: string; blocking: boolean }[] } }>("command.exec", { name: "bus.read", args: { task: task ? normTask(task) : undefined, waiting: bool(rest, "--waiting") || undefined } });
+      if (bool(rest, "--json")) console.log(JSON.stringify(res.result, null, 2));
+      else {
+        for (const w of res.result.waiting) console.log(`⏳ ${w.from} waits for ${w.for}`);
+        for (const e of res.result.envelopes) console.log(`${e.id.padEnd(5)} ${e.from} → ${e.to}  ${e.kind}${e.blocking ? " (blocking)" : ""}  ${JSON.stringify(e.subject)}  ${e.state}`);
+        if (!res.result.waiting.length && !res.result.envelopes.length) console.log("(nothing on the bus)");
+      }
+    } finally { client.close(); }
+    return;
+  }
   if (cmd && AGENT_OPS.has(cmd)) return agentOp(cmd, rest);
   // Inside the Assistant's session these three use its narrow routes; for the user they are the full commands below.
   if (process.env.HEXAGON_AGENT && (cmd === "logs" || cmd === "proposals" || cmd === "tell")) return agentOp(cmd, rest);

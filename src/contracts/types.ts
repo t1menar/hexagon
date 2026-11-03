@@ -135,12 +135,14 @@ export interface RunStatus {
     waiting: { from: string; for: string }[];
     recent: { id: string; kind: string; from: string; to: string; subject: string; state: string; size: number }[];
   };
+  /** What the watchdog found right now (stalled, ping-pong, oscillation, token burn, stale context, forgotten question). */
+  health?: { id: string; kind: string; task: string | null; tasks?: string[]; severity: "warn" | "attention"; message: string; suggestion: string; since: string }[];
   counts: Partial<Record<AgentState, number>>;
   agents: {
     task_id: string; agent_run_id: string; role: Role; agent: string; state: AgentState;
     activity: string | null; needs_input: boolean; progress: AgentStatus["progress"] | null; cost_usd: number; tokens: number;
   }[];
-  attention: { kind: "question" | "failure" | "blocked" | "budget" | "stale" | "checkpoint" | "replan"; task_id: string | null; text: string; ref?: string }[];
+  attention: { kind: "question" | "failure" | "blocked" | "budget" | "stale" | "checkpoint" | "replan" | "health"; task_id: string | null; text: string; ref?: string }[];
 }
 
 export type PartyKind = "user" | "agent" | "role" | "orchestrator" | "blackboard" | "broadcast" | "lead";
